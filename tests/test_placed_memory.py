@@ -9,8 +9,12 @@ it. No game, no GPU; Linux only (mmap, memfd, /proc/self/pagemap).
 """
 import argparse
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
+from srccut import between, block   # noqa: E402
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 RUN_ALL_SKIP = {"windows": "mmap, memfd and /proc/self/pagemap: Linux only, as the placements are"}
@@ -64,10 +68,67 @@ def check_source():
     need("gpu/vk/vk_loader.h", "X(vkGetMemoryFdKHR)")
     need("gpu/vk/vk_api.h", "void (*nvn_pool_finalized)(uint64_t gpu, uint64_t size);")
     need("gpu/vk/vk_replay.cpp", "t.nvn_pool_finalized = memory_pool_finalized;")
-    need("host/rx_backend.c", "if (vk && vk->nvn_pool_finalized) vk->nvn_pool_finalized(gpu, size);")
+   # (host/rx_backend.c's side: check_told_while_starting runs it)
     fin = body(need("host/nvn_native.c"), "NV(nvnMemoryPoolFinalize) {")
     if "rx_nvn_pool_finalized(o->gpu, o->size);" not in fin:
         raise SystemExit("nvnMemoryPoolFinalize no longer tells the renderer: the pool's memory would stay the device's")
+
+
+# (host/rx_backend.c: the pools the game makes and lets go while the renderer starts are told to it. The game's thread runs on
+# while the Vulkan back end starts (3 s of shaders on the Odin 3), and the pools it made then (the render target pool, the queues'
+# event memory) were told to no renderer: never placed, never imported, every draw that used them skipped, a black screen)
+TOLD_FIXTURE = r"""
+#include <stdint.h>
+#include <stdio.h>
+typedef struct MkwVkRenderer {
+    int (*start)(void *hwnd);
+    void (*nvn_pool_created)(uint64_t gpu, uint64_t size);
+    void (*nvn_pool_finalized)(uint64_t gpu, uint64_t size);
+} MkwVkRenderer;
+static void hos_log(const char *f, ...) { (void)f; }
+static void flush_early(void) {}
+static int wgr_start(void *hwnd) { (void)hwnd; return 0; }
+static int made, gone;
+static void created(uint64_t gpu, uint64_t size) { (void)gpu, (void)size; made++; }
+static void finalized(uint64_t gpu, uint64_t size) { (void)gpu, (void)size; gone++; }
+void rx_nvn_pool_created(uint64_t gpu, uint64_t size);
+void rx_nvn_pool_finalized(uint64_t gpu, uint64_t size);
+static int start(void *hwnd) {   /* (the game's thread makes a pool and lets one go while the renderer starts) */
+    (void)hwnd;
+    rx_nvn_pool_created(0x100c867000ull, 0x20000000ull);
+    rx_nvn_pool_finalized(0x100c867000ull, 0x20000000ull);
+    return 1;
+}
+static const MkwVkRenderer renderer = {start, created, finalized};
+static const MkwVkRenderer *load_vulkan(const char *dll) { (void)dll; return &renderer; }
+@@STATE@@
+@@FUNCS@@
+int main(void) {
+    rx_nvn_pool_created(1, 1);
+    if (made) return puts("FAIL: a pool told to a renderer before there was one"), 1;
+    if (!rx_start(NULL)) return puts("FAIL: the renderer did not start"), 1;
+    if (made != 1 || gone != 1) {
+        printf("FAIL: the pool the game made and let go while the renderer started: told %d and %d times, not 1 and 1\n", made, gone);
+        return 1;
+    }
+    rx_nvn_pool_created(2, 2);
+    if (made != 2) return puts("FAIL: a pool made after the start not told"), 1;
+    puts("pools made while the renderer starts: told");
+    return 0;
+}
+"""
+
+
+def check_told_while_starting(cxx, tmp):
+    src = (ROOT / "host/rx_backend.c").read_text(encoding="utf-8")
+    state = between(src, "static const MkwVkRenderer *vk;", "static HMODULE vk_module;")
+    funcs = "\n".join(block(src, marker) for marker in ("int rx_start(void *hwnd) {", "void rx_nvn_pool_created(uint64_t gpu",
+                                                      "void rx_nvn_pool_finalized(uint64_t gpu"))
+    c = Path(tmp) / "told.c"
+    c.write_text(TOLD_FIXTURE.replace("@@STATE@@", state).replace("@@FUNCS@@", funcs), encoding="utf-8")
+    exe = Path(tmp) / "told"
+    subprocess.run([cxx, "-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", str(c), "-o", str(exe)], check=True)
+    subprocess.run([str(exe)], check=True)
 
 
 def main():
@@ -80,6 +141,7 @@ def main():
         subprocess.run([args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror",
                         str(ROOT / "tests/placed_memory_test.cpp"), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
+        check_told_while_starting(args.cxx, tmp)
 
 
 if __name__ == "__main__":

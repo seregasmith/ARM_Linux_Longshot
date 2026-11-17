@@ -289,6 +289,11 @@ static const MkwVkHost vk_host = {
 };
 
 static const MkwVkRenderer *vk;   /* the Vulkan back end, when it was chosen and started */
+/* (arm64 port) the one being started: the game's thread goes on meanwhile (3 s of shader loading on the Odin 3), and the
+   memory pools it makes then are told to it (rx_nvn_pool_created), not lost: where the back end places its own memory under
+   the pools (gpu/vk/vk_memory.cpp placed_*), a pool it never heard of is never placed, and nothing in it reaches the GPU
+   (the render target pool, the queues' event memory: a black screen with the game running) */
+static const MkwVkRenderer *volatile vk_starting;
 static HMODULE vk_module;   /* (the last back end loaded: rx_close_asked) */
 
 /* The game registers its first textures and samplers before the window's thread starts the renderer (NVN is up
@@ -396,6 +401,7 @@ int rx_start(void *hwnd) {
     /* (longshot: Vulkan, the only renderer; RX_BACKEND, which once picked the WebGPU one, is not read) */
     const char *dll = "longshot_vk.dll";
     const MkwVkRenderer *r = load_vulkan(dll);
+    vk_starting = r;
     if (r && r->start(hwnd)) {
         vk = r;
         hos_log("rx: renderer: Vulkan (%s)", dll);
@@ -403,6 +409,7 @@ int rx_start(void *hwnd) {
         flush_early();
         return 1;
     }
+    vk_starting = NULL;
     if (r) hos_log("rx: the Vulkan back end could not start on the window: nothing is drawn");
     const int ok = wgr_start(hwnd);
     if (ok) hos_log("report: renderer WebGPU (no usable Vulkan device)");
@@ -626,8 +633,10 @@ void rx_nvn_vmap_changing(uint64_t gpu, uint64_t size) {
     if (away) hos_vcore_back();
 }
 void rx_nvn_pool_created(uint64_t gpu, uint64_t size) {
-    if (vk && vk->nvn_pool_created) vk->nvn_pool_created(gpu, size);
+    const MkwVkRenderer *r = vk ? vk : vk_starting;   /* (also while it starts: vk_starting) */
+    if (r && r->nvn_pool_created) r->nvn_pool_created(gpu, size);
 }
 void rx_nvn_pool_finalized(uint64_t gpu, uint64_t size) {
-    if (vk && vk->nvn_pool_finalized) vk->nvn_pool_finalized(gpu, size);
+    const MkwVkRenderer *r = vk ? vk : vk_starting;
+    if (r && r->nvn_pool_finalized) r->nvn_pool_finalized(gpu, size);
 }

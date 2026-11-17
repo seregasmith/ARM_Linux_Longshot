@@ -245,6 +245,12 @@ Written 2026-11-17, not yet run (it needs Docker on the Mac):
     N, cached ...)` or `vk: the guest's pools cannot be placed in the device's memory: <why>`, then a line per pool
     placed (`vk: pool ... placed in the device's memory`) and per import (`imported from its placement`).
     `RX_VK_PLACED=0` turns it off; `RX_VK_PLACED=1` tries it on a PC whose driver takes host pointers.
+  - **Third run (Mesa 27.0.0-devel and 26.2.6):** the placements worked (about 2,000 pools, 3-4 GB, 0.0-0.3 ms each), and the
+    screen stayed black with the game running and its sounds playing. The game made ~70 pools in the 3 s the renderer took to
+    start (its shaders), and those were told to no renderer: never placed, so never imported (`vk: pool ... not imported`
+    for the 512 MB render target pool, the queues' event memory and three more), and every draw that used them was skipped
+    (`skips a frame by vk_draw.cpp line: 8380`, an index buffer not found). `host/rx_backend.c` now tells the renderer being
+    started too (`vk_starting`).
   - The game's own log under Steam: `logs/longshot_log.txt` in the game folder (`longshot-launch` gives the game no
     stderr when it isn't a terminal: Steam's pipe kept the game from writing it). Crash reports: `bug-reports/`.
 - The mesh fallback with indirect counts (hard problem 3).

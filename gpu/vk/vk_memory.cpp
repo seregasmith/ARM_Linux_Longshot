@@ -414,7 +414,9 @@ bool import_dma_buf(uint64_t lo, uint64_t hi, Pool& p) {
 }
 #endif
 
-bool placed_on = false;   // (arm64 port: the guest's pools placed in the device's own memory: placed_setup, below)
+// (arm64 port: the guest's pools placed in the device's own memory: placed_setup, below. Atomic: the game's thread asks it in
+// memory_pool_created while the renderer starts)
+std::atomic<bool> placed_on{false};
 #ifdef __linux__
 // ---- (arm64 port) the guest's pools placed in the device's own memory ----
 // Turnip (Mesa's Adreno driver) takes no host pointers, and a kernel without /dev/udmabuf (Armada OS on the AYN Odin 3) makes
@@ -688,10 +690,14 @@ bool placed_setup(bool forced) {
          f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT ? ", cached" : ", not cached: the game's reads of its pools are slow",
          f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ? ", device local" : "", (unsigned long long)align,
          placed_pagemap < 0 ? "; no /proc/self/pagemap: every page copied in" : "");
-    std::vector<std::array<uint64_t, 2>> list(8192);   // (the pools the game made before the renderer started)
-    const int n = host->gpu_pools(reinterpret_cast<uint64_t(*)[2]>(list.data()), (int)list.size());
+    // (the pools the game made before now: on first, then the list read, both under the lock. A pool made after the list was
+    // read is told by its memory_pool_created, which waits for the lock and finds placed_on set; one whose memory_pool_created
+    // came before that is in the list, as the host lists a pool before it tells the renderer (host/nvn_native.c). One both
+    // listed and told is counted twice, and its placement then outlives it: kept, as the game's memory, never wrong)
     std::lock_guard lk(placed_mu);
     placed_on = true;
+    std::vector<std::array<uint64_t, 2>> list(8192);
+    const int n = host->gpu_pools(reinterpret_cast<uint64_t(*)[2]>(list.data()), (int)list.size());
     int made = 0;
     for (int i = 0; i < n; i++)
         if (list[i][1] && list[i][0] < (1ull << 40))
