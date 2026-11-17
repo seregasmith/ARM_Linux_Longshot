@@ -53,4 +53,5 @@ _deps/
 # ---- Visual Studio IDE files ----
 .vs/
 .vscode/
+.idea/
 CppProperties.json
