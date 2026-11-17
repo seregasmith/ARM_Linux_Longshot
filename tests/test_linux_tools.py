@@ -14,6 +14,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -246,6 +247,73 @@ class AppRun(unittest.TestCase):
             self.assertIn("https://longshot.magicbean.dev/download", r.stderr, args)
             self.assertEqual(r.stdout, "", args)
         self.assertFalse((self.dir / "data").exists())
+
+    def test_cli_log_next_to_the_appimage(self):
+        """(arm64 port) The AppImage's --cli build saves its log in Longshot-logs beside the AppImage (Game Mode has no terminal),
+        or in $XDG_STATE_HOME/longshot/logs where that folder can't be written. A --log given stays as it is, and an unpacked
+        image (RecompLauncher's: no APPIMAGE) gets none"""
+        mine = self.dir / "data/longshot/builder/toolchains" / TAG
+        tools.unpack(str(self.dir / "emsdk.zip"), "emsdk", str(mine / "usr/lib/longshot/emsdk"))
+        tools.write_stamp(str(mine), tools.parse((self.app / "usr/share/longshot/tools.lock").read_text())[0])
+        media = self.dir / "media"
+        media.mkdir()
+        (media / "Longshot.AppImage").write_text("")
+
+        def args_of(env, *args):
+            r = subprocess.run([str(self.app / "AppRun"), "--cli", *args], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            return eval(re.search(r"make_game (\[.*\]) ", r.stdout).group(1)), r.stderr
+
+        env = dict(self.env, APPIMAGE=str(media / "Longshot.AppImage"))
+        got, err = args_of(env, "--nup", "/x.nup", "--out", "/y")
+        self.assertEqual(got[:4], ["--nup", "/x.nup", "--out", "/y"])
+        self.assertEqual(got[4], "--log")
+        log = Path(got[5])
+        self.assertEqual(log.parent, media / "Longshot-logs")
+        self.assertTrue(log.parent.is_dir())
+        self.assertRegex(log.name, r"^build-\d{8}-\d{6}\.log$")
+        self.assertIn(str(log), err)
+        self.assertEqual(args_of(env, "--nup", "/x.nup", "--log", "/mine.log")[0], ["--nup", "/x.nup", "--log", "/mine.log"])
+        self.assertEqual(args_of(env, "--nup", "/x.nup", "--log=/mine.log")[0], ["--nup", "/x.nup", "--log=/mine.log"])
+        self.assertEqual(args_of(self.env, "--nup", "/x.nup")[0], ["--nup", "/x.nup"])
+        if os.geteuid() != 0:   # (root writes into a read-only folder anyway)
+            shutil.rmtree(media / "Longshot-logs")
+            media.chmod(0o555)
+            self.addCleanup(media.chmod, 0o755)
+            got = args_of(env, "--nup", "/x.nup")[0]
+            self.assertEqual(Path(got[3]).parent, Path(self.env["HOME"]) / ".local/state/longshot/logs")
+
+    def test_setup_window_on_a_display(self):
+        """(arm64 port) The setup AppImage's window (usr/bin/longshot-setup, builder/linux/setup_ui) starts with no arguments, or
+        --setup, when there is a display, with AppRun's path and the log folder; without a display it says how to build on
+        the command line. An AppImage without the window says what it said before (test_no_window_only_the_launcher_message)"""
+        ui = self.app / "usr/bin/longshot-setup"
+        ui.parent.mkdir(parents=True)
+        ui.write_text('#!/bin/sh\n[ "$LONGSHOT_SETUP_LOGGED" = 1 ] && [ "$LONGSHOT_SETUP_LOG" = "$LONGSHOT_LOG_DIR/setup-window.log" ] &&\n'
+                      'echo "window $* apprun=$LONGSHOT_APPRUN logs=$LONGSHOT_LOG_DIR tools=$LONGSHOT_TOOLS"\n')
+        ui.chmod(0o755)
+        media = self.dir / "media"
+        media.mkdir()
+        env = dict(self.env, APPIMAGE=str(media / "Longshot.AppImage"), DISPLAY=":0")
+        log = media / "Longshot-logs" / "setup-window.log"
+        for args in ((), ("--setup",)):
+            # (no terminal on its stderr, as from Steam: everything the window prints goes to its log, setup-window.log)
+            r = subprocess.run([str(self.app / "AppRun"), *args], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual(r.stdout + r.stderr, "")
+            lines = log.read_text(encoding="utf-8").splitlines()
+            self.assertRegex(lines[0], r"^== \d{4}-\d\d-\d\d \d\d:\d\d:\d\d AppRun: the setup window \(.*DISPLAY=:0,")
+            self.assertEqual(lines[1], "window  apprun=%s logs=%s tools=%s" % (
+                self.app / "AppRun", media / "Longshot-logs", self.app / "usr/share/longshot"))
+        # (the run before is kept beside it)
+        self.assertIn("window  apprun=", (log.parent / "setup-window.prev.log").read_text(encoding="utf-8"))
+        env.pop("DISPLAY")
+        r = subprocess.run([str(self.app / "AppRun")], env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.stdout, "")
+        self.assertIn("needs a display", r.stderr)
+        self.assertIn("--cli --nup", r.stderr)
+        self.assertFalse((self.dir / "data").exists())   # (nothing downloaded for the window)
 
     def test_the_order_in_apprun(self):
         text = (ROOT / "builder/linux/AppRun").read_text(encoding="utf-8")

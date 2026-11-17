@@ -185,6 +185,12 @@ rec {
     set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
     set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
     set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+    # (the sysroot's own folders, named: nixpkgs' CMake searches no /usr of its own, so find_library and find_path found
+    # nothing there, and SDL2 left out what it finds that way, X11 and ALSA, without a word. Game Mode's gamescope gives
+    # its programs an X11 display only: the setup window and the game got SDL's offscreen driver there)
+    set(CMAKE_LIBRARY_ARCHITECTURE ${triple})
+    set(CMAKE_LIBRARY_PATH ${sysroot}/usr/lib/${triple} ${sysroot}/lib/${triple} ${sysroot}/usr/lib)
+    set(CMAKE_INCLUDE_PATH ${sysroot}/usr/include/${triple} ${sysroot}/usr/include)
   '';
 
   # dav1d, static and position independent, as scripts/linux/deps.sh builds it (the movies are AV1). stdenv, not
@@ -268,7 +274,14 @@ rec {
       "-DSDL_SHARED=ON" "-DSDL_STATIC=OFF" "-DSDL_TEST=OFF"
       "-DSDL_X11=ON" "-DSDL_WAYLAND=ON" "-DSDL_PULSEAUDIO=ON" "-DSDL_PIPEWIRE=ON" "-DSDL_ALSA=ON"
     ];
-    postInstall = "install -Dm644 ../LICENSE.txt $out/share/licenses/SDL2-LICENSE.txt";
+    # (a back end SDL2 didn't find is left out without a word, and on the device SDL then takes its offscreen driver: a
+    # window nobody sees. So the libraries the window, sound and input load at run time must be named in it)
+    postInstall = ''
+      install -Dm644 ../LICENSE.txt $out/share/licenses/SDL2-LICENSE.txt
+      for l in libX11.so.6 libXext.so.6 libXi.so.6 libwayland-client.so.0 libxkbcommon.so.0 libasound.so.2 libpulse.so.0; do
+        grep -qa "$l" $out/lib/libSDL2-2.0.so.0 || { echo "SDL2 was built without $l: that back end is off"; exit 1; }
+      done
+    '';
   };
 
   # The Vulkan back end's headers at deps.sh's tags, each a package root with include/ in it (nx2/build.py VK_HEADERS)

@@ -23,7 +23,7 @@
    with them, and the stack pointer and return address. clang's __builtin_setjmp, which this used first, saves the
    frame address, which on Win64 sits 128 bytes below the frame pointer clang addresses the frame's spill slots with,
    and its longjmp set rbp to it: the caller's reloads of c and the slot read garbage, and the text box thread
-   called a stack address after its first longjmp.) */
+   called a stack address after its first longjmp.) On ARM64 Linux it is the AAPCS64's callee-saved registers instead. */
 #include "hos.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -98,6 +98,51 @@ __attribute__((naked, noreturn)) static void recomp_sj_longjmp(void **buf, int v
         "1:\n\t"
         "movq 64(%rcx), %rsp\n\t"
         "jmpq *72(%rcx)\n\t");
+}
+
+#elif defined(__aarch64__)
+/* (arm64 port: the AAPCS64's) the buffer: x19-x28 at 0-72, the frame pointer x29 and the return address x30 at 80 and 88, sp at
+   96, d8-d15 (the callee-saved low halves of v8-v15) at 112-168 and FPCR at 176; buf in x0, the value in w1. FPCR is kept as
+   mxcsr is on x86-64: the rounding and flush-to-zero the setjmp caller ran with */
+__attribute__((naked, returns_twice)) int recomp_sj_setjmp(void **buf) {
+    __asm__ volatile(
+        "stp x19, x20, [x0, #0]\n\t"
+        "stp x21, x22, [x0, #16]\n\t"
+        "stp x23, x24, [x0, #32]\n\t"
+        "stp x25, x26, [x0, #48]\n\t"
+        "stp x27, x28, [x0, #64]\n\t"
+        "stp x29, x30, [x0, #80]\n\t"
+        "mov x16, sp\n\t"
+        "str x16, [x0, #96]\n\t"
+        "stp d8, d9, [x0, #112]\n\t"
+        "stp d10, d11, [x0, #128]\n\t"
+        "stp d12, d13, [x0, #144]\n\t"
+        "stp d14, d15, [x0, #160]\n\t"
+        "mrs x16, fpcr\n\t"
+        "str x16, [x0, #176]\n\t"
+        "mov w0, #0\n\t"
+        "ret\n\t");
+}
+
+__attribute__((naked, noreturn)) static void recomp_sj_longjmp(void **buf, int value) {
+    __asm__ volatile(
+        "ldp x19, x20, [x0, #0]\n\t"
+        "ldp x21, x22, [x0, #16]\n\t"
+        "ldp x23, x24, [x0, #32]\n\t"
+        "ldp x25, x26, [x0, #48]\n\t"
+        "ldp x27, x28, [x0, #64]\n\t"
+        "ldp x29, x30, [x0, #80]\n\t"
+        "ldp d8, d9, [x0, #112]\n\t"
+        "ldp d10, d11, [x0, #128]\n\t"
+        "ldp d12, d13, [x0, #144]\n\t"
+        "ldp d14, d15, [x0, #160]\n\t"
+        "ldr x16, [x0, #176]\n\t"
+        "msr fpcr, x16\n\t"
+        "ldr x16, [x0, #96]\n\t"
+        "mov sp, x16\n\t"
+        "cmp w1, #0\n\t"
+        "csinc w0, w1, wzr, ne\n\t"   /* (setjmp returns 1 for a longjmp of 0, as on x86-64) */
+        "br x30\n\t");
 }
 
 #else

@@ -210,6 +210,18 @@ Written 2026-11-17, not yet run (it needs Docker on the Mac):
 - **Tests:** the game-free checks, then the lift tests on the player's dump in the container. `nx2/test_insn.py` covers
   every instruction form the game uses (742 forms, 44,172 cases against Unicorn). `nx2/test_leaf.py` covers random
   whole functions and call trees.
+- **Done (2026-11-17)**, found by the setup AppImage's build on the handheld and by compiling the runtime with its clang:
+  - `-mcx16` only for x86-64 targets (`nx2/build.py` `CX16`): clang refused it for aarch64 at the first compile.
+  - `host/hos_setjmp.c`: AArch64 `recomp_sj_setjmp` / `recomp_sj_longjmp` (x19-x30, sp, d8-d15, FPCR).
+  - `host/hos_thread.c` and `host/posix/windows.h`: the spin pause is `isb` on aarch64, `emmintrin.h` x86-only.
+  - `host/posix/win32_posix.c`: the CONTEXT from `pc`, `sp` and `x29`; a fault's write bit from the ESR record.
+    `host/posix/prof.c`: the sampled pc from `uc_mcontext.pc`.
+  - Checks: `tests/test_arm64_build_flags.py`, `tests/test_arm64_host_code.py` (fail on `b768e07f`, pass here).
+  - Compiled for aarch64 without game files: every host runtime file, the lifted runtime (`a64_rt.c`, `a64_suyu.c`,
+    `a64_fpx.h`), and the whole Vulkan back end (`RX_VK_ONLY=1`), which links (`longshot_vk.so`, 13 MB).
+  - Still open: the lifted chunks and the game's link (need the dump), `host_cpu.py`'s ARM levels (the AppImage sets
+    `RX_MARCH`), ARM spin paths in `hos_svc.c` and `nn_os_sync.c` (off on ARM for now), `cntvct_el0` for
+    `vk_internal.h`'s clock, and the x86-only test fixtures (`tests/test_split_giants.py` copies the x86 setjmp).
 - **Exit:** the whole game lifts, builds and links for aarch64. If Mesa's software Vulkan driver (lavapipe) runs it in
   the container, the game reaches its title there, slowly; otherwise this check moves to Phase 3.
 
@@ -239,6 +251,28 @@ Written 2026-11-17, not yet run (it needs Docker on the Mac):
   There, `builder/linux/linux_tools.py` finds them before it would download anything, so `tools.lock` needs no ARM64
   lines yet.
   - On the handheld: `./Longshot-<version>-aarch64.AppImage --cli --nup game.nup --out ~/Games/Longshot`, then `--play`.
+  - **The setup window** (2026-11-17, `builder/linux/setup_ui`): the AppImage started with no arguments (or `--setup`) on
+    a display, as Game Mode starts it, opens `usr/bin/longshot-setup`, an SDL2 + Dear ImGui program for the controller,
+    touch, a mouse or a keyboard. It picks the `.nup` and the game folder with its own big-row file browser (Home,
+    Downloads, Games and the SD card's mounts on the side), runs the AppImage's own `--cli` build, and shows the four
+    stages, a progress bar from `make_game.py`'s builder lines (`@@stage`, `@@progress`, `@@plan`, `@@file`, `@@eta`),
+    the compile's time left and the live log. When the game is built: Play, and **Add to Steam**, as TotK's installer
+    does it (a `Longshot - Ocarina of Time` script in the game folder, then `steam://addnonsteamgame` to the running
+    Steam). It remembers its choices in `~/.config/longshot/setup.ini`; full screen under gamescope.
+    `build_docker.sh setup` builds it against the sysroot and runs its `--selftest` (every screen offscreen, and a
+    stand-in build, `stand_in_build.sh`, through the window to its end). Checks: `tests/test_setup_ui.py`.
+  - **Build logs** go next to the AppImage, in `Longshot-logs/build-<date>-<time>.log` (`AppRun` adds `--log` to a
+    `--cli` build that names none; `$XDG_STATE_HOME/longshot/logs` when that folder can't be written). The window shows
+    the path. The window has its own, `Longshot-logs/setup-window.log` (the run before it kept as `setup-window.prev.log`):
+    each step of its start (the session's variables, SDL's video driver, the display, the controllers, the renderer, the
+    first frame), the builds it starts and how they end, and everything it and its libraries print, the loader's errors
+    too when Steam starts it. Checks: `tests/test_linux_tools.py`.
+  - **Game Mode is X11** (found 2026-11-17 with that log): Armada's desktop is Wayland, but gamescope gives the programs it
+    runs an X11 display only (`DISPLAY=:1`, `XDG_SESSION_TYPE=x11`, no `WAYLAND_DISPLAY`). The Nix SDL2 had no X11 (nor
+    ALSA): nixpkgs' CMake searches no `/usr` of its own, so `find_library` found neither in the sysroot, and SDL2 left
+    them out without a word. SDL then took its offscreen driver, and Steam waited for a window for ever. `default.nix`
+    now names the sysroot's folders for CMake and stops the SDL2 build when a back end is missing; the window logs SDL's
+    video drivers, and gives up (so Steam goes back) instead of drawing offscreen. The game loads the same SDL2.
   - What it carries for ARM64 comes from the TotK port's pinned releases: LLVM 23.1.4's clang and lld (any LLVM 23
     reads the play profiles) and python-build-standalone 3.14 (Longshot's Windows builder runs 3.14 too). FFmpeg, SDL2
     and the headers are built from `deps.sh`'s pins.
@@ -247,7 +281,7 @@ Written 2026-11-17, not yet run (it needs Docker on the Mac):
     levels.
   - It builds a playable game only once Phase 2 is in: until then the build on the device stops at the x86-only code.
 - Still to do: aarch64 lines in `tools.lock` and `deps.sh` (then the AppImage need not carry its tools); an on-device
-  build within the handheld's memory (`LONGSHOT_JOBS`, `LONGSHOT_MEM_LIMIT_GB`); and an entry in Steam's game mode.
+  build within the handheld's memory (`LONGSHOT_JOBS`, `LONGSHOT_MEM_LIMIT_GB`), which the window could offer.
 - The Longshot Launcher is a separate project: aarch64 support there is the team's call.
 - **Exit:** a player builds from their own dump on the handheld, or on a PC and copies the folder, and plays.
 

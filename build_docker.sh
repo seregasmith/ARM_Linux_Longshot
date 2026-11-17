@@ -445,8 +445,21 @@ if [ "$mode" = setup ]; then
          cp $sdl2/share/licenses/SDL2-LICENSE.txt \$L/sdl2/LICENSE.txt &&
          cp -a $roots/cpm/. $s/tools/usr/share/longshot/cpm && chmod -R u+w $s/tools &&
          \$L/emsdk/upstream/bin/clang --version | head -n 1 && du -sh $s/tools"
+    # (the setup window, builder/linux/setup_ui: SDL2 and Dear ImGui, against the sysroot, in the AppImage's usr/bin. Its
+    # self-test draws every screen offscreen and runs a stand-in build through the window to its end, with the target's loader)
+    in_shell "the setup window (builder/linux/setup_ui: usr/bin/longshot-setup) and its self-test" \
+        "CXX=$toolchain/bin/clang++ CXXFLAGS='--target=$triple --sysroot=$sysroot -fuse-ld=lld' \
+             sh builder/linux/setup_ui/build.sh $s/tools/usr/bin/longshot-setup $sdl2/include/SDL2 \
+                 $s/tools/usr/lib/longshot/sdl2/libSDL2-2.0.so.0 &&
+         rm -rf $s/ui-selftest && mkdir -p $s/ui-selftest && printf x > $s/ui-selftest/game.nup &&
+         LONGSHOT_TOOLS=/work/src SDL_VIDEODRIVER=offscreen HOME=$s/ui-selftest/home \
+             LONGSHOT_SETUP_BUILD=/work/src/builder/linux/setup_ui/stand_in_build.sh \
+             $run_target $s/tools/usr/bin/longshot-setup --selftest $s/ui-selftest --size 1280x800 \
+                 --nup $s/ui-selftest/game.nup --out $s/ui-selftest/out > $s/ui-selftest/selftest.txt &&
+         tail -n 1 $s/ui-selftest/selftest.txt &&
+         grep -q '@@done' $s/ui-selftest/logs/build-*.log"
     # (python-build-standalone's own pip, binary wheels only; the button-prompt packages are optional, as for /venv. Its
-    # tests, IDLE and Tk go, as scripts/linux/deps.sh leaves them out: the builder has no window)
+    # tests, IDLE and Tk go, as scripts/linux/deps.sh leaves them out: the setup window is longshot-setup, above)
     in_shell "its Python (python-build-standalone with requirements.txt)" \
         "tar -xzf $roots/setupPython -C $s/deps && P=$s/deps/python/bin/python3 &&
          grep -v '^-r ' requirements.txt > /tmp/requirements-core.txt &&

@@ -18,7 +18,13 @@
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION   /* (older Windows SDKs lack it: Windows 10 1803 and later take it) */
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
+#ifdef __aarch64__   /* (arm64 port) no SSE there: the spin's pause is ISB, Rust's and Abseil's spin hint on AArch64 (YIELD is
+                        a no-op on most cores, so a loop of them spins at full speed) */
+#define cpu_pause() __asm__ __volatile__("isb" ::: "memory")
+#else
 #include <emmintrin.h>
+#define cpu_pause() _mm_pause()
+#endif
 #ifdef __EMSCRIPTEN__
 #include <sched.h>
 #include <stdatomic.h>
@@ -1409,7 +1415,7 @@ static int present_poll(Ctx *c, int64_t ns) {
     const int64_t end = hos_now_ns() + ns;
     while (v != 1 && hos_now_ns() < end) {
         SwitchToThread();
-        for (int i = 0; i < 64; i++) _mm_pause();
+        for (int i = 0; i < 64; i++) cpu_pause();
         hos_nvn_event_value(ev, &v);
     }
     if (away) hos_vcore_back();

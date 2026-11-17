@@ -11,6 +11,7 @@
 #   Longshot.AppImage <folder>         the same
 #   Longshot.AppImage --launch <dir>  the same (a game folder's longshot, builder/linux/longshot-folder, when --cli built it)
 #   Longshot.AppImage                  a message: get the Longshot Launcher
+#   Longshot.AppImage [--setup]        (ARM64 setup AppImage) the setup window, builder/linux/setup_ui
 HERE="$(dirname "$(readlink -f "$0")")"
 export LONGSHOT_TOOLS="$HERE/usr/share/longshot"
 # (written into the game folder's longshot_version.txt, so its launcher finds this builder)
@@ -30,9 +31,34 @@ build_tools() {
     eval "$tools_env"
     [ -n "$tools_ok" ]
 }
+# (arm64 port) A build's log goes next to the AppImage, in Longshot-logs/build-<date>-<time>.log: in Game Mode there is no
+# terminal to read it in, and the setup window shows its path. Where that folder can't be written (a read-only medium):
+# $XDG_STATE_HOME/longshot/logs. Only for the AppImage itself ($APPIMAGE): RecompLauncher unpacks it and keeps its own log
+log_dir() {
+    for d in "$(dirname "$APPIMAGE")/Longshot-logs" "${XDG_STATE_HOME:-$HOME/.local/state}/longshot/logs"; do
+        if mkdir -p "$d" 2>/dev/null && [ -w "$d" ]; then
+            printf '%s\n' "$d"
+            return 0
+        fi
+    done
+    return 1
+}
+if [ -n "${APPIMAGE:-}" ] && [ -z "${LONGSHOT_LOG_DIR:-}" ]; then
+    LONGSHOT_LOG_DIR=$(log_dir) || LONGSHOT_LOG_DIR=
+    export LONGSHOT_LOG_DIR
+fi
 if [ "${1:-}" = "--cli" ]; then
     shift
     build_tools || exit 1
+    has_log=
+    for arg in "$@"; do
+        case $arg in --log|--log=*) has_log=1 ;; esac
+    done
+    if [ -z "$has_log" ] && [ -n "${LONGSHOT_LOG_DIR:-}" ]; then
+        log="$LONGSHOT_LOG_DIR/build-$(date +%Y%m%d-%H%M%S).log"
+        echo "Longshot: this build's log is $log" >&2
+        set -- "$@" --log "$log"
+    fi
     exec "$PY" -I "$LONGSHOT_TOOLS/nx2/make_game.py" "$@"
 fi
 # Play is the same AppImage: the start script drops this image's libraries, then runs the built game. It needs no build tool.
@@ -45,6 +71,31 @@ if [ "${1:-}" = "--launch" ] && [ -n "${2:-}" ] && [ -d "$2" ]; then
 fi
 if [ -n "${1:-}" ] && [ -d "$1" ]; then
     exec "$LONGSHOT_TOOLS/builder/linux/longshot-launch" "$1"
+fi
+# (arm64 port) The setup window (builder/linux/setup_ui, in the ARM64 setup AppImage): the game file, the game folder, the build
+# with its log and progress, and Add to Steam, for Game Mode and its controller. Started with no arguments, or --setup, when
+# there is a display; it runs this file's --cli for the build
+UI="$HERE/usr/bin/longshot-setup"
+if [ -x "$UI" ] && { [ $# -eq 0 ] || [ "${1:-}" = "--setup" ]; } && [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+    export LONGSHOT_APPRUN="$HERE/AppRun"
+    # Its own log: setup-window.log in the logs folder (the last run's kept as setup-window.prev.log). Started where nobody
+    # reads its output (Steam, Game Mode), all of it goes there, the loader's and the libraries' messages too; from a
+    # terminal the window copies its output there itself
+    if [ -n "${LONGSHOT_LOG_DIR:-}" ]; then
+        export LONGSHOT_SETUP_LOG="$LONGSHOT_LOG_DIR/setup-window.log"
+        [ ! -f "$LONGSHOT_SETUP_LOG" ] || mv -f "$LONGSHOT_SETUP_LOG" "$LONGSHOT_LOG_DIR/setup-window.prev.log" 2>/dev/null || true
+        echo "== $(date '+%Y-%m-%d %H:%M:%S') AppRun: the setup window ($(uname -m), DISPLAY=${DISPLAY:-}," \
+             "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-})" >> "$LONGSHOT_SETUP_LOG" 2>/dev/null || true
+        if [ ! -t 2 ]; then
+            export LONGSHOT_SETUP_LOGGED=1
+            exec "$UI" >> "$LONGSHOT_SETUP_LOG" 2>&1
+        fi
+    fi
+    exec "$UI"
+fi
+if [ -x "$UI" ]; then
+    echo "The Longshot setup window needs a display. On the command line: $(basename "${APPIMAGE:-$0}") --cli --nup <game.nup> --out <folder>" >&2
+    exit 1
 fi
 # Anything else (started from the applications menu or a file manager): no window, a message
 MESSAGE="The Longshot Builder has no window of its own: the Longshot Launcher builds the game and starts it. Get the launcher from https://longshot.magicbean.dev/download"

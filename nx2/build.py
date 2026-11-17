@@ -33,6 +33,7 @@ import hashlib
 import json
 import math
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -998,12 +999,18 @@ if _native:
 THIRD_PARTY_CPU = ["-march=x86-64-v3", "-ffp-contract=off"] if not os.environ.get("RX_MARCH") and MARCH in ("native", "x86-64-v3") \
     else list(CPU)
 OPT = "O1"   # (the lifted code's level; code_hot.c's is RX_HOT_OPT)
+# (arm64 port) -mcx16 lets clang inline the 128-bit compare-exchange that CASP and STXP take (cmpxchg16b). It is an x86-64
+# option: clang stops at it for an ARM64 target ("unsupported option '-mcx16' for target 'aarch64-unknown-linux-gnu'", the
+# AppImage's build on an ARM64 handheld, 2026-11-17), where the same compare-exchange is inline anyway (LSE's CASP, or an
+# LDXP/STXP loop). The game is x86-64 when it is built for Windows, on Windows or across (toolchain.windows()), or on an x86-64 Linux
+X86_64 = toolchain.windows() or platform.machine().lower() in ("x86_64", "amd64")
+CX16 = ["-mcx16"] if X86_64 else []
 
 
 def flags(gen, rt64, opt, polls):
     return target() + CPU + [
         "-I" + rt64, "-I" + gen, "-I" + os.path.join(kit.KIT, "rt"), "-I" + NX2_RT, "-Wno-everything",
-        "-fno-strict-aliasing", "-mcx16", "-" + opt, "-g0", "-mllvm", "-rotation-max-header-size=0",
+        "-fno-strict-aliasing"] + CX16 + ["-" + opt, "-g0", "-mllvm", "-rotation-max-header-size=0",
         "-ffunction-sections", "-mllvm", "-capture-tracking-max-uses-to-explore=5000"] + \
         (["-DA64_POLLING"] if polls else []) + WRITE_TRACK
 
@@ -1617,7 +1624,7 @@ def main():
     # as the three gpu headers the blob named before, so an edit to one of those kept their old objects.) What a file reads
     # from elsewhere (FFmpeg, dav1d, the system's) is in extras, as before
     host_fl = target() + CPU + (["-I" + POSIX, "-D_GNU_SOURCE"] if LINUX else []) + \
-        ["-I" + HOST, "-I" + rt64, "-I" + gen, "-Wno-everything", "-O2", "-g0", "-mcx16", "-DA64_POLLING"] + WRITE_TRACK
+        ["-I" + HOST, "-I" + rt64, "-I" + gen, "-Wno-everything", "-O2", "-g0"] + CX16 + ["-DA64_POLLING"] + WRITE_TRACK
     host_roots = (HOST, gen, rt64, GPU, os.path.join(OPUS, "include"), ZSTD)
     host_blob = deps + tree_headers(HOST) + tree_headers(GPU, skip=("eden", "sirit", "third_party"))
     host_extras = ffmpeg_version_key()
