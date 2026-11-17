@@ -628,3 +628,6 @@ void rx_nvn_vmap_changing(uint64_t gpu, uint64_t size) {
 void rx_nvn_pool_created(uint64_t gpu, uint64_t size) {
     if (vk && vk->nvn_pool_created) vk->nvn_pool_created(gpu, size);
 }
+void rx_nvn_pool_finalized(uint64_t gpu, uint64_t size) {
+    if (vk && vk->nvn_pool_finalized) vk->nvn_pool_finalized(gpu, size);
+}

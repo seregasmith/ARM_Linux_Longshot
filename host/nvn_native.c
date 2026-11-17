@@ -351,6 +351,7 @@ NV(nvnMemoryPoolFinalize) {
         ReleaseSRWLockExclusive(&vmap_lock);
     } else if (o->mem) {
         hos_gpu_track(o->gpu, o->size, 0);
+        rx_nvn_pool_finalized(o->gpu, o->size);   /* (arm64 port: the renderer's memory placed under it, back to ordinary memory) */
         void hos_prompts_pool_gone(uint64_t mem);   /* (longshot, prompts.c: the prompts' textures no longer written there) */
         hos_prompts_pool_gone(o->mem);
     }
@@ -2646,7 +2647,7 @@ NV(nvnNativeImageInitialize) {
     o->format = b->format, o->width = NVN_WINDOW_W, o->height = NVN_WINDOW_H;
     o->size = (uint64_t)NVN_WINDOW_W * NVN_WINDOW_H * 4;
     o->storage = hos_region_alloc(o->size, 0x10000);
-    if (o->storage) hos_gpu_track(o->storage, o->size, 1);
+    if (o->storage) hos_gpu_track(o->storage, o->size, 1), rx_nvn_pool_created(o->storage, o->size);   /* (as a pool's) */
     hos_log("nvn: native image %dx%d format %#x (handle %#llx) at %#llx", o->width, o->height, o->format,
             (unsigned long long)b->handle, (unsigned long long)o->storage);
     RET(o->storage != 0);

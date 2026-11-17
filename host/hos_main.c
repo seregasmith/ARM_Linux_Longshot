@@ -174,8 +174,9 @@ static int reserve_guest(void) {
         int usable = 0;
         {
             const int u = open("/dev/udmabuf", O_RDWR | O_CLOEXEC);
-            if (u < 0 && (errno == EACCES || errno == EPERM)) {
-                const int err = errno;
+            const int open_errno = errno;   /* (arm64 port: also said below, where there are no host pointers either: Turnip) */
+            if (u < 0 && (open_errno == EACCES || open_errno == EPERM)) {
+                const int err = open_errno;
                 static int warned;
                 if (!warned) {
                     warned = 1;
@@ -200,8 +201,10 @@ static int reserve_guest(void) {
                 usable = 1;
             }
             if (!usable && !e)
-                hos_log("mem: guest memory stays host-pointer imports for the GPU (slow submissions on AMD): "
-                        "/dev/udmabuf cannot be opened");
+                hos_log("mem: guest memory stays host-pointer imports for the GPU (slow submissions on AMD; where the driver "
+                        "has none, as Turnip, the renderer places its own memory under the pools): /dev/udmabuf cannot be "
+                        "opened (%s%s)", strerror(open_errno),
+                        open_errno == ENOENT ? ": no udmabuf in this kernel, or its module not loaded" : "");
         }
         if (e ? atoi(e) != 0 : usable) {
             const int fd = (int)syscall(SYS_memfd_create, "longshot-guest", 1u /* MFD_CLOEXEC */ | 2u /* MFD_ALLOW_SEALING */);

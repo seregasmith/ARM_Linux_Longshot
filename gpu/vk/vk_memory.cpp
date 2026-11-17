@@ -52,6 +52,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include "placed_memory.h"   // (arm64 port: the pools placed in the device's memory)
 #endif
 #include "vk_builtin_spv.h"   // (RX_VK_SHADER_DIR)
 #include "shaders/wb_diff_comp_spv.h"
@@ -78,6 +79,7 @@ struct Pool {
     uint64_t range_lo = 0, range_hi = 0;   // (the game's pool range it was found for: pool_of's last hit)
     VkDeviceMemory memory = VK_NULL_HANDLE;
     std::vector<VkDeviceMemory> pieces;   // (a pool imported as several dma-bufs: the ones after `memory`)
+    uint64_t placement = 0;   // (arm64 port: the placement in the device's memory it was imported from, placed_import; 0: none)
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceAddress address = 0;
     // its VRAM mirror (see "the VRAM mirror" below)
@@ -142,6 +144,7 @@ std::atomic<uint64_t> guest_pools_gen{1};   // (bumped when that table is replac
 std::map<uint64_t, Pool> imported;    // by lo, made on first use
 Pool* last_pool = nullptr;            // (the last pool_of hit: draws in a row bind buffers of the same pools)
 extern Pool* pool_cache[4096];
+extern std::atomic<uint64_t> pools_gen;   // (bumped when a pool leaves the table, below)
 void retire_pool(std::map<uint64_t, Pool>::iterator it);
 Pool* pool_lookup(uint64_t guest, uint64_t size);
 // (longshot) The spans of the imports in `imported`, for the scans down the table by start (import_reach.h): how far below an
@@ -411,6 +414,353 @@ bool import_dma_buf(uint64_t lo, uint64_t hi, Pool& p) {
 }
 #endif
 
+bool placed_on = false;   // (arm64 port: the guest's pools placed in the device's own memory: placed_setup, below)
+#ifdef __linux__
+// ---- (arm64 port) the guest's pools placed in the device's own memory ----
+// Turnip (Mesa's Adreno driver) takes no host pointers, and a kernel without /dev/udmabuf (Armada OS on the AYN Odin 3) makes
+// no dma-bufs of the guest window: neither way above hands the game's memory to the GPU, and nothing was drawn (a black
+// screen, the music playing). The other way round needs neither: a pool the game makes (memory_pool_created, at
+// nvnMemoryPoolInitialize) gets memory of the device's own, host visible and coherent (cached where the device has such),
+// exported as a dma-buf and mapped over the pool's guest pages once their contents are copied in (placed_memory.h). The game
+// then reads and writes the device's memory at its pool's own addresses, and the GPU the same pages: nothing is copied after
+// that, as with the imports. Each import of the pool (import_pool) is that memory exported and imported again, a memory
+// object of its own over the same buffer object (the driver counts them), bound at the pool's offset in it: imports are made,
+// retired and freed as before. When the game finalizes the pool (memory_pool_finalized) its contents go back into ordinary
+// memory at the same addresses, and its imports are retired at the next lookup (placed_retire_gone). Pools over the same
+// memory share one placement; one across another's end makes one over both (placed_memory.h plan). An import covers a whole
+// pool here (import_chunk 0: a chunk could run past its placement). RX_VK_PLACED=0: not (no pool imported on such a device,
+// as before); RX_VK_PLACED=1: also where host pointers are taken, to try this path (not with dma-bufs of the window: a memfd's)
+struct Placement {
+    uint64_t hi = 0;
+    VkDeviceMemory memory = VK_NULL_HANDLE;   // (the device's, exported again for each import)
+    uint64_t serial = 0;                      // (its imports carry it: Pool::placement)
+    int pools = 0;                            // (the game's pools over it)
+};
+std::mutex placed_mu;   // (taken after pools_mu where both are held, never before it)
+std::map<uint64_t, Placement> placements;   // by guest start; they never overlap
+uint32_t placed_type = UINT32_MAX;
+uint64_t placed_page = 4096, placed_serial = 0, placed_bytes = 0;
+int placed_failures = 0, placed_pagemap = -1;
+struct PlacedGone {
+    uint64_t lo, hi, serial;
+};
+std::vector<PlacedGone> placed_gone;   // (placed_mu) placements given back or taken into a larger one: their imports to retire
+std::atomic<bool> placed_gone_any{false};
+
+/// New memory of the device's, size bytes, that can be exported as a dma-buf (VK_NULL_HANDLE: refused)
+VkDeviceMemory placed_allocate(uint64_t size) {
+    VkMemoryAllocateFlagsInfo fl{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
+    fl.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+    VkExportMemoryAllocateInfo ex{VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO};
+    ex.pNext = &fl;
+    ex.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    ai.pNext = &ex;
+    ai.allocationSize = size;
+    ai.memoryTypeIndex = placed_type;
+    VkDeviceMemory m = VK_NULL_HANDLE;
+    const VkResult r = vkAllocateMemory(dev.device, &ai, nullptr, &m);
+    if (r != VK_SUCCESS) {
+        if (placed_failures++ < 8)
+            logf("vk: no memory of the device's to place %llu KB of guest memory in (VkResult %d)", (unsigned long long)(size >> 10), (int)r);
+        return VK_NULL_HANDLE;
+    }
+    return m;
+}
+/// The memory as a new dma-buf: its fd (-1: refused)
+int placed_export(VkDeviceMemory m) {
+    VkMemoryGetFdInfoKHR gi{VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR};
+    gi.memory = m;
+    gi.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    int fd = -1;
+    const VkResult r = vkGetMemoryFdKHR(dev.device, &gi, &fd);
+    if (r != VK_SUCCESS || fd < 0) {
+        if (placed_failures++ < 8) logf("vk: the device's memory not exported as a dma-buf (VkResult %d)", (int)r);
+        return -1;
+    }
+    return fd;
+}
+/// The memory imported again, size bytes: a memory object of its own over the same buffer object (VK_NULL_HANDLE: refused)
+VkDeviceMemory placed_reimport(VkDeviceMemory m, uint64_t size) {
+    const int fd = placed_export(m);
+    if (fd < 0) return VK_NULL_HANDLE;
+    VkMemoryAllocateFlagsInfo fl{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
+    fl.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+    VkImportMemoryFdInfoKHR im{VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR};
+    im.pNext = &fl;
+    im.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    im.fd = fd;
+    VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    ai.pNext = &im;
+    ai.allocationSize = size;
+    ai.memoryTypeIndex = placed_type;
+    VkDeviceMemory out = VK_NULL_HANDLE;
+    const VkResult r = vkAllocateMemory(dev.device, &ai, nullptr, &out);
+    if (r != VK_SUCCESS) {   // (the fd is still ours when the import fails)
+        close(fd);
+        if (placed_failures++ < 8) logf("vk: the device's memory not imported again from its dma-buf (VkResult %d)", (int)r);
+        return VK_NULL_HANDLE;
+    }
+    return out;
+}
+
+/// The whole path tried on a few pages: memory exported, its dma-buf mapped and written, imported again, and the import's own
+/// mapping read and written back. nullptr: it works; else why not
+const char* placed_try() {
+    const uint64_t n = 16 * placed_page;
+    const VkDeviceMemory m = placed_allocate(n);
+    if (!m) return "the device refuses memory that can be exported as a dma-buf";
+    const char* why = nullptr;
+    const int fd = placed_export(m);
+    uint8_t* mapped = nullptr;
+    VkDeviceMemory again = VK_NULL_HANDLE;
+    void* q = nullptr;
+    VkMemoryFdPropertiesKHR fp{VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR};
+    if (fd < 0) why = "the device's memory cannot be exported as a dma-buf";
+    else if (vkGetMemoryFdPropertiesKHR(dev.device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, fd, &fp) != VK_SUCCESS ||
+             !(fp.memoryTypeBits >> placed_type & 1))
+        why = "its dma-buf cannot be imported as the same memory type";
+    else if (!(mapped = placed::map(fd, n)))
+        why = "its dma-buf cannot be mapped";
+    if (fd >= 0) close(fd);
+    if (!why) {
+        for (uint64_t i = 0; i < n; i++) mapped[i] = (uint8_t)(i * 7 + 1);
+        if (!(again = placed_reimport(m, n))) why = "its dma-buf cannot be imported again";
+        else if (vkMapMemory(dev.device, again, 0, VK_WHOLE_SIZE, 0, &q) != VK_SUCCESS || !q)
+            why = "the memory imported again cannot be mapped";
+        else if (std::memcmp(mapped, q, n) != 0)
+            why = "the dma-buf's mapping and the memory imported again differ (not one buffer object)";
+        else {
+            ((uint8_t*)q)[n / 2] ^= 0xFF;
+            if (mapped[n / 2] != (uint8_t)((n / 2 * 7 + 1) ^ 0xFF)) why = "a write through the import is not in the dma-buf's mapping";
+        }
+    }
+    if (again) vkFreeMemory(dev.device, again, nullptr);   // (unmapped with it)
+    if (mapped) munmap(mapped, n);
+    vkFreeMemory(dev.device, m, nullptr);
+    return why;
+}
+
+/// The game's pool over guest [lo, hi) (page aligned) placed: in the placement that holds it already, or in a new one over it
+/// and every placement it runs into, which the new one replaces (placed_mu held)
+void placed_back(uint64_t lo, uint64_t hi) {
+    if (hi <= lo || hi > host->guest_size()) return;
+    const placed::Plan plan = placed::plan(placements, lo, hi);
+    if (plan.inside) {
+        placements[plan.inside_lo].pools++;
+        return;
+    }
+    const uint64_t n = plan.range.hi - plan.range.lo;
+    if (n > max_import_size) {
+        if (placed_failures++ < 8)
+            logf("vk: guest %#llx..%#llx not placed: larger than the device's allocations", (unsigned long long)plan.range.lo,
+                 (unsigned long long)plan.range.hi);
+        return;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    const VkDeviceMemory memory = placed_allocate(n);
+    const int fd = memory ? placed_export(memory) : -1;
+    uint8_t* const fresh = fd >= 0 ? placed::map(fd, n) : nullptr;
+    if (!fresh) {
+        if (fd >= 0) {
+            if (placed_failures++ < 8)
+                logf("vk: guest %#llx..%#llx: the device's memory for it not mapped (errno %d)", (unsigned long long)plan.range.lo,
+                     (unsigned long long)plan.range.hi, errno);
+            close(fd);
+        }
+        if (memory) vkFreeMemory(dev.device, memory, nullptr);
+        return;
+    }
+    uint8_t* const at = host->guest_base() + plan.range.lo;
+    std::vector<placed::Range> olds;   // (the placements it replaces, from its start: copied whole)
+    int pools = 1;
+    for (const uint64_t a : plan.absorbed) {
+        const Placement& o = placements.at(a);
+        olds.push_back({a - plan.range.lo, o.hi - plan.range.lo});
+        pools += o.pools;
+    }
+    const uint64_t copied = placed::copy_in(fresh, at, n, placed_page, placed_pagemap, olds);
+    munmap(fresh, n);
+    const bool ok = placed::place(at, n, fd);
+    const int err = errno;
+    close(fd);   // (the mapping keeps the dma-buf)
+    if (!ok) {
+        vkFreeMemory(dev.device, memory, nullptr);
+        logf("vk: guest %#llx..%#llx: the device's memory not mapped there (errno %d)%s", (unsigned long long)plan.range.lo,
+             (unsigned long long)plan.range.hi, err, olds.empty() ? "" : "; the placements there may be gone");
+        return;
+    }
+    for (const uint64_t a : plan.absorbed) {   // (their imports keep their buffer objects until they are retired)
+        auto o = placements.find(a);
+        vkFreeMemory(dev.device, o->second.memory, nullptr);
+        placed_gone.push_back({a, o->second.hi, o->second.serial});
+        placed_bytes -= o->second.hi - a;
+        placements.erase(o);
+    }
+    if (!plan.absorbed.empty()) {
+        placed_gone_any.store(true, std::memory_order_release);
+        pools_gen.fetch_add(1, std::memory_order_relaxed);   // (a recording thread's pool cache: looked up again)
+    }
+    placements[plan.range.lo] = Placement{plan.range.hi, memory, ++placed_serial, pools};
+    placed_bytes += n;
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    static int logged;
+    if (logged++ < 8 || !plan.absorbed.empty() || ms >= 20.0 || placements.size() % 64 == 0)
+        logf("vk: pool %#llx..%#llx placed in the device's memory%s in %.1f ms (%llu KB copied in; %zu placements, %llu MB)",
+             (unsigned long long)lo, (unsigned long long)hi,
+             plan.absorbed.empty() ? "" : (" with " + std::to_string(plan.absorbed.size()) + " placed before, as one").c_str(), ms,
+             (unsigned long long)(copied >> 10), placements.size(), (unsigned long long)(placed_bytes >> 20));
+}
+
+/// The game's pool over guest [lo, hi) let go: its placement back into ordinary memory when it was the last pool over it
+/// (placed_mu held)
+void placed_unback(uint64_t lo, uint64_t hi) {
+    auto it = placements.upper_bound(lo);
+    if (it == placements.begin()) return;
+    --it;
+    if (it->second.hi < hi || --it->second.pools > 0) return;
+    const uint64_t n = it->second.hi - it->first;
+    uint64_t copied = 0;
+    if (!placed::unplace(host->guest_base() + it->first, n, placed_page, &copied)) {
+        it->second.pools = 1;   // (kept: the pages stay the device's)
+        if (placed_failures++ < 8)
+            logf("vk: guest %#llx..%#llx not given back to ordinary memory (errno %d): left placed", (unsigned long long)it->first,
+                 (unsigned long long)it->second.hi, errno);
+        return;
+    }
+    vkFreeMemory(dev.device, it->second.memory, nullptr);   // (its imports keep the buffer object until they are retired)
+    placed_gone.push_back({it->first, it->second.hi, it->second.serial});
+    placed_gone_any.store(true, std::memory_order_release);
+    pools_gen.fetch_add(1, std::memory_order_relaxed);
+    placed_bytes -= n;
+    static int logged;
+    if (logged++ < 8 || placements.size() % 64 == 0)
+        logf("vk: pool %#llx..%#llx given back to ordinary memory (%llu KB copied out; %zu placements, %llu MB)",
+             (unsigned long long)it->first, (unsigned long long)it->second.hi, (unsigned long long)(copied >> 10),
+             placements.size() - 1, (unsigned long long)(placed_bytes >> 20));
+    placements.erase(it);
+}
+
+/// (once, memory_init) Whether the guest's pools can be placed in the device's memory here, tried on a few pages; if so they
+/// are from now on, and the pools the game made before the renderer started are placed now. forced: RX_VK_PLACED=1
+bool placed_setup(bool forced) {
+    if (const char* e = getenv("RX_VK_PLACED"); e && env_value_off(e)) {
+        logf("vk: the guest's pools are not placed in the device's memory (RX_VK_PLACED=%s)", e);
+        return false;
+    }
+    typedef int (*MemfdFn)(void);
+    const MemfdFn memfd = (MemfdFn)dlsym(RTLD_DEFAULT, "hos_posix_guest_memfd");
+    const char* why = !dev.external_memory_fd || !dev.dma_buf_import ? "no VK_KHR_external_memory_fd and VK_EXT_external_memory_dma_buf"
+                      : !vkGetMemoryFdKHR || !vkGetMemoryFdPropertiesKHR ? "no vkGetMemoryFdKHR"
+                      : memfd && memfd() >= 0 ? "the guest window is a memfd's, shared"
+                                              : nullptr;
+    if (!why) {   // (host visible and coherent: cached first, as the game reads its pools too; then device local)
+        int best = -1, best_score = -1;
+        for (uint32_t i = 0; i < dev.memory.memoryTypeCount; i++) {
+            const VkMemoryPropertyFlags f = dev.memory.memoryTypes[i].propertyFlags;
+            constexpr VkMemoryPropertyFlags need = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+            if ((f & need) != need || (f & (VK_MEMORY_PROPERTY_PROTECTED_BIT | VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT))) continue;
+            const int score = (f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT ? 2 : 0) + (f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ? 1 : 0);
+            if (score > best_score) best = (int)i, best_score = score;
+        }
+        if (best < 0) why = "no host-visible, coherent memory type";
+        else placed_type = (uint32_t)best;
+    }
+    const long page = sysconf(_SC_PAGESIZE);
+    placed_page = std::max<uint64_t>(4096, page > 0 ? (uint64_t)page : 4096);
+    if (!why) why = placed_try();
+    if (why) {
+        logf("vk: the guest's pools cannot be placed in the device's memory: %s", why);
+        return false;
+    }
+    VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    VkPhysicalDeviceVulkan11Properties p11{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES};
+    VkPhysicalDeviceVulkan13Properties p13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES};
+    p2.pNext = &p11;
+    p11.pNext = &p13;
+    vkGetPhysicalDeviceProperties2(dev.physical, &p2);
+    align = placed_page;
+    max_import_size = std::min(p11.maxMemoryAllocationSize, p13.maxBufferSize);
+    placed_pagemap = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
+    const VkMemoryPropertyFlags f = dev.memory.memoryTypes[placed_type].propertyFlags;
+    logf("vk: %s: the guest's pools placed in the device's own memory (type %u%s%s, alignment %llu%s)",
+         forced ? "RX_VK_PLACED=1" : "no host pointers and no dma-bufs of the guest window", placed_type,
+         f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT ? ", cached" : ", not cached: the game's reads of its pools are slow",
+         f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ? ", device local" : "", (unsigned long long)align,
+         placed_pagemap < 0 ? "; no /proc/self/pagemap: every page copied in" : "");
+    std::vector<std::array<uint64_t, 2>> list(8192);   // (the pools the game made before the renderer started)
+    const int n = host->gpu_pools(reinterpret_cast<uint64_t(*)[2]>(list.data()), (int)list.size());
+    std::lock_guard lk(placed_mu);
+    placed_on = true;
+    int made = 0;
+    for (int i = 0; i < n; i++)
+        if (list[i][1] && list[i][0] < (1ull << 40))
+            placed_back(list[i][0] & ~(align - 1), (list[i][0] + list[i][1] + align - 1) & ~(align - 1)), made++;
+    if (made) logf("vk: %d pools made before the renderer started, placed (%zu placements)", made, placements.size());
+    return true;
+}
+
+/// The placement holding guest [guest, guest + size), as the range to import: an import is a whole placement, so the pools
+/// in one another's memory, and those a placement took in together, are one import (takes placed_mu)
+bool placed_find(uint64_t guest, uint64_t size, GuestPool& out) {
+    if (!size || size > UINT64_MAX - guest) return false;
+    std::lock_guard lk(placed_mu);
+    auto it = placements.upper_bound(guest);
+    if (it == placements.begin()) return false;
+    --it;
+    if (guest + size > it->second.hi) return false;
+    out.lo = it->first, out.hi = it->second.hi;
+    return true;
+}
+
+/// An import of guest [lo, hi) from the placement holding it: the placement's memory imported again, with a buffer over the
+/// range bound at its offset in it. False: no placement holds the range, or the device refused (takes placed_mu)
+bool placed_import(uint64_t lo, uint64_t hi, Pool& p) {
+    std::lock_guard lk(placed_mu);
+    auto it = placements.upper_bound(lo);
+    if (it == placements.begin()) return false;
+    --it;
+    if (it->second.hi < hi) return false;
+    const uint64_t base = it->first, size = it->second.hi - base, off = lo - base;
+    VkExternalMemoryBufferCreateInfo eb{VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO};
+    eb.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bi.pNext = &eb;
+    bi.size = hi - lo;
+    bi.usage = kUsage;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    if (vkCreateBuffer(dev.device, &bi, nullptr, &buffer) != VK_SUCCESS) return false;
+    VkMemoryRequirements req{};
+    vkGetBufferMemoryRequirements(dev.device, buffer, &req);
+    const bool fits = (req.memoryTypeBits >> placed_type & 1) && off % std::max<VkDeviceSize>(req.alignment, 1) == 0 &&
+                      req.size <= size - off;
+    const VkDeviceMemory memory = fits ? placed_reimport(it->second.memory, size) : VK_NULL_HANDLE;
+    if (!memory || vkBindBufferMemory(dev.device, buffer, memory, off) != VK_SUCCESS) {
+        destroy_import_buffer(buffer);
+        if (memory) vkFreeMemory(dev.device, memory, nullptr);
+        if (!fits && placed_failures++ < 8)
+            logf("vk: guest %#llx..%#llx: no buffer at offset %llu of its placement (alignment %llu, size %llu of %llu, types %#x)",
+                 (unsigned long long)lo, (unsigned long long)hi, (unsigned long long)off, (unsigned long long)req.alignment,
+                 (unsigned long long)req.size, (unsigned long long)(size - off), req.memoryTypeBits);
+        return false;
+    }
+    p.lo = lo, p.hi = hi, p.buffer = buffer, p.memory = memory, p.placement = it->second.serial;
+    VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+    da.buffer = buffer;
+    p.address = vkGetBufferDeviceAddress(dev.device, &da);
+    if (env_on("RX_VK_LOG_ADDR"))   // (as import_pool's: which buffer a device fault's address is in)
+        logf("vk: addr placed %#llx..%#llx at gpu %#llx..%#llx", (unsigned long long)lo, (unsigned long long)hi,
+             (unsigned long long)p.address, (unsigned long long)(p.address + (hi - lo)));
+    static int64_t made = 0;
+    if (++made <= 4 || made % 64 == 0)
+        logf("vk: pool %#llx..%#llx imported from its placement (%lld so)", (unsigned long long)lo, (unsigned long long)hi,
+             (long long)made);
+    return true;
+}
+#else
+bool placed_find(uint64_t, uint64_t, GuestPool&) { return false; }
+#endif
+
 bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
     import_cooling = false;
     import_result = VK_SUCCESS;
@@ -455,6 +805,10 @@ bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
             q = end;
         }
 #ifdef __linux__
+    if (placed_on && placed_import(lo, hi, p)) {
+        t1 = t2 = t3 = t4 = clk::now();
+        return true;
+    }
     if (import_dma_buf(lo, hi, p)) {
         t1 = t2 = t3 = t4 = clk::now();
         return true;
@@ -648,16 +1002,20 @@ bool memory_init() {
             logf("vk: no VK_EXT_external_memory_host: the guest memory as dma-bufs alone (alignment %llu)", (unsigned long long)align);
             return true;
         }
+        if (placed_setup(false)) return true;   // (the device's memory under the guest's pools instead: above)
 #endif
         logf("vk: no VK_EXT_external_memory_host%s: the guest memory cannot be imported",
 #ifdef __linux__
-             ", and no dma-bufs of it (the line above says why)"
+             ", no dma-bufs of it and none of the device's memory placed under it (the lines above say why)"
 #else
              ""
 #endif
         );
         return false;
     }
+#ifdef __linux__
+    if (const char* e = getenv("RX_VK_PLACED"); e && !env_value_off(e) && !dma_buf_setup() && placed_setup(true)) return true;
+#endif
     VkPhysicalDeviceExternalMemoryHostPropertiesEXT hp{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
     VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
@@ -3282,8 +3640,41 @@ struct TlPool {
 };
 thread_local TlPool tl_pools[1024];   // (a parallel replay thread's: by 64 KB page, read without the lock)
 
+#ifdef __linux__
+/// (arm64 port) The imports of the placements given back or taken into a larger one since: retired, so that the next lookups
+/// import what is under those addresses now (pools_mu held)
+void placed_retire_gone() {
+    std::vector<PlacedGone> gone;
+    {
+        std::lock_guard lk(placed_mu);
+        gone.swap(placed_gone);
+        placed_gone_any.store(false, std::memory_order_relaxed);
+    }
+    for (const PlacedGone& g : gone) {
+        std::vector<uint64_t> keys;
+        for (auto o = imported.lower_bound(g.hi); o != imported.begin();) {
+            --o;
+            if (o->second.hi <= g.lo) {
+                if (import_reach::beyond(live_reach, o->second.lo, g.lo)) break;   // (none further down reaches g.lo)
+                continue;
+            }
+            if (o->second.placement == g.serial) keys.push_back(o->first);
+        }
+        for (const uint64_t k : keys)
+            if (auto o = imported.find(k); o != imported.end()) retire_pool(o);
+        static int logged;
+        if (!keys.empty() && logged++ < 8)
+            logf("vk: guest %#llx..%#llx no longer placed as it was: its %zu imports retired", (unsigned long long)g.lo,
+                 (unsigned long long)g.hi, keys.size());
+    }
+}
+#endif
+
 Pool* pool_of(uint64_t guest, uint64_t size) {
     if (!size || size > UINT64_MAX - guest) return nullptr;
+#ifdef __linux__
+    if (placed_gone_any.load(std::memory_order_acquire)) placed_retire_gone();
+#endif
     if (last_pool && guest >= last_pool->lo && guest + size <= last_pool->hi) return last_pool;
     Pool*& slot = pool_cache[(guest >> 16) & 4095];
     if (slot && guest >= slot->lo && guest + size <= slot->hi) return last_pool = slot;
@@ -3424,6 +3815,7 @@ void prefetch_chunks(uint64_t lo, uint64_t hi, uint64_t chunk) {
 /// would only mean more imports. RX_VK_IMPORT_CHUNK_MB=16: as before
 bool mirror_on();
 uint64_t import_chunk() {
+    if (placed_on) return 0;   // (arm64 port: an import is a whole pool, in one placement: a chunk could run past its end)
     static const uint64_t chunk =
         (uint64_t)(getenv("RX_VK_IMPORT_CHUNK_MB") ? std::max(0, atoi(getenv("RX_VK_IMPORT_CHUNK_MB"))) : mirror_on() ? 4 : 16) << 20;
     return chunk;
@@ -3464,9 +3856,11 @@ Pool* pool_lookup(uint64_t guest, uint64_t size) {
                                [](uint64_t a, const GuestPool& p) { return a < p.lo; });
     if (it == guest_pools.begin()) return nullptr;
     --it;
-    if (guest < it->lo || guest >= it->hi || !size || size > it->hi - guest) return nullptr;
+    GuestPool placement;   // (arm64 port: placed, an import is the whole placement holding the range: placed_find)
+    const bool placed = placed_on && placed_find(guest, size, placement);
+    if (!placed && (guest < it->lo || guest >= it->hi || !size || size > it->hi - guest)) return nullptr;
     const uint64_t chunk = import_chunk();
-    const GuestPool range = chunk ? GuestPool{guest, guest + size} : *it;
+    const GuestPool range = placed ? placement : chunk ? GuestPool{guest, guest + size} : *it;
     auto covering = [&]() {   // (the import holding the whole range: the last one starting at or below it, or one further down)
         for (auto c = imported.upper_bound(range.lo); c != imported.begin();) {
             --c;
@@ -3475,7 +3869,7 @@ Pool* pool_lookup(uint64_t guest, uint64_t size) {
         }
         return imported.end();
     };
-    auto imp = chunk ? covering() : imported.find(range.lo);
+    auto imp = chunk || placed ? covering() : imported.find(range.lo);
     if (chunk && range.hi > UINT64_MAX - (chunk - 1)) return nullptr;
     const uint64_t want_lo = chunk ? range.lo / chunk * chunk : range.lo;
     const uint64_t want_hi = chunk ? (range.hi + chunk - 1) / chunk * chunk : range.hi;
@@ -3497,7 +3891,7 @@ Pool* pool_lookup(uint64_t guest, uint64_t size) {
         }
         if (waited) {
             bg_drain();
-            imp = chunk ? covering() : imported.find(range.lo);
+            imp = chunk || placed ? covering() : imported.find(range.lo);
             if (chunk && imp == imported.end()) imp = imported.find(want_lo);
         }
     }
@@ -4425,6 +4819,14 @@ BufferRef gpu_buffer(uint64_t gpu, uint64_t size) {
 }
 
 void memory_pool_created(uint64_t gpu, uint64_t size) {
+#ifdef __linux__
+    if (placed_on) {   // (arm64 port: placed in the device's memory now, before the game or the GPU uses it: placed_back)
+        if (!size || gpu >= (1ull << 40)) return;
+        std::lock_guard lk(placed_mu);
+        placed_back(gpu & ~(align - 1), (gpu + size + align - 1) & ~(align - 1));
+        return;
+    }
+#endif
     // (RX_VK_BG_IMPORT=1 only: imported eagerly, every pool the game made, most never used by the GPU, the thread's
     // page locking stalled the game's threads (3-7 fps); chunked imports at first use are the default)
     static const bool on = env_on("RX_VK_BG_IMPORT");
@@ -4436,6 +4838,18 @@ void memory_pool_created(uint64_t gpu, uint64_t size) {
     bg_inflight.emplace(lo, hi);
     bg_queue.push_back({lo, hi});
     bg_cv.notify_one();
+}
+
+/// (arm64 port) A pool the game finalized: what was placed under it goes back into ordinary memory (placed_unback), on the
+/// game's thread before it can use the memory again. Nothing to do where the pools are imported where they are
+void memory_pool_finalized(uint64_t gpu, uint64_t size) {
+#ifdef __linux__
+    if (!placed_on || !size || gpu >= (1ull << 40)) return;
+    std::lock_guard lk(placed_mu);
+    placed_unback(gpu & ~(align - 1), (gpu + size + align - 1) & ~(align - 1));
+#else
+    (void)gpu, (void)size;
+#endif
 }
 
 struct DeadImport { VkBuffer buffer; VkDeviceMemory memory; uint64_t value; uint64_t lo, bytes; std::vector<VkDeviceMemory> pieces; };
@@ -4460,6 +4874,14 @@ int memory_guest_imported(uint64_t lo, uint64_t hi) {
         if (nh.mapped().memory && nh.mapped().lo < hi && lo < nh.mapped().hi) return 1;
     for (const auto& pending : dead_imports)
         if (pending.lo < hi && lo < pending.lo + pending.bytes) return 1;
+#ifdef __linux__
+    // (arm64 port) and the placements: a placed page is the device's, and given back (madvise) it would not read as zero
+    if (placed_on) {
+        std::lock_guard pk(placed_mu);
+        auto pl = placements.lower_bound(hi);
+        if (pl != placements.begin() && std::prev(pl)->second.hi > lo) return 1;
+    }
+#endif
 
     // The worker imports outside pools_mu. It moves a range from inflight to ready under bg_mu;
     // bg_drain moves it from ready to the active map while holding pools_mu.

@@ -235,6 +235,16 @@ Written 2026-11-17, not yet run (it needs Docker on the Mac):
     sparse buffer). It needs `/dev/udmabuf` open to the player (`ls -l /dev/udmabuf`; a udev rule with `TAG+="uaccess"`
     otherwise) and sparse binding or a raised `size_limit_mb`. The game's log says which (`vk: guest memory as dma-bufs`).
     If those can't be had, the fallback is TotK's: copies of the written guest memory before each submit.
+  - **Second run:** Armada's kernel has no udmabuf (`/dev/udmabuf`: no such file), and the kernel is not ours to change.
+    So the other way round, all in the build: a pool the game makes gets memory of the GPU's own (host visible and
+    coherent, cached where the device has such), exported as a dma-buf and mapped over the pool's guest pages
+    (`MAP_FIXED`) once their contents are copied in; the game and the GPU then share those pages. Imports of the pool
+    are that memory imported again; at `nvnMemoryPoolFinalize` the contents go back into ordinary memory at the same
+    addresses (`gpu/vk/placed_memory.h`, `vk_memory.cpp` `placed_*`, `tests/test_placed_memory.py`). It is tried at start
+    on a few pages, and the log says what came of it: `vk: ... the guest's pools placed in the device's own memory (type
+    N, cached ...)` or `vk: the guest's pools cannot be placed in the device's memory: <why>`, then a line per pool
+    placed (`vk: pool ... placed in the device's memory`) and per import (`imported from its placement`).
+    `RX_VK_PLACED=0` turns it off; `RX_VK_PLACED=1` tries it on a PC whose driver takes host pointers.
   - The game's own log under Steam: `logs/longshot_log.txt` in the game folder (`longshot-launch` gives the game no
     stderr when it isn't a terminal: Steam's pipe kept the game from writing it). Crash reports: `bug-reports/`.
 - The mesh fallback with indirect counts (hard problem 3).

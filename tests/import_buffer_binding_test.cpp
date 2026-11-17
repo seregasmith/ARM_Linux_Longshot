@@ -24,7 +24,7 @@ struct Pool {
     VkBuffer buffer{}; VkDeviceMemory memory{}; VkDeviceAddress address = 0;
     std::vector<VkDeviceMemory> pieces;
 };
-struct { VkDevice device{}; VkPhysicalDeviceMemoryProperties memory{}; bool dma_buf_import = true, sparse_buffers = true; VkDriverId driver_id{}; } dev;
+struct { VkDevice device{}; VkPhysicalDeviceMemoryProperties memory{}; bool dma_buf_import = true, sparse_buffers = true, external_memory_host = true; VkDriverId driver_id{}; } dev;
 struct Host { uint8_t* guest_base() { static uint8_t bytes[4096]{}; return bytes; } } host_value;
 Host* host = &host_value;
 uint64_t max_import_size = UINT64_MAX;
@@ -92,7 +92,9 @@ void release_texel_buffer_views(VkBuffer b) {
     owner_releases++;
 }
 int dmabuf_memfd = -2, dmabuf_dev = -1;
-uint64_t dmabuf_limit = 0;
+uint64_t dmabuf_limit = 0, dmabuf_piece = 0;
+bool placed_on = false;   // (vk_memory.cpp's pools placed in the device's memory, arm64 port: not here)
+bool placed_import(uint64_t, uint64_t, Pool&) { return false; }
 bool vkGetMemoryFdPropertiesKHR = true;
 constexpr int O_RDWR = 1, O_CLOEXEC = 2;
 void* RTLD_DEFAULT = nullptr;

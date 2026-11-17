@@ -261,6 +261,7 @@ struct ParLock {
     ParLock& operator=(const ParLock&) = delete;
 };
 void memory_pool_created(uint64_t gpu, uint64_t size);
+void memory_pool_finalized(uint64_t gpu, uint64_t size);   // (arm64 port: what was placed under it goes back)
 /// Whether guest memory in [lo, hi) is in an imported pool, live or retired (the GPU may read or write it)
 int memory_guest_imported(uint64_t lo, uint64_t hi);
 void memory_stats(int64_t* mirrors, uint64_t* mirror_mb, int64_t* sync_bytes, int64_t* sync_copies, int64_t* wb_bytes);

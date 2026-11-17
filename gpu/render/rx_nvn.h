@@ -258,6 +258,8 @@ void rx_nvn_write_texels(const nvn_tex *t, unsigned level, unsigned layer0, cons
 /* the CPU is about to read memory the GPU may have written: GPU results there go to guest memory now */
 void rx_nvn_invalidate(uint64_t gpu, uint64_t size);
 void rx_nvn_pool_created(uint64_t gpu, uint64_t size);   /* (the Vulkan back end imports it early; WebGPU: nothing) */
+/* (arm64 port) a pool finalized: the Vulkan back end gives back the device memory it placed under it, if any */
+void rx_nvn_pool_finalized(uint64_t gpu, uint64_t size);
 /* virtual pages [gpu, gpu + size) mapped now are about to be unmapped or remapped: what the GPU drew into textures
    there goes into their memory first (the Vulkan back end; WebGPU: nothing) */
 void rx_nvn_vmap_changing(uint64_t gpu, uint64_t size);

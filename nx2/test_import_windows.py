@@ -29,6 +29,7 @@ def main():
     reach_at=source.index('import_reach::Reach live_reach;');reach=source[reach_at:source.index('\n',reach_at)]
     table=block(source,'std::map<uint64_t, Pool>::iterator imported_add(')+'\n'+block(source,'std::map<uint64_t, Pool>::node_type imported_take(')
     fixture='''#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -62,6 +63,9 @@ thread_local int import_result = 0;
 bool import_on_hold(uint64_t, uint64_t) { import_cooling = false; return false; }
 void import_remember_failure(uint64_t, uint64_t) {}
 bool mirror_on() { return true; } // (import_chunk's default: 4 MB with VRAM mirrors, 16 without)
+bool placed_on = false; // (vk_memory.cpp's pools placed in the device's memory, arm64 port: not here)
+std::atomic<bool> placed_gone_any{false}; void placed_retire_gone() {}
+bool placed_find(uint64_t,uint64_t,GuestPool&) { return false; }
 '''+guard+'''
     p.lo=lo;p.hi=hi;imports++;return true;
 }

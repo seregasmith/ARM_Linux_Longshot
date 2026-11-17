@@ -380,6 +380,7 @@ SW(RX_VK_PGO_FILE, diag, string, "no profile written (and read only by a rendere
 SW(RX_VK_PICK_BIND_GEN, kill, bool, "off: the last picks stand while the textures their answers read from do", "=1 drops the fast program pick whenever anything at all was bound anew, as before.")
 SW(RX_VK_PIPE_SKIP, kill, enum, "1: translation is waited for; a pending pipeline is skipped only for draws that write no memory on earlier...", "0 always waits for pipelines too; 2 restores the old skip of untranslated draws on persistent targets.")
 SW(RX_VK_PIPE_WAIT_MS, attempt, float, "off (0: no wait)", "Milliseconds a frame a draw on earlier frames' targets may wait for its pipeline, moved to the queue's front.")
+SW(RX_VK_PLACED, hw, bool, "on where the driver takes neither host pointers nor dma-bufs of the guest window (Turnip, no udmabuf)", "0 never places the game's pools in the device's own memory (none imported there then); 1 places them where host pointers work too.")
 SW(RX_VK_PLAY_ASK_START_FIRST, kill, bool, "on (library pipelines asked of the start cache first)", "0 asks the play generation first for the stage libraries too, as before.")
 SW(RX_VK_PLAY_CACHE, kill, bool, "on (what play makes goes into play cache files; needs pipelineCreationCacheControl)", "0 puts every pipeline play makes into the one pipeline cache, as before the play generations.")
 SW(RX_VK_PLAY_SAVE_START_MB, tune, int, "64 MB (0: any growth, as before)", "Growth of the start's pipeline cache past which it is written again in play.")

@@ -89,6 +89,7 @@
     X(vkGetImageSparseMemoryRequirements)                                                                             \
     X(vkGetMemoryHostPointerPropertiesEXT)                                                                            \
     X(vkGetMemoryFdPropertiesKHR)                                                                                     \
+    X(vkGetMemoryFdKHR)                                                                                               \
     X(vkGetBufferDeviceAddress)
 
 // shaders, pipelines, descriptors, draws

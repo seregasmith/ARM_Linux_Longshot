@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 29
+#define MKWVK_API_VERSION 30
 enum { HOS_MONITOR_CURRENT = 1, HOS_MONITOR_PRIMARY = 2 };
 typedef struct MkwVkMonitor {
     char id[512];             /* opaque persistent preference; never a runtime handle or list index */
@@ -357,6 +357,10 @@ typedef struct MkwVkRenderer {
        game's thread, before any draw uses it: what the back end kept ready for it can be loaded now (gpu/vk/vk_programs.cpp).
        Its stages' code and control sections are in the game's memory at this call */
     void (*nvn_program_created)(const nvn_prog *p);
+    /* (version 30, arm64 port) a memory pool finalized (non-virtual), on the game's thread: what the back end placed under
+       it goes back into ordinary memory before the game uses the memory again (gpu/vk/vk_memory.cpp, where the driver takes
+       neither host pointers nor dma-bufs of the guest window) */
+    void (*nvn_pool_finalized)(uint64_t gpu, uint64_t size);
 } MkwVkRenderer;
 
 /* the DLL's one export: null when Vulkan is not usable (the executable then draws nothing) */

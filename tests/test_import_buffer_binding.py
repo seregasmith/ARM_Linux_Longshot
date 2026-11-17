@@ -25,7 +25,7 @@ def main():
     source = (a.source / "gpu/vk/vk_memory.cpp").read_text(encoding="utf-8")
     owner_release = block(source, "void destroy_import_buffer(") if "void destroy_import_buffer(" in source else ""
     actual = owner_release + "\n" + "\n".join(block(source, marker) for marker in [
-        "bool import_on_hold(", "void import_remember_failure(", "bool import_dma_buf(", "bool import_pool("])
+        "bool import_on_hold(", "void import_remember_failure(", "bool dma_buf_setup(", "bool import_dma_buf(", "bool import_pool("])
     # Select both platform routes independently of the machine running the game-free test.
     assert actual.count("#ifdef __linux__") == 1
     actual = actual.replace("#ifdef __linux__", "#if TEST_DMA_FALLBACK")
