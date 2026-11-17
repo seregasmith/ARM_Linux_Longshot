@@ -13,6 +13,26 @@
 #   Longshot.AppImage                  a message: get the Longshot Launcher
 #   Longshot.AppImage [--setup]        (ARM64 setup AppImage) the setup window, builder/linux/setup_ui
 HERE="$(dirname "$(readlink -f "$0")")"
+# (arm64 port) Steam's overlay libraries, those for this CPU only (as builder/linux/longshot-launch for the game): Steam
+# preloads its x86 ones too, and the loader says "ERROR: ld.so: ... cannot be preloaded" for each in every program it starts
+preloads_for_this_cpu() {
+    [ -n "${LD_PRELOAD:-}" ] || return 0
+    want=$(LD_PRELOAD= od -An -tx1 -j18 -N2 /bin/sh 2>/dev/null | LD_PRELOAD= tr -d ' \n')
+    kept=
+    old_ifs=$IFS
+    IFS=': '
+    for lib in $LD_PRELOAD; do
+        case $lib in
+            *'$'*) kept=${kept:+$kept:}$lib ;;
+            *) if [ -f "$lib" ] && [ "$(LD_PRELOAD= od -An -tx1 -j18 -N2 "$lib" 2>/dev/null | LD_PRELOAD= tr -d ' \n')" = "$want" ]; then
+                   kept=${kept:+$kept:}$lib
+               fi ;;
+        esac
+    done
+    IFS=$old_ifs
+    if [ -n "$kept" ]; then export LD_PRELOAD="$kept"; else unset LD_PRELOAD; fi
+}
+preloads_for_this_cpu
 export LONGSHOT_TOOLS="$HERE/usr/share/longshot"
 # (written into the game folder's longshot_version.txt, so its launcher finds this builder)
 if [ -n "${APPIMAGE:-}" ]; then
@@ -49,6 +69,9 @@ if [ -n "${APPIMAGE:-}" ] && [ -z "${LONGSHOT_LOG_DIR:-}" ]; then
 fi
 if [ "${1:-}" = "--cli" ]; then
     shift
+    # (arm64 port) Not Steam's overlay, which Steam preloads into what it starts (the setup window, and the build it runs):
+    # its x86 libraries cannot load into ARM64 programs, and the loader said so twice for every one the build started
+    unset LD_PRELOAD
     build_tools || exit 1
     has_log=
     for arg in "$@"; do

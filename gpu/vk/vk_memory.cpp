@@ -329,8 +329,11 @@ bool import_dma_buf_pieces(uint64_t lo, uint64_t hi, uint64_t piece, Pool& p) {
     return true;
 }
 
-bool import_dma_buf(uint64_t lo, uint64_t hi, Pool& p) {
-    static uint64_t piece = 0;
+uint64_t dmabuf_piece = 0;
+
+/// (once) the guest window's memfd and /dev/udmabuf, for dma-bufs of guest memory: true when they are there
+bool dma_buf_setup() {
+    uint64_t& piece = dmabuf_piece;
     if (dmabuf_memfd == -2) {
         dmabuf_memfd = -1;
         typedef int (*MemfdFn)(void);
@@ -362,9 +365,16 @@ bool import_dma_buf(uint64_t lo, uint64_t hi, Pool& p) {
         if (dmabuf_memfd >= 0)
             logf("vk: dma-bufs of at most %llu MB (udmabuf's limit %llu MB); larger pools %s", (unsigned long long)(piece >> 20),
                  (unsigned long long)(dmabuf_limit >> 20),
-                 dev.sparse_buffers ? "are several, in a sparse buffer" : "are host-pointer imports (no sparse binding)");
+                 dev.sparse_buffers ? "are several, in a sparse buffer"
+                 : dev.external_memory_host ? "are host-pointer imports (no sparse binding)"
+                                            : "cannot be imported (no sparse binding, no host pointers: raise udmabuf's size_limit_mb)");
     }
-    if (dmabuf_memfd < 0 || (lo & 4095) || (hi & 4095)) return false;
+    return dmabuf_memfd >= 0;
+}
+
+bool import_dma_buf(uint64_t lo, uint64_t hi, Pool& p) {
+    if (!dma_buf_setup() || (lo & 4095) || (hi & 4095)) return false;
+    const uint64_t piece = dmabuf_piece;
     if (hi - lo > piece) {
         if (!dev.sparse_buffers || !import_dma_buf_pieces(lo, hi, piece, p)) return false;
     } else {
@@ -450,6 +460,11 @@ bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
         return true;
     }
 #endif
+    // (arm64 port: Turnip has no host-pointer imports; a pool the dma-bufs did not take is not imported)
+    if (!dev.external_memory_host) {
+        import_remember_failure(lo, hi);
+        return false;
+    }
     // (the host allocations' memory type: the same for every pointer, asked once)
     static uint32_t type = UINT32_MAX;
     if (type == UINT32_MAX) {
@@ -615,7 +630,32 @@ uint64_t memory_guest_pages() {
 
 bool memory_init() {
     if (!dev.external_memory_host) {
-        logf("vk: no VK_EXT_external_memory_host: the guest memory cannot be imported (needed for now)");
+#ifdef __linux__
+        // (arm64 port) Mesa's Adreno driver, Turnip, has no VK_EXT_external_memory_host: the guest memory goes to the GPU as
+        // dma-bufs of the window's memfd alone (import_dma_buf), which needs /dev/udmabuf (host/hos_main.c makes the window
+        // a memfd only where it opens), and a sparse buffer for a pool larger than udmabuf's limit. Aligned to the kernel's
+        // page, which udmabuf takes ranges in
+        if (dma_buf_setup()) {
+            VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+            VkPhysicalDeviceVulkan11Properties p11{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES};
+            VkPhysicalDeviceVulkan13Properties p13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES};
+            p2.pNext = &p11;
+            p11.pNext = &p13;
+            vkGetPhysicalDeviceProperties2(dev.physical, &p2);
+            const long page = sysconf(_SC_PAGESIZE);
+            align = std::max<uint64_t>(4096, page > 0 ? (uint64_t)page : 4096);
+            max_import_size = std::min(p11.maxMemoryAllocationSize, p13.maxBufferSize);
+            logf("vk: no VK_EXT_external_memory_host: the guest memory as dma-bufs alone (alignment %llu)", (unsigned long long)align);
+            return true;
+        }
+#endif
+        logf("vk: no VK_EXT_external_memory_host%s: the guest memory cannot be imported",
+#ifdef __linux__
+             ", and no dma-bufs of it (the line above says why)"
+#else
+             ""
+#endif
+        );
         return false;
     }
     VkPhysicalDeviceExternalMemoryHostPropertiesEXT hp{

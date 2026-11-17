@@ -1566,7 +1566,8 @@ NOT_PREPARED = "the shaders were not prepared now"
 # (a run that prints nothing this long is stopped. Not its whole length: that is 25 minutes on some AMD GPUs, and the driver's own
 # step near the end can sit at 99% for minutes)
 PREPARE_SILENCE = 15 * 60
-GAME_ENV_DROP = ("LONGSHOT_", "PYTHON", "APPDIR", "APPIMAGE", "ARGV0", "OWD")
+# (RX_MARCH, RX_CPM: the build's, which the game takes for misspelt switches of its own: "is set, and is not a switch of this build")
+GAME_ENV_DROP = ("LONGSHOT_", "PYTHON", "APPDIR", "APPIMAGE", "ARGV0", "OWD", "RX_MARCH", "RX_CPM")
 
 
 def span(seconds):
