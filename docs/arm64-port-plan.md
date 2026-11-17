@@ -228,6 +228,15 @@ Written 2026-11-17, not yet run (it needs Docker on the Mac):
 ### Phase 3: bring-up on Armada's Turnip (open-ended: driver work)
 
 - Guest memory for the GPU without host pointers (hard problem 1), with the fallback that Phase 0 says is needed.
+  - **First run on the Odin 3 (2026-11-17):** the game built on the handheld from the setup window and started with a
+    black screen. Its build's shader preparation said why: `vk: no VK_EXT_external_memory_host: the guest memory cannot
+    be imported` (Turnip, Mesa 27.0.0-devel, Adreno 830). `memory_init` now takes the dma-buf path alone where there are
+    no host pointers (`gpu/vk/vk_memory.cpp`: the window's memfd through `/dev/udmabuf`, a pool past udmabuf's 64 MB in a
+    sparse buffer). It needs `/dev/udmabuf` open to the player (`ls -l /dev/udmabuf`; a udev rule with `TAG+="uaccess"`
+    otherwise) and sparse binding or a raised `size_limit_mb`. The game's log says which (`vk: guest memory as dma-bufs`).
+    If those can't be had, the fallback is TotK's: copies of the written guest memory before each submit.
+  - The game's own log under Steam: `logs/longshot_log.txt` in the game folder (`longshot-launch` gives the game no
+    stderr when it isn't a terminal: Steam's pipe kept the game from writing it). Crash reports: `bug-reports/`.
 - The mesh fallback with indirect counts (hard problem 3).
 - Budgets for shared memory; native ASTC confirmed in the log (`vk: ASTC sampled natively`).
 - The window and controls under gamescope in game mode, and a launch entry for Steam.

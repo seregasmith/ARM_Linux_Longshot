@@ -4,6 +4,7 @@ python -I -B tests/test_longshot_launch.py
 """
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import tempfile
@@ -29,7 +30,10 @@ def game(folder):
         "printf 'LD_LIBRARY_PATH=%s\\n' \"${LD_LIBRARY_PATH-UNSET}\"\n"
         "printf 'LONGSHOT_TOOLS=%s\\n' \"${LONGSHOT_TOOLS-UNSET}\"\n"
         "printf 'PYTHONPATH=%s\\n' \"${PYTHONPATH-UNSET}\"\n"
-        "printf 'CHECK=%s\\n' \"${LONGSHOT_NO_UPDATE_CHECK-UNSET}\"\n",
+        "printf 'CHECK=%s\\n' \"${LONGSHOT_NO_UPDATE_CHECK-UNSET}\"\n"
+        "printf 'LD_PRELOAD=%s\\n' \"${LD_PRELOAD-UNSET}\"\n"
+        "printf 'RX_MARCH=%s RX_CPM=%s\\n' \"${RX_MARCH-UNSET}\" \"${RX_CPM-UNSET}\"\n"
+        "echo game-stderr >&2\n",
         encoding="utf-8",
     )
     exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
@@ -39,12 +43,13 @@ def game(folder):
 
 
 class LaunchTests(unittest.TestCase):
-    def run_launch(self, *args, home, cwd=None):
+    def run_launch(self, *args, home, cwd=None, extra=None):
         e = os.environ.copy()
         e.pop("DISPLAY", None)
         e.pop("WAYLAND_DISPLAY", None)
         e.update(HOME=str(home), APPDIR="/from/the/appimage", APPIMAGE="/tmp/Longshot.AppImage", ARGV0="Longshot", OWD="/old",
                  LD_LIBRARY_PATH="/builder/lib", LONGSHOT_TOOLS="/builder/tools", PYTHONPATH="/builder/python")
+        e.update(extra or {})
         return subprocess.run([str(LAUNCH), *args], env=e, cwd=cwd, text=True, capture_output=True, check=False)
 
     def test_the_folder_starts_bin_longshot_without_the_builders_libraries(self):
@@ -58,6 +63,34 @@ class LaunchTests(unittest.TestCase):
         for line in ("APPDIR=UNSET", "LD_LIBRARY_PATH=UNSET", "LONGSHOT_TOOLS=UNSET", "PYTHONPATH=UNSET", "CHECK=1"):
             self.assertIn(line, lines)
         self.assertNotIn("launcher", lines)
+
+    def test_steam_preloads_for_this_cpu_and_the_games_own_log(self):
+        """(arm64 port) Of Steam's LD_PRELOAD only the libraries for this CPU stay (its x86 ones made the loader print "cannot
+        be preloaded" for every program it started); RX_MARCH and RX_CPM, the build's, go; and with a pipe for its stderr, as
+        Steam gives it, the game gets none, so that it writes its own logs/longshot_log.txt (host/hos_main.c)"""
+        with open("/proc/self/maps", encoding="utf-8") as maps:
+            libc = next(line.split()[-1] for line in maps if re.search(r"/libc(\.so|-[0-9.]+\.so)", line))
+        with tempfile.TemporaryDirectory(prefix="longshot-launch-") as tmp:
+            folder = Path(tmp) / "game"
+            game(folder)
+            head = bytearray((Path("/bin/sh").resolve()).read_bytes()[:20])
+            head[18:20] = b"\x03\x00" if head[18:20] != b"\x03\x00" else b"\x3e\x00"   # (another CPU's: i386, or x86-64)
+            other = Path(tmp) / "ubuntu12_32" / "gameoverlayrenderer.so"
+            other.parent.mkdir()
+            other.write_bytes(bytes(head) + bytes(64))
+            ran = self.run_launch(str(folder), home=tmp, extra={
+                "LD_PRELOAD": "/nowhere/ubuntu12_64/gameoverlayrenderer.so:%s:%s" % (other, libc),
+                "RX_MARCH": "armv8.2-a+lse", "RX_CPM": "/builder/cpm"})
+        self.assertEqual(ran.returncode, 0, ran.stderr)
+        lines = ran.stdout.splitlines()
+        self.assertIn("LD_PRELOAD=%s" % libc, lines)
+        self.assertIn("RX_MARCH=UNSET RX_CPM=UNSET", lines)
+        self.assertNotIn("game-stderr", ran.stderr)
+        with tempfile.TemporaryDirectory(prefix="longshot-launch-") as tmp:   # (none for this CPU: none at all)
+            folder = Path(tmp) / "game"
+            game(folder)
+            ran = self.run_launch(str(folder), home=tmp, extra={"LD_PRELOAD": "/nowhere/gameoverlayrenderer.so"})
+        self.assertIn("LD_PRELOAD=UNSET", ran.stdout.splitlines())
 
     def test_no_folder_is_games_longshot(self):
         with tempfile.TemporaryDirectory(prefix="longshot-launch-") as tmp:
