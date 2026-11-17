@@ -32,8 +32,8 @@ crashed, and the game's code is ARM64 to begin with.
 | --- | --- |
 | One tree for both architectures | aarch64 is chosen by the build target and by `#if defined(__aarch64__)`. The x86-64 Windows and Linux builds stay as they are. |
 | Upstream-shaped steps | Each step lands as its own pull request to MagicBeanDev/Longshot, under its rules: a game-free test, `tests/run_all.py`, and a run in the game. |
-| Build on the Mac first | The game folder is built on the Apple Silicon Mac in a native linux/arm64 container (Docker + Nix, as in the TotK port), then copied to the handheld. Building on the handheld comes in Phase 5. |
-| Sysroot no newer than Armada | Binaries link against a glibc no newer than Armada's, so they run on it. Phase 0 records Armada's version. |
+| Build on the Mac first | `./build_docker.sh` builds the game folder on the Apple Silicon Mac in a native linux/arm64 container (Docker + Nix, as in the TotK port, with the same nixpkgs pin, so the `bbport-nix` store volume serves it too), then the folder is copied to the handheld. Building on the handheld comes in Phase 5. |
+| Sysroot no newer than Armada | Binaries link against Ubuntu 24.04's glibc 2.39, so they run on Armada if its glibc is 2.39 or newer (Phase 0 checks). 24.04 rather than the AppImage's 22.04: Longshot's C++ needs libstdc++ 13 (C++20 `<format>`), which 22.04 has only from a PPA. |
 | Armada's Turnip only | We test against Armada's Mesa 27.0.0 and 26.2.0 builds (chosen in Armada Control, per game if needed). Driver workarounds are keyed on the driver version, as Longshot already does for other drivers. |
 | Two CPU levels | `a64` = `armv8.2-a+lse+rcpc+dotprod`, which the 8 Gen 2, 8 Gen 3 and 8 Elite all run. `oryon` = `-mcpu=oryon-1` for the 8 Elite, kept only if it measures faster. |
 
@@ -165,7 +165,7 @@ Phases 0 to 2 are bounded work; Phase 3 depends on what Armada's Turnip builds e
 - **Kernel and memory:** `uname -r`, `getconf PAGESIZE`, the address-space size (`ARM64_VA_BITS` in
   `/proc/config.gz`), `CONFIG_UDMABUF`, whether the `armada` user can open `/dev/udmabuf`, and its `size_limit_mb`. Also
   the RAM, swap or zram, and free storage.
-- **System:** `ldd --version` (glibc, the sysroot's ceiling), Python's version, the game-mode compositor (gamescope),
+- **System:** `ldd --version` (glibc: 2.39 or newer for the sysroot of `build_docker.sh`), Python's version, the game-mode compositor (gamescope),
   how Steam starts a non-Steam game, and where its output goes (`~/.local/share/armada/logs`, per the TotK notes).
 - **Vulkan, once per Turnip build (27.0.0 and 26.2.0):** `vulkaninfo`. Note these extensions: `external_memory_host`,
   `external_memory_dma_buf`, `external_memory_fd`, `map_memory_placed`, `mesh_shader`, `cooperative_matrix`,
@@ -179,14 +179,28 @@ Phases 0 to 2 are bounded work; Phase 3 depends on what Armada's Turnip builds e
 
 ### Phase 1: the build environment (days)
 
-- A native linux/arm64 container on the Mac (Docker + Nix, modelled on the TotK port's `build_docker.sh`). It carries
-  LLVM 23's clang and lld, a sysroot no newer than Armada's glibc, SDL, FFmpeg with dav1d, the Vulkan, SPIR-V and VMA
-  headers, and aarch64 wheels of the Python packages (`unicorn`, `capstone`, `lz4`, `numpy`, `zstandard`, the prompt
-  packages).
-- `nx2/build.py`, `host_cpu.py` and `toolchain.py` learn the aarch64 target and its levels. `a64emit` and `zbic` are
-  built for aarch64.
-- **Exit:** `python -I -B tests/run_all.py` passes in the container, and the runtime and `longshot_vk.so` compile and
-  link for aarch64 without game files.
+Written 2026-11-17, not yet run (it needs Docker on the Mac):
+
+- `build_docker.sh` at the tree's root, after the TotK port's: `./build_docker.sh [--arch aarch64|x86_64]
+  [tools|test|game|lock|shell|clean]`. `game` runs `nx2/make_game.py` on `LONGSHOT_GAME` (the `.nup`, or a folder with
+  `romfs/` and `exefs/`, mounted read-only) into `LONGSHOT_OUT`, without preparing shaders (no GPU in the container).
+  The build runs in a copy of the tree inside a Docker volume, and keeps its lifted C and objects there between runs.
+  `LONGSHOT_NIX_VOLUME=bbport-nix` shares the Bloodborne and TotK ports' Nix store.
+- `scripts/nix/`: `shell.nix` (the container's tools: Python 3.12 and uv, LLVM 23's tools, rsync, glslang),
+  `default.nix` (the target side), `clang-wrapper.sh` and `sysroot_lock.py`.
+- The target side is LLVM 23's clang and lld, and an Ubuntu 24.04 sysroot pinned by `scripts/nix/sysroot-<arch>.lock.json`
+  (the first run writes it; commit it). FFmpeg with dav1d and SDL2 are built against that sysroot, and the Vulkan,
+  SPIR-V and VMA headers are fetched. Their versions and checksums are read from `scripts/linux/deps.sh`, so this build
+  and the AppImage's use the same sources.
+- The Python packages are `requirements.txt`'s pins as binary wheels. The button-prompt packages are optional: if a
+  wheel is missing for aarch64, the game shows the Switch's icons.
+- The clang wrapper falls back to the sysroot and lld when a command names neither, because `a64emit` and `zbic` are
+  compiled with no target flags (`toolchain.py` `host=True`).
+- Still to do here: `nx2/build.py`, `host_cpu.py` and `toolchain.py` learn the aarch64 target and its levels (with
+  Phase 2). Until then, `build_docker.sh` passes `RX_MARCH=armv8.2-a+lse+rcpc+dotprod` (`LONGSHOT_CPU`), and the
+  aarch64 compile stops at the x86-only code.
+- **Exit:** `./build_docker.sh tools` and `./build_docker.sh test` run on the Mac; `tests/run_all.py`'s failures on
+  aarch64 are the Phase 2 list; and the runtime and `longshot_vk.so` compile and link for aarch64 without game files.
 
 ### Phase 2: the CPU and the runtime (1 to 2 weeks)
 
@@ -218,10 +232,22 @@ Phases 0 to 2 are bounded work; Phase 3 depends on what Armada's Turnip builds e
 
 ### Phase 5: packaging for players (1 to 2 weeks)
 
-- aarch64 Linux tools in `tools.lock`, `scripts/linux/deps.sh` and `appimage.sh` for aarch64, and
-  `Longshot-<version>-aarch64.AppImage`.
-- An on-device build within the handheld's memory (`LONGSHOT_JOBS`, `LONGSHOT_MEM_LIMIT_GB`), and an entry in Steam's
-  game mode.
+- **The setup AppImage** (written 2026-11-17, not yet run): `./build_docker.sh setup` makes
+  `Longshot-<version>-aarch64.AppImage` with no game files. It is Longshot's own Linux builder
+  (`scripts/linux/appimage.sh`), with `LONGSHOT_APPIMAGE_TOOLS` naming build tools made for ARM64, which the image then
+  carries at `tools.lock`'s places (`usr/lib/longshot/emsdk`, `sysroot`, `ffmpeg`, `sdl2`; `usr/share/longshot/cpm`).
+  There, `builder/linux/linux_tools.py` finds them before it would download anything, so `tools.lock` needs no ARM64
+  lines yet.
+  - On the handheld: `./Longshot-<version>-aarch64.AppImage --cli --nup game.nup --out ~/Games/Longshot`, then `--play`.
+  - What it carries for ARM64 comes from the TotK port's pinned releases: LLVM 23.1.4's clang and lld (any LLVM 23
+    reads the play profiles) and python-build-standalone 3.14 (Longshot's Windows builder runs 3.14 too). FFmpeg, SDL2
+    and the headers are built from `deps.sh`'s pins.
+  - The clang it carries defaults to the carried sysroot and lld (`clang.cfg`), for `a64emit` and `zbic`.
+    `builder/linux/AppRun` sets `RX_MARCH=armv8.2-a+lse+rcpc+dotprod` on aarch64 until `nx2/host_cpu.py` knows ARM's
+    levels.
+  - It builds a playable game only once Phase 2 is in: until then the build on the device stops at the x86-only code.
+- Still to do: aarch64 lines in `tools.lock` and `deps.sh` (then the AppImage need not carry its tools); an on-device
+  build within the handheld's memory (`LONGSHOT_JOBS`, `LONGSHOT_MEM_LIMIT_GB`); and an entry in Steam's game mode.
 - The Longshot Launcher is a separate project: aarch64 support there is the team's call.
 - **Exit:** a player builds from their own dump on the handheld, or on a PC and copies the folder, and plays.
 
@@ -241,7 +267,7 @@ These are answered by the device, by you, or by the Longshot team, and each chan
   `/dev/udmabuf` (Phase 0).
 - [ ] Which of the Vulkan extensions in Phase 0 each Turnip build exposes, above all `external_memory_host`, dma-buf
   import, sparse binding, `map_memory_placed`, `mesh_shader` and `cooperative_matrix`.
-- [ ] Armada's glibc version, which sets the sysroot.
+- [ ] Armada's glibc version: 2.39 or newer, or the sysroot has to go back to 22.04 with the toolchain PPA's libstdc++.
 - [ ] Is 27.0.0 a development snapshot (Armada Control's "Devel" build)? If so, which Mesa commit, so results can be
   repeated.
 - [ ] The frame-rate target: 30 fps on Low with an upscaler to the panel, or something else?

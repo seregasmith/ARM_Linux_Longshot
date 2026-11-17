@@ -7,6 +7,10 @@
 #   scripts/linux/deps.sh        (first: Python, the AppImage packer, into build-linux/deps)
 #   scripts/linux/appimage.sh    -> build-linux/Longshot-<version>-x86_64.AppImage: the Linux builder a release ships, which
 #                                   the Longshot Launcher installs (docs/releases.md)
+# LONGSHOT_APPIMAGE_TOOLS=<dir> (build_docker.sh setup, ARM64 Linux; docs/arm64-port-plan.md): the build tools come from that
+# folder instead, laid out as tools.lock's places (usr/lib/longshot/emsdk, ...), and the AppImage carries them itself, at the
+# same places, where builder/linux/linux_tools.py finds them before it would download anything (tools.lock has no ARM64
+# lines). -> build-linux/Longshot-<version>-<this machine's architecture>.AppImage, packed with $DEPS/runtime-<it>
 # The same image builds the game and, with --play, starts the one it saved.
 #
 # The tools this build itself uses (clang for the native helpers, the sysroot for the check below) are tools.lock's, installed
@@ -26,8 +30,13 @@ APPDIR=$B/AppDir
 VERSION=${LONGSHOT_VERSION:-$(git describe --tags --long --always --match "v[0-9]*" 2>/dev/null || echo dev)}
 PY=$DEPS/python/bin/python3
 # ---- the build tools, tools.lock's linux-x64 lines, at their places under $TOOLS (as in an installed builder) ----
-TOOLS=${TOOLS:-$B/tools}
-"$PY" -I scripts/tools.py install "$TOOLS" --system linux-x64 --cache "${TOOLS_CACHE:-$B/tools-cache}"
+ARCH=$(uname -m)
+if [ -n "${LONGSHOT_APPIMAGE_TOOLS:-}" ]; then
+    TOOLS=$LONGSHOT_APPIMAGE_TOOLS
+else
+    TOOLS=${TOOLS:-$B/tools}
+    "$PY" -I scripts/tools.py install "$TOOLS" --system linux-x64 --cache "${TOOLS_CACHE:-$B/tools-cache}"
+fi
 export EMSDK=$TOOLS/usr/lib/longshot/emsdk RX_CPM=$TOOLS/usr/share/longshot/cpm
 S=$TOOLS/usr/lib/longshot/sysroot
 
@@ -86,6 +95,8 @@ find "$T" -name __pycache__ -prune -exec rm -rf {} +
 
 # ---- what it starts with: its Python (the tools' download, nx2/make_game.py) ----
 cp -a "$DEPS/python" "$APPDIR/usr/python"
+# (LONGSHOT_APPIMAGE_TOOLS: the build tools themselves, at their usr/ places)
+if [ -n "${LONGSHOT_APPIMAGE_TOOLS:-}" ]; then cp -a "$TOOLS/usr/." "$APPDIR/usr/"; fi
 # ---- the licences of the third-party parts compiled into longshot_vk.so (tests/test_appimage_licenses.py) ----
 mkdir -p "$T/licenses/imgui" "$T/licenses/zstd" "$T/licenses/libertinus" "$T/licenses/fidelityfx"
 cp third_party/imgui/LICENSE.txt third_party/imgui/PROVENANCE.md "$T/licenses/imgui/"
@@ -101,7 +112,9 @@ cp third_party/fidelityfx/LICENSE.md third_party/fidelityfx/PROVENANCE.md "$T/li
 # them as before (nx2/third_party_objects.py); scripts/linux/check_player_build.sh checks that a player's build finds them all ----
 LONGSHOT_SYSROOT=$S "$PY" -I -B nx2/third_party_objects.py make "$T/third_party_objects" --jobs "$(nproc)"
 
-# ---- check: tools.lock's compiler builds and links a program against its sysroot, and it runs ----
+# ---- check: tools.lock's compiler builds and links a program against its sysroot, and it runs (at RX_MARCH's level, which
+# build_docker.sh setup gives for ARM64) ----
+CHECK_MARCH=-march=${RX_MARCH:-x86-64-v3}
 cat > "$B/t.c" <<'EOF'
 #include <pthread.h>
 #include <stdio.h>
@@ -109,7 +122,7 @@ cat > "$B/t.c" <<'EOF'
 static void *f(void *p) { return p; }
 int main(void) { pthread_t t; pthread_create(&t, 0, f, 0); pthread_join(t, 0); printf("ok %g\n", sqrt(2.0)); return 0; }
 EOF
-"$EMSDK/upstream/bin/clang" --sysroot="$S" -fuse-ld=lld -O2 -march=x86-64-v3 "$B/t.c" -o "$B/t" -lpthread -lm
+"$EMSDK/upstream/bin/clang" --sysroot="$S" -fuse-ld=lld -O2 "$CHECK_MARCH" "$B/t.c" -o "$B/t" -lpthread -lm
 "$B/t"
 cat > "$B/t.cpp" <<'EOF'
 #include <algorithm>
@@ -118,7 +131,7 @@ cat > "$B/t.cpp" <<'EOF'
 #include <string>
 extern "C" int t_cpp(int v) { return (int)std::format("{}", v).size(); }
 EOF
-"$EMSDK/upstream/bin/clang++" --sysroot="$S" -fuse-ld=lld -std=c++20 -O2 -march=x86-64-v3 -shared -fPIC -static-libstdc++ -static-libgcc \
+"$EMSDK/upstream/bin/clang++" --sysroot="$S" -fuse-ld=lld -std=c++20 -O2 "$CHECK_MARCH" -shared -fPIC -static-libstdc++ -static-libgcc \
     "$B/t.cpp" -o "$B/t.so" -ldl -lpthread -lm
 
 # ---- the AppDir's own files ----
@@ -132,7 +145,7 @@ cp assets/longshot.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/longshot.pn
 
 # (no update information: players get the Longshot Launcher, which installs this AppImage from a release and checks it
 # against the release's signed SHA256SUMS; on its own it is a way to try a build on this PC)
-OUT=$B/Longshot-$VERSION-x86_64.AppImage
+OUT=$B/Longshot-$VERSION-$ARCH.AppImage
 rm -f "$OUT"
-ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$DEPS/appimagetool" --runtime-file "$DEPS/runtime-x86_64" --comp zstd "$APPDIR" "$OUT"
+ARCH=$ARCH APPIMAGE_EXTRACT_AND_RUN=1 "$DEPS/appimagetool" --runtime-file "$DEPS/runtime-$ARCH" --comp zstd "$APPDIR" "$OUT"
 echo "$OUT: $(du -h "$OUT" | cut -f1)"

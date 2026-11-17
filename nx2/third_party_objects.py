@@ -29,6 +29,7 @@ LONGSHOT_THIRD_PARTY_OBJECTS=0: not used (compiled as before); =<folder>: that s
 import hashlib
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -217,6 +218,21 @@ def write(out, objects, stamp_value):
     return entries
 
 
+# (longshot, docs/arm64-port-plan.md) The level an ARM64 player's build compiles at until nx2/host_cpu.py knows ARM's levels:
+# builder/linux/AppRun sets it there as RX_MARCH, and build_docker.sh setup makes the set at it
+ARM64_MARCH = "armv8.2-a+lse+rcpc+dotprod"
+
+
+def release_march(machine=None, environ=os.environ):
+    """The level the set is made at: x86-64-v3 on x86-64 (THIRD_PARTY_CPU's on every CPU that has it); on ARM64 the caller's
+    RX_MARCH, else ARM64_MARCH, as the player's build there takes it. (x86-64-v3 on ARM64 stopped the set: clang refuses it, and
+    the stamp's probe did not preprocess)"""
+    machine = (machine or platform.machine()).lower()
+    if machine in ("x86_64", "amd64"):
+        return "x86-64-v3"
+    return environ.get("RX_MARCH") or ARM64_MARCH
+
+
 def make(out, jobs):
     """The set, made by nx2/build.py in a work folder of its own with no game (the module's notes)"""
     import tempfile
@@ -227,7 +243,8 @@ def make(out, jobs):
     try:
         # (x86-64-v3: the level a player's build compiles them at on every CPU that has it, whatever this PC's CPU is.
         # RX_RELEASE as make_game.py sets it; it is not in these objects' flags, but the build is a player's otherwise)
-        env = dict(os.environ, OOT_WORK=work, RX_MARCH="x86-64-v3", RX_RELEASE="1", A64_HOT_CHUNK="1", PYTHONIOENCODING="utf-8")
+        env = dict(os.environ, OOT_WORK=work, RX_MARCH=release_march(), RX_RELEASE="1", A64_HOT_CHUNK="1",
+                   PYTHONIOENCODING="utf-8")
         env.pop(ENV, None)
         env.pop("LONGSHOT_OBJ_STORE", None)
         r = subprocess.run([sys.executable, "-I", "-B", "-u", os.path.join(ROOT, "nx2", "build.py"), "--standalone",

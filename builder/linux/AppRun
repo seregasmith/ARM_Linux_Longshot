@@ -20,6 +20,9 @@ else
     export LONGSHOT_BUILDER_EXE="$HERE/AppRun"
 fi
 PY="$HERE/usr/python/bin/python3"
+# (ARM64 Linux: the CPU level the game is built for, until nx2/host_cpu.py knows ARM's: docs/arm64-port-plan.md. The setup
+# AppImage's third-party objects were made at it, so a player's build takes them)
+case "$(uname -m)" in aarch64) export RX_MARCH="${RX_MARCH:-armv8.2-a+lse+rcpc+dotprod}" ;; esac
 # The build tools' places (EMSDK, LONGSHOT_SYSROOT, LONGSHOT_FFMPEG, LONGSHOT_SDL2, RX_CPM), each downloaded first when it is
 # missing, its progress on stderr. A tool that cannot be had stops --cli
 build_tools() {
