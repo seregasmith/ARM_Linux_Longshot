@@ -1,0 +1,82 @@
+--- a/nx2/third_party_objects.py
++++ b/nx2/third_party_objects.py
+@@ -29,6 +29,7 @@
+ import hashlib
+ import json
+ import os
++import platform
+ import shutil
+ import subprocess
+ import sys
+@@ -217,6 +218,21 @@
+     return entries
+ 
+ 
++# (longshot, docs/arm64-port-plan.md) The level an ARM64 player's build compiles at until nx2/host_cpu.py knows ARM's levels:
++# builder/linux/AppRun sets it there as RX_MARCH, and build_docker.sh setup makes the set at it
++ARM64_MARCH = "armv8.2-a+lse+rcpc+dotprod"
++
++
++def release_march(machine=None, environ=os.environ):
++    """The level the set is made at: x86-64-v3 on x86-64 (THIRD_PARTY_CPU's on every CPU that has it); on ARM64 the caller's
++    RX_MARCH, else ARM64_MARCH, as the player's build there takes it. (x86-64-v3 on ARM64 stopped the set: clang refuses it, and
++    the stamp's probe did not preprocess)"""
++    machine = (machine or platform.machine()).lower()
++    if machine in ("x86_64", "amd64"):
++        return "x86-64-v3"
++    return environ.get("RX_MARCH") or ARM64_MARCH
++
++
+ def make(out, jobs):
+     """The set, made by nx2/build.py in a work folder of its own with no game (the module's notes)"""
+     import tempfile
+@@ -227,7 +243,8 @@
+     try:
+         # (x86-64-v3: the level a player's build compiles them at on every CPU that has it, whatever this PC's CPU is.
+         # RX_RELEASE as make_game.py sets it; it is not in these objects' flags, but the build is a player's otherwise)
+-        env = dict(os.environ, OOT_WORK=work, RX_MARCH="x86-64-v3", RX_RELEASE="1", A64_HOT_CHUNK="1", PYTHONIOENCODING="utf-8")
++        env = dict(os.environ, OOT_WORK=work, RX_MARCH=release_march(), RX_RELEASE="1", A64_HOT_CHUNK="1",
++                   PYTHONIOENCODING="utf-8")
+         env.pop(ENV, None)
+         env.pop("LONGSHOT_OBJ_STORE", None)
+         r = subprocess.run([sys.executable, "-I", "-B", "-u", os.path.join(ROOT, "nx2", "build.py"), "--standalone",
+--- a/tests/test_third_party_objects.py
++++ b/tests/test_third_party_objects.py
+@@ -332,16 +332,35 @@
+             calls.append((cmd, env))
+             return subprocess.CompletedProcess(cmd, 0)
+         with tempfile.TemporaryDirectory() as d, mock.patch.object(tpo.subprocess, "run", run), \
+-                mock.patch.dict(os.environ, {"LONGSHOT_OBJ_STORE": "/store", tpo.ENV: "0"}):
++                mock.patch.object(tpo.platform, "machine", lambda: "x86_64"), \
++                mock.patch.dict(os.environ, {"LONGSHOT_OBJ_STORE": "/store", tpo.ENV: "0", "RX_MARCH": "znver4"}):
+             self.assertEqual(tpo.make(os.path.join(d, "out"), 3), 0)
+         cmd, env = calls[0]
+         self.assertIn("--third-party-objects", cmd)
+         self.assertIn("--standalone", cmd)
+-        self.assertEqual(env["RX_MARCH"], "x86-64-v3")
++        self.assertEqual(env["RX_MARCH"], "x86-64-v3")   # (whatever the caller's: the set's level on x86-64)
+         self.assertNotIn("LONGSHOT_OBJ_STORE", env)
+         self.assertNotIn(tpo.ENV, env)
+         self.assertFalse(os.path.exists(env["OOT_WORK"]))   # (its own work folder, removed after)
+ 
++    def test_make_on_arm64_keeps_the_callers_level(self):
++        # (build_docker.sh setup, docs/arm64-port-plan.md: x86-64-v3 is no level clang takes for ARM64, and the stamp's probe
++        # did not preprocess. The set is made at the level the player's build there compiles at, builder/linux/AppRun's)
++        self.assertEqual(tpo.release_march("AMD64", {}), "x86-64-v3")
++        self.assertEqual(tpo.release_march("aarch64", {}), tpo.ARM64_MARCH)
++        self.assertEqual(tpo.release_march("aarch64", {"RX_MARCH": "armv9-a"}), "armv9-a")
++        apprun = (ROOT / "builder/linux/AppRun").read_text(encoding="utf-8")
++        self.assertIn('RX_MARCH="${RX_MARCH:-%s}"' % tpo.ARM64_MARCH, apprun)
++        calls = []
++
++        def run(cmd, env=None, **kw):
++            calls.append((cmd, env))
++            return subprocess.CompletedProcess(cmd, 0)
++        with tempfile.TemporaryDirectory() as d, mock.patch.object(tpo.subprocess, "run", run), \
++                mock.patch.object(tpo.platform, "machine", lambda: "aarch64"), mock.patch.dict(os.environ, {"RX_MARCH": ""}):
++            self.assertEqual(tpo.make(os.path.join(d, "out"), 2), 0)
++        self.assertEqual(calls[0][1]["RX_MARCH"], tpo.ARM64_MARCH)
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
