@@ -1824,8 +1824,12 @@ static void memory_notice(void) {
 /* (longshot, linux) What driver_env_choose did with the driver's environment, said again in the game's own log once it is open
    (it runs before, when stderr is still the launcher's) */
 static char driver_env_said[1024];
+static char driver_cache_said[1024];   /* (driver_cache_shared's) */
+static char driver_env_seen[2048];     /* (driver_env_note's) */
 static void driver_env_log(void) {
     if (driver_env_said[0]) hos_log("%s", driver_env_said);
+    if (driver_cache_said[0]) hos_log("%s", driver_cache_said);
+    if (driver_env_seen[0]) hos_log("%s", driver_env_seen);
 }
 #ifdef _WIN32
 /* (longshot) On laptops with two GPUs, the drivers run a program on the dedicated one when it exports these (NVIDIA Optimus, AMD
@@ -2230,6 +2234,61 @@ static void driver_cache_folder(void) {
         *p = '/';
     }
 }
+/* (longshot, linux) Mesa's own shader cache in one folder for every start of this game, the game folder's cache/driver.
+   Steam gives each entry of its library a folder of its own (MESA_SHADER_CACHE_DIR=.../steamapps/shadercache/<app id>), so
+   the Builder's preparation, started from the setup's entry, filled one and the game's entry another: on an AYN Odin 3
+   (Turnip, Game Mode) the driver's cache held 1736 MB in the setup's folder and 2 MB in the game's, and what the preparation
+   left in the driver's cache alone (vk_draw.cpp predict_run's pipelines) was compiled again in play. A start from the
+   desktop names none and Mesa uses ~/.cache's, a third. Mesa files what it caches under its own build and each shader's
+   key, not the program or its folder (another build's entries it passes over), so one folder serves every start. Steam's
+   folder, or none, is replaced; one the player named (any other, longshot_env.txt's included) is kept. NVIDIA's
+   (__GL_SHADER_DISK_CACHE_PATH) is left as it is: what a preparation builds there does not answer the game's process
+   (vk_draw.cpp precompile_built_write). Before anything loads Vulkan; said in the game's log by driver_env_log */
+static void driver_cache_shared(void) {
+    const char *dir = getenv("MESA_SHADER_CACHE_DIR");
+    const int steam = dir && strstr(dir, "/steamapps/shadercache/") != NULL;
+    if (dir && *dir && !steam) return;
+    char was[600];
+    snprintf(was, sizeof was, "%s", steam ? dir : "");   /* (copied: setenv may free what getenv gave) */
+    char game[4096];
+    const DWORD n = hos_game_path_a(game, (DWORD)sizeof game);
+    if (!n || n >= sizeof game) return;
+    char *slash = strrchr(game, '/');
+    if (!slash || slash == game) return;
+    *slash = 0;   /* (the game folder) */
+    char path[4200];
+    if (snprintf(path, sizeof path, "%s/cache/driver", game) >= (int)sizeof path) return;
+    if (setenv("MESA_SHADER_CACHE_DIR", path, 1) != 0) return;
+    snprintf(driver_cache_said, sizeof driver_cache_said,
+             "vk: Mesa's shader cache in %.300s, the same for every start of this game (%s%.400s; a folder named by hand is "
+             "kept)", path, steam ? "in place of Steam's for this entry, " : "none was named", was);
+    fprintf(stderr, "%s\n", driver_cache_said);
+}
+/* (longshot, linux) The variables a Vulkan driver, its loader and the layers read, as this process has them once the
+   functions above are done, said in the game's log by driver_env_log. Two Steam entries of one game can start it with other
+   drivers or other driver options (a launcher's per-game driver, TU_DEBUG, Steam's layers): the setup's entry prepared for
+   Turnip without mesh shaders, the game's entry had them, and every program was translated again at the game's start
+   (2026-11-17, AYN Odin 3); the logs showed only the outcome. Names that begin with TU_, FD_, MESA_, RADV_, ACO_, ANV_,
+   NVK_, VK_, ENABLE_VK_, DISABLE_VK_ or __GL_, and LD_LIBRARY_PATH and LD_PRELOAD (a driver or a loader of another
+   folder); each value cut at 240 characters */
+extern char **environ;
+static void driver_env_note(void) {
+    static const char *const starts[] = {"TU_", "FD_", "MESA_", "RADV_", "ACO_", "ANV_", "NVK_", "VK_", "ENABLE_VK_",
+                                         "DISABLE_VK_", "__GL_", "LD_LIBRARY_PATH=", "LD_PRELOAD="};
+    size_t at = (size_t)snprintf(driver_env_seen, sizeof driver_env_seen, "vk: the driver's environment:");
+    int any = 0;
+    for (char **e = environ; e && *e; e++) {
+        int named = 0;
+        for (size_t i = 0; i < sizeof starts / sizeof *starts && !named; i++) named = !strncmp(*e, starts[i], strlen(starts[i]));
+        if (!named || at + 8 >= sizeof driver_env_seen) continue;
+        const int w = snprintf(driver_env_seen + at, sizeof driver_env_seen - at, " %.240s;", *e);
+        if (w < 0) break;
+        at = at + (size_t)w < sizeof driver_env_seen ? at + (size_t)w : sizeof driver_env_seen - 1;
+        any = 1;
+    }
+    if (!any) snprintf(driver_env_seen + at, sizeof driver_env_seen - at, " none of its variables set");
+    else if (at > 0 && driver_env_seen[at - 1] == ';') driver_env_seen[at - 1] = 0;
+}
 /* (longshot, linux) RADV_FORCE_VRS_CONFIG_FILE dropped before anything loads Vulkan. The Steam Deck's Game Mode sets it for
    Steam and everything it starts, naming a file it writes the Half Rate Shading rate to (/tmp/radv_vrs.<random>, "1x1" when
    off). When that file exists, RADV forces VRS for the device and puts that into every graphics pipeline's key, so nothing
@@ -2275,7 +2334,9 @@ int main(int argc, char **argv) {
     hos_options_choose(argc, argv);   /* (before the Discord status reads it, below: host/options_path.c) */
     driver_cache_room();
     driver_cache_folder();
+    driver_cache_shared();
     driver_env_choose();
+    driver_env_note();
     game_argc = argc, game_argv = argv;
     int prepare_shaders = 0;
     for (int i = 1; i < argc; i++) {

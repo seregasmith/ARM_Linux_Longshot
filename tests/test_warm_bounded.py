@@ -1,7 +1,7 @@
 """Work bounded in what is alive at once (gpu/vk/warm_bounded.h, used by gpu/vk/vk_draw.cpp precompile_warm): the first start
 after a preparation with RX_VK_LOAD=create builds every noted pipeline into the pipeline cache and lets each go, instead of
 keeping them all ready as the precompile does (which a 16 GB PC cannot hold). Compile and run the rule: every item once, never
-more alive than threads, a stop honoured, progress reported. And the source: precompile_warm destroys each pipeline it builds
+more alive than threads, a stop honoured, progress reported, and while hold() says memory is short one worker at a time. And the source: precompile_warm destroys each pipeline it builds
 before it takes the next note, keeps no program, and writes the marker only when it got through. No game or GPU is needed.
 """
 import argparse
@@ -35,6 +35,12 @@ def check_source():
     if warm.index("prepare_saving_now.store(true") > warm.index("pipeline_cache_save(true);") or \
             warm.index("prepare_saving_now.store(false") < warm.index("pipeline_cache_save(true);"):
         raise SystemExit("precompile_warm writes the pipeline cache out without the start-up screen saying so")
+    # (memory short, one worker goes on and the others wait: both runs held by what /proc/meminfo says, read as they tick. Every
+    # worker compiling on, a 15 GB AYN Odin 3 spent 82 minutes on every CPU in this warm and the system went down after it)
+    runs = warm.split("warm_bounded::run(")[1:]
+    if len(runs) != 2 or any(", held_now, [&](size_t) {\n        memory.sample();" not in r for r in runs) or \
+            "memory.short_now.load(" not in warm:
+        raise SystemExit("precompile_warm's workers do not wait while memory is short: every one of them compiles on")
     if warm.index("build_graphics(") > warm.index("vkDestroyPipeline(dev.device, made, nullptr);"):
         raise SystemExit("precompile_warm does not destroy the pipeline it has just built")
     run = draw[draw.index("void precompile_run(void (*progress)(size_t done, size_t total)) {"):]

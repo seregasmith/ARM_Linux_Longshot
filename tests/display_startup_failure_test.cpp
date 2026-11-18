@@ -109,11 +109,14 @@ static void WaitForSingleObject(HANDLE h, unsigned timeout) {
     ++waited;
 }
 static void load_longshot_env() {}
+static void hos_profiling_env() {}   // (host/profiling.c: HOS_PROFILE=1)
 static void hos_game_layout() {}   // (host/game_layout.c: the game folder's cache/ and logs/)
 static void hos_options_choose(int, char**) {}   // (host/options_path.c: the settings file, in the user folder)
 static void driver_cache_room() {}   // (host/hos_main.c: the drivers' shader caches' size, #2033)
 static void driver_cache_folder() {}   // (host/hos_main.c: the folder __GL_SHADER_DISK_CACHE_PATH names, made)
+static void driver_cache_shared() {}   // (host/hos_main.c: Mesa's shader cache in the game folder's cache/driver)
 static void driver_env_choose() {}   // (host/hos_main.c: RADV_FORCE_VRS_CONFIG_FILE dropped)
+static void driver_env_note() {}   // (host/hos_main.c: the driver's environment, for the log)
 
 #include "display_startup_actual.inc"
 

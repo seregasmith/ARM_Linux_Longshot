@@ -554,6 +554,7 @@ SW(RX_VK_VERIFY_DIM, diag, string, "no verification", "WxH: hashes the guest mem
 SW(RX_VK_VRAM_MB, hw, int, "by rule from the driver's allowance, the card's VRAM, system RAM and integrated or not (texture_budget.h)", "Sets the texture budget in MB for a test, in place of the hardware rule.")
 SW(RX_VK_WAIT_GPU, attempt, int, "0: the replay is not held to the GPU", "<frames> keeps the replay no further ahead of the GPU than that many frames (at most 8).")
 SW(RX_VK_WAIT_HOLD_US, tune, int, "3000 microseconds", "How long a game wait that needs stopped work gives another queue's submit before forcing it on.")
+SW(RX_VK_WARM_CHECK, kill, bool, "on: with no marker, 256 noted and 64 compute pipelines are asked of the caches; all answered, the warm pass is left out", "=0 always runs the warm pass at a start with no marker (the first after a preparation), as before.")
 SW(RX_VK_WARP64, hw, bool, "long warp path where the GPU's subgroups can exceed 32 lanes, except in stages pinned to 32", "0 or 1 forces the graphics stages' long warp path off or on, whatever the GPU.")
 SW(RX_VK_WATCH_ADDRS, diag, string, "empty: none watched", "Watches fixed guest addresses (hex list) in the measured statistics frame.")
 SW(RX_VK_WATCH_ARGS_OF, diag, string, "empty: none watched", "Watches the indirect-argument addresses of the listed programs in the measured statistics frame.")

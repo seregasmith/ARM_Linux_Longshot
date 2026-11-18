@@ -251,6 +251,23 @@ Written 2026-11-17, not yet run (it needs Docker on the Mac):
     for the 512 MB render target pool, the queues' event memory and three more), and every draw that used them was skipped
     (`skips a frame by vk_draw.cpp line: 8380`, an index buffer not found). `host/rx_backend.c` now tells the renderer being
     started too (`vk_starting`).
+  - **Fourth run (the shaders):** the game never got past its start-up screen. The setup's Steam entry prepared the shaders
+    with Mesa 27.0.0-devel and no mesh shaders; the game's entry ran 26.2.6 (so its first start compiled all 36,449 pipelines
+    again, 82 minutes on every CPU, and the system went down a few seconds after it saved the 2.4 GB cache), then 27.0.0-devel
+    with mesh shaders (so every program was translated again as well). Three causes, three changes:
+    - Steam gives each entry its own Mesa cache folder (`MESA_SHADER_CACHE_DIR=.../steamapps/shadercache/<app id>`: 1736 MB in
+      the setup's, 2 MB in the game's). `host/hos_main.c` `driver_cache_shared` puts Mesa's cache in the game folder's
+      `cache/driver` for every start; a folder named by hand is kept. The log: `vk: Mesa's shader cache in ...`.
+    - The first start after a preparation always warmed (built every noted pipeline into the pipeline cache again), which on
+      Mesa only made the cache object hold every shader built through it for the whole session. It now asks a sample of
+      the caches first and leaves the warm out when they answer (`notes_answered_by_caches`, `RX_VK_WARM_CHECK=0` warms as
+      before); when the warm does run, its workers run below normal priority and all but one wait while memory is short
+      (`warm_bounded.h`'s hold, Linux's `RX_VK_AVAIL_RESERVE_MB` and `RX_VK_COMMIT_RESERVE_MB`).
+    - The driver's variables (`TU_`, `MESA_`, `VK_`, the layers, `LD_LIBRARY_PATH`) are in every log
+      (`vk: the driver's environment: ...`), to see what differs between the two entries.
+    Both Steam entries must use the same driver and the same driver options (Armada Control): a preparation is for one
+    driver, and a game started with another compiles everything again in play's process, which is what a 15 GB handheld
+    can't hold.
   - The game's own log under Steam: `logs/longshot_log.txt` in the game folder (`longshot-launch` gives the game no
     stderr when it isn't a terminal: Steam's pipe kept the game from writing it). Crash reports: `bug-reports/`.
 - The mesh fallback with indirect counts (hard problem 3).
