@@ -5,7 +5,7 @@ space inside VMA's blocks, which the driver still counts, so the count stayed at
 ratchet. On a 4 GB RX 5500M a paused game (its scene draws nothing) lost 1700 MB of textures in seconds, made them again on
 unpausing (a long wait), and the HUD's GPU-drawn hearts came back as black glyphs until an area change. The rule now waits
 while the blocks hold an eighth of the allowance free, but only while the driver's count is within the allowance: past it the
-driver pages VRAM out to system memory (#2156). RX_VK_SQUEEZE_ALWAYS=1 squeezes as before.
+driver pages VRAM out to system memory (#2156).
 
 python -I -B tests/test_texture_squeeze.py
 """
@@ -38,7 +38,7 @@ def main():
                          "then 7.5 of 7.0 GB at Hyrule Castle)")
     refused = tex[tex.index("st_driver_out_of_memory.load("):]
     refused = refused[:refused.index("refusals_seen = refusals;")]
-    if ("vram_compact::short_excess(used, count_line)" not in refused or "!(kept_only && !squeeze_always)" not in refused
+    if ("vram_compact::short_excess(used, count_line)" not in refused or "known && !kept_only)" not in refused
             or "rule_budget = std::min(rule_budget" not in refused):
         raise SystemExit("the textures do not give memory up when the driver refuses a pipeline for want of it (UHD Graphics: "
                          "six refused, then a fault in igvk64.dll)")
@@ -46,7 +46,7 @@ def main():
     for held_fn in ("note_out_of_memory(guarded_graphics(cache, ci, pl))", "note_out_of_memory(guarded_compute(cache, ci, pl))"):
         if held_fn not in draw:
             raise SystemExit("vk_draw.cpp: a pipeline refused for want of memory is not counted: " + held_fn)
-    if "!(kept_only && !squeeze_always)" not in squeeze:
+    if "if (known && !kept_only && used > count_line" not in squeeze:
         raise SystemExit("the 97% squeeze runs while the textures' pool is down to its blocks made at the start, past the "
                          "allowance too, where no eviction can bring the count down (#2711)")
     if ("static const bool integrated = dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;" not in tex
@@ -54,8 +54,6 @@ def main():
             or "used > count_line && !room_in_blocks)" not in squeeze or "const uint64_t over = used - count_line;" not in tex):
         raise SystemExit("the driver's-limit squeeze holds an integrated GPU at a dedicated card's 97%, where its driver's own "
                          "allocations fail past the allowance (UHD Graphics at Hyrule Castle: 7.5 of 7.0 GB, a fault in igvk64.dll)")
-    if 'env_on("RX_VK_SQUEEZE_ALWAYS")' not in tex:
-        raise SystemExit("RX_VK_SQUEEZE_ALWAYS=1 does not bring the old squeeze back")
     if "room in the blocks: not squeezed" not in tex:
         raise SystemExit("the VRAM log line does not say when the squeeze waited")
     print("the driver's-limit squeeze waits while VMA's blocks hold room: ok")

@@ -26,7 +26,7 @@ inline bool fps_breakdown_on() {
 /// (perf_report.cpp) read the launcher's tick once: true when the summary is on
 bool perf_report_init();
 /// (perf_report.cpp) a measured frame, on the thread that presents, into its map's totals
-void perf_frame(const fps_stats::Frame& f, double translate_wait_ms);
+void perf_frame(const fps_stats::Frame& f, double translate_wait_ms, int64_t pipe_waits);
 /// (perf_report.cpp) a renderer's event (perf_report::Event), counted into the next summary
 void perf_event(int event);
 /// (perf_report.cpp) the last summary at once, with that event (-1 none: the window closed; a lost device: the process ends next)

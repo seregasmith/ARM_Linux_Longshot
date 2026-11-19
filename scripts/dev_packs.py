@@ -65,7 +65,9 @@ CACHES = ("longshot_programs.bin", "longshot_programs.idx", "longshot_programs.z
           "longshot_module_ids.bin", "longshot_pipelines.bin", "longshot_pipelines.bin.predicted", "longshot_pipelines.bin.predicted_keys",
           "longshot_pipelines.bin.built",
           "longshot_computes.bin", "longshot_compute_variants.bin", "longshot_pipeline_states.bin",
-          "longshot_pipeline_states_v1.bin", "longshot_prepared.bin", "longshot_vk_pipelines.bin", "longshot_vk_pipelines.stamp")
+          "longshot_pipeline_states_v1.bin", "longshot_prepared.bin", "longshot_vk_pipelines.bin", "longshot_vk_pipelines.stamp",
+          # (the textures a draw has sampled, for RX_VK_TEX_AHEAD: gpu/vk/texture_ahead.h)
+          "longshot_textures_drawn.bin")
 PLAY_FILES = re.compile(r"longshot_vk_pipelines_play_[0-9]+\.bin")   # (what play adds to the pipeline cache: gpu/vk/vk_draw.cpp play_path)
 # (what the game writes into its folder at run time, never a build's output: the caches (and the button prompts it makes) in
 # cache/, the logs in logs/ (host/game_layout.c)
@@ -335,6 +337,20 @@ def base_env(predict_s):
     return {"RX_VK_PREDICT_S": str(predict_s)} if predict_s > 0 else {}
 
 
+def renderer_build_cmd(environ, cpus, python=sys.executable):
+    """The build of the renderer alone, with its compilers at once: nx2/build.py run by itself compiles one file at a time
+    (make_game.py passes it --jobs), and a change to a header every renderer file includes compiles all of them. LONGSHOT_JOBS
+    when it is set, as the game's build takes it (0 or empty: automatic); else one for every four CPU threads, since it shares
+    the PC with the job queue's other jobs (a pack holds one of its build slots, scripts/dev_build.py vk one of its four light
+    ones). build.py still starts each compiler only when the free memory holds it. The count is in no object key: the
+    objects are the base's"""
+    asked = (environ.get("LONGSHOT_JOBS") or "").strip()
+    if asked and not asked.isdigit():
+        raise SystemExit("LONGSHOT_JOBS must be a whole number: use 1 or more, or 0 for automatic.")
+    jobs = int(asked or 0) or max(1, cpus // 4)
+    return [python, "-I", "nx2/build.py", "--standalone", "--jobs", str(jobs)]
+
+
 def renderer_profile(base_work, environ):
     """The renderer's play profile for a pack of the renderer alone: the one make_game.py gave the base's build, by the same
     path, so the base's objects are found again, since nx2/build.py run by itself uses none and the pack's renderer would then
@@ -547,7 +563,7 @@ def cmd_pack(a):
         built, kinds = os.path.join(w["game_work"], "sa", "build"), MODULES
     elif how == "renderer":
         link_objects(b["work"], w["renderer_work"])
-        run([sys.executable, "-I", "nx2/build.py", "--standalone"], tree,
+        run(renderer_build_cmd(os.environ, os.cpu_count() or 1), tree,
             dict({"OOT_WORK": w["renderer_work"], "RX_RELEASE": "1", "RX_VK_ONLY": "1", "LONGSHOT_KEEP_BUILD_FILES": "1"},
                  **renderer_profile(b["work"], os.environ)))
         built, kinds = os.path.join(w["renderer_work"], "sa", "build"), MODULES[1:]

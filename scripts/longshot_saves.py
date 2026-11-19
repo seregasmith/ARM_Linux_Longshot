@@ -14,10 +14,12 @@ orchid, pokedinner, eden, eglantine or nx2navi. --from/--to name the other side'
 for: the save folder itself (the one with account.sav and slot_*), or a folder above it (an emulator's data folder, a
 portable user folder, a game folder), which is searched for the game's saves. --longshot DIR does the same for
 Longshot's side, --hookshot DIR for Hookshot's. Longshot's and Hookshot's saves are in their data folder on Linux
-($XDG_DATA_HOME/longshot or /hookshot, default ~/.local/share/...) and in the game folder's user\\save on Windows
-(default %USERPROFILE%\\Games\\Longshot or \\Hookshot). The side being overwritten is copied first to
-<backup>/<import or export>-<name>-<YYYYmmdd-HHMMSS> (Linux: $XDG_DATA_HOME/oot-save-backups, Windows:
-%LOCALAPPDATA%\\Longshot\\oot-save-backups; --backup-dir changes it). Close every game first: --force skips that check.
+($XDG_DATA_HOME/longshot or /hookshot, default ~/.local/share/...). On Windows Longshot's are in the launcher's folder,
+%APPDATA%\\Longshot\\save (the old game folder %USERPROFILE%\\Games\\Longshot\\user\\save is still found, and said), and
+Hookshot's in the game folder's user\\save (default %USERPROFILE%\\Games\\Hookshot). The side being overwritten is copied first to
+<backup>/<import or export>-<name>-<YYYYmmdd-HHMMSS> (Linux: $XDG_DATA_HOME/longshot/save-backup, beside the saves, where the
+launcher keeps its backups; Windows: %LOCALAPPDATA%\\Longshot\\oot-save-backups; --backup-dir changes it). Backups an older
+script made on Linux stay in $XDG_DATA_HOME/oot-save-backups. Close every game first: --force skips that check.
 scrub makes a save in the repository (assets/saves) from one slot: its picture made mid-grey and its saved date set
 to 2026-01-01 00:00:00 (there is no player's name in these saves); check-repo-saves checks them all.
 docs/saves-script.md has the rules.
@@ -63,8 +65,10 @@ EMULATORS = [
                                    "windows": ["{localappdata}/Programs/NX2navi/game", "C:/Games/Ocarina"]},
             ["nx2navi", "ocarina"], []),
 ]
-# (the builders' default game folder on Windows; Hookshot's 3.0 launcher kept one folder per version under it)
-LONGSHOT = Program("longshot", "Longshot", {"linux": ["{data}/longshot"], "windows": ["{home}/Games/Longshot"]},
+# (Windows: the launcher's folder, which it starts every build with as --user, saves in its save\<id>; then the game folder
+# of before the launcher, the builder's and a build started on its own, saves in its user\save\<id>)
+LONGSHOT = Program("longshot", "Longshot", {"linux": ["{data}/longshot"],
+                                            "windows": ["{appdata}/Longshot", "{home}/Games/Longshot"]},
                    ["longshot"], [])
 HOOKSHOT = Program("hookshot", "Hookshot", {"linux": ["{data}/hookshot"],
                                             "windows": ["{home}/Games/Hookshot", "{home}/Games/Hookshot/*"]},
@@ -94,10 +98,14 @@ def data_home():
 
 
 def default_backup_dir():
+    """Where a copy's backup goes: the launcher's backups folder, so the launcher finds the script's backups with its own
+    (LongshotLauncher issue 188). Windows: %LOCALAPPDATA%\\Longshot\\oot-save-backups. Linux: longshot/save-backup in the data
+    folder, beside Longshot's saves, as the launcher since LongshotLauncher#80 (the script used oot-save-backups in the data
+    folder before; the backups made there stay there)."""
     if WINDOWS:
         base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
         return os.path.join(base, "Longshot", "oot-save-backups")
-    return os.path.join(data_home(), "oot-save-backups")
+    return os.path.join(data_home(), "longshot", "save-backup")
 
 
 def folders(program):
@@ -187,16 +195,37 @@ def locate(program, override, flag):
                % (program.display, ", ".join(tried) or "no default folder", program.display, flag))
 
 
+def old_folder_note(program, override, used):
+    """What to say about Windows' two default folders for Longshot (the launcher's and the old game folder), when the save is
+    in the old one or both have one; None otherwise (and for any other program or folder)."""
+    if not WINDOWS or program is not LONGSHOT or override is not None:
+        return None
+    launcher, old = folders(program)[:2]
+    where = os.path.join(launcher, "save")
+    if used != launcher:
+        return ("note: Longshot's save is in %s, the old game folder (where Longshot kept it before the launcher). The launcher "
+                "keeps it in %s and moves an old one in when it opens (docs/saves.md)" % (used, where))
+    if os.path.isdir(old) and find_saves(old):
+        return ("note: %s, the old game folder, also holds a save (the launcher moves it into %s when it opens); this uses the "
+                "launcher's. --longshot %s uses the old one" % (old, where, old))
+    return None
+
+
 def new_save_folder(program, override):
-    """Where a save copied into Longshot or Hookshot goes when it has none yet: save/USER_ID in its data folder on Linux,
-    user/save/USER_ID in its game folder on Windows (which has to be there: no save is made where nothing was built).
-    None for the others: their profile ids are their own."""
+    """Where a save copied into Longshot or Hookshot goes when it has none yet: save/USER_ID in its data folder on Linux; on
+    Windows Longshot's goes to save/USER_ID in the launcher's folder (made, as on Linux) and Hookshot's to user/save/USER_ID in
+    its game folder (which has to be there: no save is made where nothing was built). A folder named with --longshot or
+    --hookshot on Windows is a game folder (user/save/USER_ID), or the folder a game was started with --user when it has a
+    save folder and no user folder (save/USER_ID). None for the others: their profile ids are their own."""
     if program not in (LONGSHOT, HOOKSHOT):
         return None
     root = override if override is not None else folders(program)[0]
-    if not WINDOWS:
+    if not WINDOWS or program is LONGSHOT and override is None:
         return os.path.join(root, "save", USER_ID)
-    return os.path.join(root, "user", "save", USER_ID) if os.path.isdir(root) else None
+    if not os.path.isdir(root):
+        return None
+    user_folder = os.path.isdir(os.path.join(root, "save")) and not os.path.isdir(os.path.join(root, "user"))
+    return os.path.join(root, "save" if user_folder else os.path.join("user", "save"), USER_ID)
 
 
 def pick(found, name, flag, wanted=None):
@@ -214,12 +243,16 @@ def pick(found, name, flag, wanted=None):
 def side(program, override, flag, wanted, target):
     """The save folder of one side. The target of a copy into Longshot or Hookshot may have no save yet: new_save_folder."""
     try:
-        found = locate(program, override, flag)[1]
+        located = locate(program, override, flag)
+        found = located[1]
     except Fail:
         fresh = new_save_folder(program, override) if target else None
         if fresh is None or os.path.exists(fresh) and not os.path.isdir(fresh):
             raise
         return fresh
+    note = old_folder_note(program, override, located[0])
+    if note:
+        print(note)
     own = program in (LONGSHOT, HOOKSHOT)
     return pick(found, program.display, flag + " <the user id folder>" if own else "--profile <id>", wanted)[1]
 
@@ -300,7 +333,11 @@ def show(title, folder, found):
 def list_all(args):
     for program, override, flag in ((LONGSHOT, args.longshot, "--longshot"), (HOOKSHOT, args.hookshot, "--hookshot")):
         try:
-            show(program.display, *locate(program, override, flag))
+            located = locate(program, override, flag)
+            show(program.display, *located)
+            note = old_folder_note(program, override, located[0])
+            if note:
+                print("  " + note)
         except Fail as e:
             print("%s: %s" % (program.display, e))
     # (by the folder import and export use, the first of a program's with saves, as locate: the programs whose saves are there)
@@ -1171,7 +1208,8 @@ def main(argv=None):
     p.add_argument("name", nargs="?", help="where from or to: %s" % ", ".join(e.name for e in OTHERS))
     p.add_argument("--from", dest="from_dir", metavar="DIR", help="import from this folder (a save, or one to search)")
     p.add_argument("--to", dest="to_dir", metavar="DIR", help="export to this folder (a save, or one to search)")
-    p.add_argument("--longshot", metavar="DIR", help="Longshot's data folder (Windows: the game folder)")
+    p.add_argument("--longshot", metavar="DIR", help="Longshot's data folder (Windows: the launcher's %%APPDATA%%\\Longshot, "
+                   "a portable launcher's user folder, or a game folder)")
     p.add_argument("--hookshot", metavar="DIR", help="Hookshot's data folder (Windows: the game folder)")
     p.add_argument("--profile", metavar="ID", help="the emulator's profile, when several have saves")
     p.add_argument("--backup-dir", metavar="DIR", help="where the backup of the overwritten side goes")

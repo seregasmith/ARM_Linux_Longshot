@@ -18,7 +18,7 @@ in), its gold buttons (`gpu/vk/vk_crash_window.cpp`, with `gpu/vk/vk_ui.h`'s dra
 1. What happened and when, and why: **Report automatically** first, then **Report manually**, **Open the log folder**,
    **Close**. Report automatically is there only for a crash record (an unclean end has no crash to report), when
    `longshot_version.txt` has the addresses (below), and until the report has been sent.
-2. **Send to the team**: what Report automatically would send, and nothing else: the version, whether it is a release
+2. **Send to the team**: what Report automatically would send, and nothing else: the client (`Longshot`), game version, whether it is a release
    build, the system, the renderer, the graphics card, the CPU and RAM, the map, how many settings and how many changed,
    the crash's first lines, and how many log lines go with it; **Show all of it** opens the report itself, every field as
    it is sent (`bug-reports/pending/sending-<record>.json`). **Send** and **Cancel**.
@@ -66,8 +66,10 @@ The report is made from what is on disk, never from the crashed process:
 - `longshot_defaults.ini`, and `longshot_version.txt`'s `source=`.
 
 The game logs what the report needs at startup, worded as the Insert menu's Bug report words it: `report: renderer`
-(the back end that started, `host/rx_backend.c`), and from the renderer (`gpu/vk/vk_main.cpp`) `report: gpu`,
-`report: cpu` (with the RAM) and `report: os`.
+(the back end chosen, `host/rx_backend.c`: logged before it starts, so a crash while it prepares the shaders names it),
+and from the renderer (`gpu/vk/vk_main.cpp`) `report: gpu` (the card and its driver), `report: cpu` (with the RAM) and
+`report: os`. The report's `gpu` is the `report: gpu` line; a log without one gives the device chosen and its
+`vk: driver:` line, joined the same way (`hos_crash_gpu`, `host/hos_crash_dialog.h`).
 
 ## Out of memory (Linux)
 
@@ -114,6 +116,14 @@ The fields are the ones the relay takes (Longshot-api's `telemetry/crash/report.
 - the user's name and home: `/home/<name>`, `/Users/<name>`, `C:\Users\<name>` and Wine's `Z:\home\<name>` become `~`
   and `%USERPROFILE%`, and the user's name elsewhere, as a word of its own (three letters or more), `<user>`. The relay
   does it again, as a second line of defence.
+
+The saved logs themselves leave the user's name out too, so a log attached by hand is as safe as the report: the game
+writes its own lines without it (host/hos_thread.c through host/log_redact.c), and once the game is gone the helper
+rewrites that run's `longshot_log.txt` in place with the same rule (the home folder `~` or `%USERPROFILE%`, the name
+as a folder of any path `<user>`), for what the Vulkan loader, SDL or a printf wrote to stderr themselves. It does so only
+for its own run (the log's `run_id:` line) and locked, so a start that rotates the log meanwhile, and cleans the rotated
+`longshot_log.1.txt` itself for a run that had no helper, never writes over it. One rule for the log, the crash window
+and the Insert menu's Bug report: `gpu/vk/compat/longshot_redact.h`.
 
 ### The release flag
 

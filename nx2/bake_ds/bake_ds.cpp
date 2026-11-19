@@ -72,6 +72,7 @@
 #ifndef LONGSHOT_ENV_H   // (env_on, as the live back end reads its switches)
 #include "longshot_env.h"
 #endif
+#include "../../gpu/vk/switches.h"   // (find_gone: disk_stamp passes over a removed switch, as live's translator_stamp does)
 #include "shader_recompiler/object_pool.h"
 #include "shader_recompiler/profile.h"
 #include "shader_recompiler/program_header.h"
@@ -271,8 +272,8 @@ bool control_end(const uint8_t* ctl, uint32_t* end_out) {   // (live: vk_shader.
 }
 
 /// The stage's control section and code area, parsed as parse_code's does (live: vk_shader.cpp:155).
-/// Left out: the RX_VK_REJECT_* bisect lists, the RX_VK_NATIVE_MMA_KEYS choice (dev.native_mma is false here, so
-/// HMMA lowers to the shuffle expansion), the native dumps and the logf lines.
+/// Left out: the RX_VK_REJECT_* bisect lists, the native dumps and the logf lines (dev.native_mma is false here, so
+/// HMMA lowers to the shuffle expansion).
 StagePackage parse_stage(const uint8_t* ctl, const std::vector<uint8_t>& area) {
     StagePackage p;
     uint32_t len, c1o;
@@ -428,17 +429,13 @@ public:
     }
     u32 LocalMemorySize() const override { return local_memory; }
     u32 SharedMemorySize() const override {
-        // (live: vk_shader.cpp:416; RX_VK_SHARED_48K=1 is the pre-PR-91 48 KB)
-        static const bool old = env_on("RX_VK_SHARED_48K");
-        return old ? 48u << 10 : nvn.shared_memory;
+        return nvn.shared_memory;   // (live: vk_shader.cpp Env::SharedMemorySize)
     }
     std::array<u32, 3> WorkgroupSize() const override {
         return {std::max(1u, nvn.local[0]), std::max(1u, nvn.local[1]), std::max(1u, nvn.local[2])};
     }
     bool HasHLEMacroState() const override {
-        // (live: vk_shader.cpp:430; RX_VK_NO_DRAW_PARAMS=1 is the pre-fix bank)
-        static const bool off = env_on("RX_VK_NO_DRAW_PARAMS");
-        return !off && stage == Shader::Stage::VertexB;
+        return stage == Shader::Stage::VertexB;   // (live: vk_shader.cpp Env::HasHLEMacroState)
     }
     bool HasNativeInstructions() const override { return true; }
     bool IsNativeProgram() const override { return true; }
@@ -719,11 +716,13 @@ uint64_t disk_stamp(uint64_t translator_stamp, uint32_t depth) {   // (live: vk_
     // vk_shader.cpp:860-862. The target's switches were exported by export_target_env before this call, so they
     // sit where `environ` puts them -- the same position a run of this build sees. A multi-variable environment
     // whose allowlist entries are in another order is a different stamp, as it is live.)
+    // (as live: a name that is no longer a switch, gpu/vk/switches.def's GONE rows, is none of the stamp's)
     for (char** e = environ; e && *e; e++) {
+        const char* const eq = std::strchr(*e, '=');
+        if (eq && mkwvk::switches::find_gone(std::string(*e, static_cast<size_t>(eq - *e)).c_str())) continue;
         for (const char* pre : {"RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK",
-                                "RX_VK_GP_", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "RX_VK_SHARED", "RX_VK_MESH",
-                                "RX_VK_NO_INVARIANT", "RX_VK_MARKERS", "RX_VK_NO_CBUF_LOAD_RULE",
-                                "RX_VK_PTR_SPLIT_FALLBACK", "RX_VK_ALL_GLOBAL_PROGS", "RX_VK_NO_EXTREGS", "RX_VK_NO_DRAW_PARAMS",
+                                "RX_VK_GP_", "RX_VK_FOLLOW", "RX_VK_NO_F16", "RX_VK_MESH",
+                                "RX_VK_NO_INVARIANT", "RX_VK_MARKERS", "RX_VK_ALL_GLOBAL_PROGS",
                                 "RX_VK_MISS_LOG", "RX_VK_BLOCK_PROBE", "EDEN_"})
             if (!std::strncmp(*e, pre, std::strlen(pre))) add(*e, std::strlen(*e));
     }

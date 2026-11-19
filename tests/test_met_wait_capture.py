@@ -11,10 +11,10 @@ stops there once, and schedule() lets it on through resume_queue. The statements
     count is in the next capture or an older one;
   - the CPU's signal notes that count, after its place in the pending list and before the signal is counted;
   - the wait's met branch asks, before it counts the wait as met: a serial replay that may stop, not the wait a resume
-    starts at, the switch on, and the event's last CPU signal not followed by a capture; then it stops as an unmet wait does;
+    starts at, the submitting thread, and the event's last CPU signal not followed by a capture; then it stops as an unmet
+    wait does;
   - the question reads the count before it takes the events' lock (a signal made meanwhile counts as after it);
-  - it is off with the render thread and when a stopped queue takes no capture as it goes on (RX_VK_RESUME_CAPTURE=0:
-    stopping would only loop);
+  - it is off with the render thread;
   - resume_queue marks the wait it starts at for the length of that run, so one wait stops at most once.
 
 python -I -B tests/test_met_wait_capture.py
@@ -44,7 +44,6 @@ def main():
     replay = (ROOT / "gpu" / "vk" / "vk_replay.cpp").read_text(encoding="utf-8")
     memory = (ROOT / "gpu" / "vk" / "vk_memory.cpp").read_text(encoding="utf-8")
     header = (ROOT / "gpu" / "vk" / "vk_internal.h").read_text(encoding="utf-8")
-    docs = (ROOT / "docs" / "development.md").read_text(encoding="utf-8")
 
     need("uint64_t memory_captures_begun();" in header, "vk_internal.h no longer declares memory_captures_begun")
     make = block(memory, "std::unique_ptr<Capture> capture_make() {")
@@ -64,8 +63,7 @@ def main():
     need("it->second >= begun" in asked, "a signal is uncaptured when no capture was begun after it")
 
     on = block(replay, "bool met_wait_capture_on() {")
-    need("RX_VK_MET_WAIT_CAPTURE" in on and "resume_capture_on()" in on and "!async_on()" in on,
-         "the switch, the resume capture and the submitting thread decide whether a met wait stops")
+    need("!async_on()" in on, "a met wait stops on the submitting thread only")
 
     wait = replay[replay.index("case NOP_WAIT_EVENT:"):replay.index("case NOP_REPORT_COUNTER:")]
     met = wait[wait.index("if (event_wait_met(have, w.mode, w.value)) {"):wait.index("} else if (suspend_ok) {")]
@@ -79,9 +77,9 @@ def main():
     need("met_resumed_at = forced ? nullptr : from;" in resume, "resume_queue no longer marks the wait it starts at")
     need(resume.index("met_resumed_at = forced ? nullptr : from;") < resume.index("const bool went = run_submit(") <
          resume.index("met_resumed_at = nullptr;"), "the mark holds for the resumed run only")
-    need("resume_capture_on()" in resume, "resume_queue and the met wait must read the same RX_VK_RESUME_CAPTURE")
+    need("if (!forced && !async_on()) {" in resume and "memory_capture_now(q.value, completed());" in resume,
+         "resume_queue no longer takes a capture when a queue goes on from a CPU event's wait on the submitting thread")
 
-    need("`RX_VK_MET_WAIT_CAPTURE=0`" in docs, "docs/development.md has no row for RX_VK_MET_WAIT_CAPTURE")
     print("PASS: a met wait for a CPU event with an uncaptured signal stops once for resume_queue's capture")
 
 

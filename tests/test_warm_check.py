@@ -55,7 +55,7 @@ def main():
     run_sig = "void precompile_run(void (*progress)(size_t done, size_t total)) {"
     start = draw.index(run_sig)
     head = draw[start:draw.index("    const auto t0 = std::chrono::steady_clock::now();", start)]
-    if "precompile_warm(progress);" not in head:
+    if "precompile_warm(" not in head:
         raise SystemExit("FAIL: precompile_run's start no longer warms the notes: this test cuts the wrong part")
     problems = []
     with tempfile.TemporaryDirectory(prefix="longshot-warm-check-") as folder:

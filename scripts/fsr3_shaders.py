@@ -87,8 +87,24 @@ OF_OPTIONS = ["-DFFX_GPU=1", "-DFFX_GLSL=1"]
 #     is the HUD (or a flat colour, where the frame's own pixel is right too): it is this frame's pixel. A sample of the
 #     frame before or this one that lands on such a pixel is the HUD, not the scene behind it, which neither frame shows:
 #     where only one of the two samples does, the other is taken.
+#  3. The HUD marked, not guessed (dispatchFlags bit 17, vk_fsr3fi.cpp kHudMask): the guess above misses the HUD's
+#     see-through parts (the minimap, the button prompts' backing), its soft edges and anything of it that animates, and
+#     those still moved with the scene (#1310, #1420). Where the renderer has it, the colour's alpha says which pixels are
+#     the HUD (0: vk_framegen.cpp hud_source, what the game drew over its picture after the upscale), in this frame and,
+#     through the previous source's copy, the frame before: those pixels are what 2. calls the same in both frames.
+#  4. HUD-less mode's overlay taken whole. AMD lays the presented frame over the made one where it differs from the
+#     HUD-less colour, by a factor that grows with the difference, for a HUD-less colour that is only near the presented
+#     frame's. The renderer's (vk_framegen.cpp hud_source, shaders/fg_hud.comp) is the presented frame's to the bit
+#     wherever nothing was drawn over the picture, so any difference is the HUD or an effect drawn after the upscale (the
+#     fairy's glow): AMD's factor took its faint parts (soft edges, a glow's fall-off) at a fraction, the scene behind them
+#     shown instead, and the made frames had a cut edge around them. Taken whole, they are this frame's.
 FI_T = "InterpolationT()"
 FI_PATCHES = {
+    "ffx_frameinterpolation_inpainting.h": [
+        ("            const FfxFloat32 fStaticFactor = CalculateStaticContentFactor(RawRGBToLinear(fCurrentInterpolationSource), "
+         "RawRGBToLinear(fPresentColor));\n",
+         "            const FfxFloat32 fStaticFactor = 1.0f;   // (longshot) the presented frame's pixel, whole (FI_PATCHES 4)\n", 1),
+    ],
     "ffx_frameinterpolation_callbacks_glsl.h": [
         ("        FfxInt32        _pad1;\n",
          "        FfxFloat32      fInterpolationT;   // (longshot) the made frame's place: 0 the frame before, 1 this one\n", 1),
@@ -101,7 +117,20 @@ FI_PATCHES = {
          "    FfxFloat32 PrevScale()\n    {\n        return 2.0f * cbFI.fInterpolationT;\n    }\n"
          "    FfxFloat32 CurrScale()\n    {\n        return 2.0f * (1.0f - cbFI.fInterpolationT);\n    }\n"
          "    // (longshot) the HUD kept where it is (vk_fsr3fi.cpp kKeepStatic)\n"
-         "    FfxBoolean KeepStaticPixels()\n    {\n        return (cbFI.dispatchFlags & (1u << 16)) != 0u;\n    }\n", 1),
+         "    FfxBoolean KeepStaticPixels()\n    {\n        return (cbFI.dispatchFlags & (1u << 16)) != 0u;\n    }\n"
+         "    // (longshot) the colour's alpha marks the HUD, 0 where it is (vk_fsr3fi.cpp kHudMask)\n"
+         "    FfxBoolean HudMaskInAlpha()\n    {\n        return (cbFI.dispatchFlags & (1u << 17)) != 0u;\n    }\n", 1),
+        # (each frame's HUD mark, the alpha of the two interpolation sources: KeepStaticPixels' known HUD)
+        ("        return texelFetch(r_previous_interpolation_source, iPxPos, 0).rgb;\n    }\n",
+         "        return texelFetch(r_previous_interpolation_source, iPxPos, 0).rgb;\n    }\n"
+         "    // (longshot) the frame before's HUD mark: 0 the HUD (HudMaskInAlpha)\n"
+         "    FfxFloat32 LoadPreviousBackbufferAlpha(FFX_PARAMETER_IN FfxInt32x2 iPxPos)\n    {\n"
+         "        return texelFetch(r_previous_interpolation_source, iPxPos, 0).a;\n    }\n", 1),
+        ("        return texelFetch(r_current_interpolation_source, iPxPos, 0).rgb;\n    }\n",
+         "        return texelFetch(r_current_interpolation_source, iPxPos, 0).rgb;\n    }\n"
+         "    // (longshot) this frame's HUD mark: 0 the HUD (HudMaskInAlpha)\n"
+         "    FfxFloat32 LoadCurrentBackbufferAlpha(FFX_PARAMETER_IN FfxInt32x2 iPxPos)\n    {\n"
+         "        return texelFetch(r_current_interpolation_source, iPxPos, 0).a;\n    }\n", 1),
     ],
     "ffx_frameinterpolation_game_motion_vector_field.h": [
         ("    const FfxFloat32x2 fInterpolatedLocationUv = fUvInScreenSpace + fMotionVectorHalf;\n",
@@ -170,6 +199,15 @@ FI_PATCHES = {
          "    return max(fDiff.r, max(fDiff.g, fDiff.b)) <= (0.5f / 255.0f);\n"
          "}\n"
          "\n"
+         "// A pixel of the frame before (bCurrent false) or of this one that is the HUD: marked in that frame's alpha where the\n"
+         "// renderer knows it (HudMaskInAlpha), else one the same in both frames (LongshotSame)\n"
+         "FfxBoolean LongshotHud(FfxInt32x2 iPx, FfxBoolean bCurrent)\n"
+         "{\n"
+         "    if (!HudMaskInAlpha()) return LongshotSame(iPx);\n"
+         "    if (!IsInRect(iPx, InterpolationRectBase(), InterpolationRectSize())) return false;\n"
+         "    return (bCurrent ? LoadCurrentBackbufferAlpha(iPx) : LoadPreviousBackbufferAlpha(iPx)) < 0.5f;\n"
+         "}\n"
+         "\n"
          "// A blend of the two frames' samples (0 < t < 1: both ends seen) where one sample lands on a pixel the same in both\n"
          "// frames and the other does not: that one is the HUD, the scene behind it in neither frame, so the other is taken.\n"
          "// fMv: the vector the samples were taken with, in UV (half the motion, as the fields keep it)\n"
@@ -177,17 +215,20 @@ FI_PATCHES = {
          "                           inout FfxFloat32x3 fColor)\n"
          "{\n"
          "    if (!KeepStaticPixels() || t <= 0.0f || t >= 1.0f || length(fMv * DisplaySize()) < 0.5f) return;\n"
-         "    const FfxBoolean bPrev = LongshotSame(FfxInt32x2((fUv + fMv * PrevScale()) * DisplaySize()));\n"
-         "    const FfxBoolean bCurr = LongshotSame(FfxInt32x2((fUv - fMv * CurrScale()) * DisplaySize()));\n"
+         "    const FfxBoolean bPrev = LongshotHud(FfxInt32x2((fUv + fMv * PrevScale()) * DisplaySize()), false);\n"
+         "    const FfxBoolean bCurr = LongshotHud(FfxInt32x2((fUv - fMv * CurrScale()) * DisplaySize()), true);\n"
          "    if (bPrev && !bCurr) fColor = fCurr;\n"
          "    else if (bCurr && !bPrev) fColor = fPrev;\n"
          "}\n"
          "\n"
-         "// The made pixel itself: the same in both frames while the scene there moves (fVelocity: the larger of the two\n"
-         "// fields' vectors, in UV) is the HUD, or a flat colour where this frame's pixel is right too: this frame's pixel\n"
+         "// The made pixel itself: this frame's HUD where it is marked; else the same in both frames while the scene there moves\n"
+         "// (fVelocity: the larger of the two fields' vectors, in UV) is the HUD, or a flat colour where this frame's pixel is\n"
+         "// right too: this frame's pixel\n"
          "void LongshotStaticPixel(FfxInt32x2 iPx, FfxFloat32 fVelocity, inout FfxFloat32x3 fColor, inout FfxFloat32 fInPaintingWeight)\n"
          "{\n"
-         "    if (!KeepStaticPixels() || fVelocity * length(FfxFloat32x2(DisplaySize())) < 0.5f || !LongshotSame(iPx)) return;\n"
+         "    if (!KeepStaticPixels()) return;\n"
+         "    if (HudMaskInAlpha() ? !LongshotHud(iPx, true)\n"
+         "                         : fVelocity * length(FfxFloat32x2(DisplaySize())) < 0.5f || !LongshotSame(iPx)) return;\n"
          "    fColor = LoadCurrentBackbuffer(iPx);\n"
          "    fInPaintingWeight = 0.0f;\n"
          "}\n"

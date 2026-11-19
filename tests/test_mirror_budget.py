@@ -34,7 +34,9 @@ def check_source():
     for needle in ['getenv("RX_VK_MIRROR_MB")', "mirror_rule::auto_bytes(device_vram_bytes())"]:
         if needle not in budget:
             raise SystemExit("vk_memory.cpp: mirror_budget() no longer has: " + needle)
-    if "vram / 8" in budget or "vram / 4" in budget:
+    # (#637 put a rule of its own ahead of the header's here, a third up to 1700 MB for every card of 6.5 GB or less: a 4 GB
+    # card got 1365 MB where the header's small cards keep 256 MB. The 6 GB cards' part of it is in the header now)
+    if "vram / 8" in budget or "vram / 4" in budget or "vram / 3" in budget or "1700" in budget or "<< 30" in budget:
         raise SystemExit("vk_memory.cpp: mirror_budget() works the size out itself again, apart from mirror_budget.h")
     # (no preset or row: the options do not reach it)
     if "opts." in budget or "preset_caps_memory" in mem:

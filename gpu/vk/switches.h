@@ -1,5 +1,5 @@
-// (longshot) The renderer's switches, in one table (switches.def): every RX_ name the renderer or the host reads from the
-// environment, what kind of switch it is, what it does unset and what setting it does. The reads stay where they are used;
+// (longshot) The switches, in one table (switches.def): every RX_, HOS_ and LONGSHOT_ name the renderer or the host reads from
+// the environment, what kind of switch it is, what it does unset and what setting it does. The reads stay where they are used;
 // tests/test_switch_table.py fails on a name read in the source that the table does not have, on a row nothing reads, and on a
 // removed name that is still read. At the start the renderer says which switches the run has set (switches::report): a log
 // then shows how far a run is from the defaults, a name that is no switch (a typo, or one from another build) is said so
@@ -78,12 +78,17 @@ inline const Gone* find_gone(const char* name) {
         if (!std::strcmp(g->name, name)) return g;
     return nullptr;
 }
-/// Whether an environment name is the renderer's to answer for: RX_ and what follows
-inline bool ours(const char* name, size_t len) { return len > 3 && !std::strncmp(name, "RX_", 3); }
+/// Whether an environment name is the game's to answer for when it is no switch: RX_ or HOS_ and what follows. A LONGSHOT_
+/// name is said when it is a switch and passed over when it is none: the launcher and the Builder have their own
+inline bool ours(const char* name, size_t len) {
+    return (len > 3 && !std::strncmp(name, "RX_", 3)) || (len > 4 && !std::strncmp(name, "HOS_", 4));
+}
+/// Whether a name could be a row at all: one of the three families
+inline bool listed_family(const char* name, size_t len) { return ours(name, len) || (len > 9 && !std::strncmp(name, "LONGSHOT_", 9)); }
 
 /// What the run has set, said through log(const char* line): one line naming every switch set with its value and kind
 /// ("vk: switches set (2): RX_VK_ASYNC=0 (hw), RX_VK_DRAW_STATS=1 (diag)", or "vk: switches set: none"), then one line for
-/// each RX_ name that is set and is no switch: a removed one with what became of it, another as not a switch of this build.
+/// each RX_ or HOS_ name that is set and is no switch: a removed one with what became of it, another as not a switch of this build.
 /// env: the environment's entries, "NAME=value", ended by a nullptr (environ). A value that names a file or folder is said as
 /// "<a path>", and another is cut at 48 characters. Returns how many names were set that are no switch.
 template <class Log> int report(const char* const* env, Log log) {
@@ -91,13 +96,15 @@ template <class Log> int report(const char* const* env, Log log) {
     int n_set = 0, strangers = 0;
     for (const char* const* e = env; e && *e; e++) {
         const char* eq = std::strchr(*e, '=');
-        if (!eq || !ours(*e, (size_t)(eq - *e))) continue;
+        if (!eq || !listed_family(*e, (size_t)(eq - *e))) continue;
         const std::string name(*e, (size_t)(eq - *e));
         if (const Row* r = find(name.c_str())) {
             std::string value(eq + 1);
             if (value.find_first_of("/\\") != std::string::npos) value = "<a path>";   // (a log is shared: no folder names)
             else if (value.size() > 48) value = value.substr(0, 45) + "...";
             set += (n_set++ ? ", " : "") + name + "=" + value + " (" + kind_name(r->kind) + ")";
+        } else if (!ours(name.c_str(), name.size())) {
+            continue;   // (a LONGSHOT_ name that is no switch of the game's)
         } else if (const Gone* g = find_gone(name.c_str())) {
             strangers++;
             log(("vk: " + name + " is set, and is no longer a switch (since " + g->since + "): " + g->became).c_str());

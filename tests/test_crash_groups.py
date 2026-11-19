@@ -14,6 +14,55 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import crash_groups  # noqa: E402
+import contextlib
+import io
+import json
+import tempfile
+
+
+def local_report_identity(check):
+    def cli(paths):
+        argv = sys.argv
+        output = io.StringIO()
+        try:
+            sys.argv = ["crash_groups.py", "--files", *(str(path) for path in paths), "--json"]
+            with contextlib.redirect_stdout(output):
+                code = crash_groups.main()
+        finally:
+            sys.argv = argv
+        return code, json.loads(output.getvalue())
+
+    with tempfile.TemporaryDirectory() as directory:
+        paths = [Path(directory) / part / "longshot_log.txt" for part in ("a", "b")]
+        text = record(reason="device lost", exception="0x0")
+        for path in paths:
+            path.parent.mkdir()
+            path.write_text(text, encoding="utf-8")
+        code, groups = cli(paths)
+        check("local-collision-exit", code, 0)
+        check("local-collision-report-count", len(groups[0]["reports"]), 2)
+        check("local-collision-labels", groups[0]["reports"], list(map(str, paths)))
+        check("local-collision-records", groups[0]["records"], 2)
+        check("local-collision-vendors", groups[0]["vendors"], {"unknown": 2})
+        check("local-collision-stages", groups[0]["stages"], {"not said": 2})
+        check("local-collision-frames", groups[0]["frames"],
+              [{"build": "v3.0.0-rc.5 (source 013b1d3a)", "frame": "unknown", "reports": list(map(str, paths))}])
+        unique = [Path(directory) / name for name in ("first.txt", "second.txt")]
+        for path in unique:
+            path.write_text(text, encoding="utf-8")
+        code, groups = cli(unique)
+        check("local-unique-exit", code, 0)
+        check("local-unique-labels", groups[0]["reports"], ["first.txt", "second.txt"])
+        code, groups = cli([paths[0], paths[0]])
+        check("local-repeat-exit", code, 0)
+        check("local-repeat-label", groups[0]["reports"], ["longshot_log.txt"])
+        check("local-repeat-vendors", groups[0]["vendors"], {"unknown": 1})
+        paths[0].write_text(text + record(run="c40f5054316a46567012ae772f1430ac", reason="device lost", exception="0x0"),
+                            encoding="utf-8")
+        code, groups = cli([paths[0]])
+        check("local-multirecord-exit", code, 0)
+        check("local-multirecord-counts", (groups[0]["reports"], groups[0]["records"], groups[0]["vendors"]),
+              (["longshot_log.txt"], 2, {"unknown": 1}))
 
 
 def record(kind="crash", version="v3.0.0-rc.5 (source 013b1d3a)", run="7c3b378c5b9fc201fe61bceecc09b9be", reason="unhandled exception",
@@ -88,6 +137,8 @@ def main():
         print("%s %-58s -> %s" % ("ok  " if got == want else "FAIL", what, got))
         if got != want:
             bad.append("%s: wanted %r" % (what, want))
+
+    local_report_identity(check)
 
     for what, title, text, want in NAMES:
         check(what, [crash_groups.group_name(e) for e in crash_groups.events(title, text)], want)

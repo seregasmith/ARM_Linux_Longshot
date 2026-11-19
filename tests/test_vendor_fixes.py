@@ -1,10 +1,12 @@
-"""Which GPUs get which vendor workaround (gpu/vk/vk_vendor.h), on made-up devices, and where the renderer uses them.
+"""Which GPUs get which of the translation's vendor workarounds (gpu/vk/device_policy.h: fetch_bounds, nan_bits and
+gather_offset, which were gpu/vk/vk_vendor.h's), on made-up devices, and where the renderer uses them.
 
-vendor_fixes() is compiled with the Vulkan headers and run on the properties of GPUs players have: NVIDIA's driver on
+device_policy() is compiled with the Vulkan headers and run on the properties of GPUs players have: NVIDIA's driver on
 Windows and Linux (and NVK on the same cards), AMD's Windows driver in its two branches (RDNA 1/2: "AMD proprietary
 shader compiler"; RDNA 3/4: LLPC), RADV, AMDVLK, Intel's Windows driver on an integrated GPU and on an Arc card, ANV,
 llvmpipe. Each fix must be on for the GPUs it is for and off for every other, and NVIDIA's driver must get none: that is
-what keeps the renderer and the translated shaders on NVIDIA as they were. The RX_VK_ switches force each one either way.
+what keeps the renderer and the translated shaders on NVIDIA as they were. The RX_VK_ switches force each one either way
+(device_policy_fixes_env: 0 off, another number on, empty as unset).
 Then the source: the device's fixes are made from its properties at device creation, and the translator is told
 fetch_bounds, nan_bits and the gather offset (and the program cache's stamp tells the three apart).
 
@@ -49,14 +51,14 @@ FIXTURE = r"""
 #include <cstring>
 #include <map>
 #include <string>
-#include "vk_vendor.h"
+#include "device_policy.h"
 using namespace mkwvk;
 static std::map<std::string, std::string> env;
 static const char* get(const char* name) {
     auto it = env.find(name);
     return it == env.end() ? nullptr : it->second.c_str();
 }
-static void print(const char* what, const VendorFixes& x) {
+static void print(const char* what, const DevicePolicy& x) {
     std::printf("%s %d%d%d\n", what, x.fetch_bounds, x.nan_bits, x.gather_offset);
 }
 int main() {
@@ -65,19 +67,19 @@ int main() {
 @@DEVICES@@
     };
     for (const D& d : devices) {
-        VendorFacts f;
+        DeviceFacts f;
         f.vendor_id = d.vendor, f.driver_id = d.driver, f.device_type = d.type, f.driver_info = d.info;
-        VendorFixes x = vendor_fixes(f);
+        DevicePolicy x = device_policy(f);
         print(d.name, x);
-        vendor_fixes_env(x, get);   // (no switch set: as it was)
+        device_policy_fixes_env(x, get);   // (no switch set: as it was)
         print(d.name, x);
         const char* names[] = {"RX_VK_FETCH_BOUNDS", "RX_VK_NAN_BITS", "RX_VK_GATHER_OFFSET"};
         for (const char* n : names)
             for (const char* v : {"0", "1", ""}) {
                 env.clear();
                 env[n] = v;
-                VendorFixes y = vendor_fixes(f);
-                vendor_fixes_env(y, get);
+                DevicePolicy y = device_policy(f);
+                device_policy_fixes_env(y, get);
                 std::printf("%s=%s ", n, v);
                 print(d.name, y);
             }
@@ -100,23 +102,23 @@ def cut(text, marker):
 
 def check_source():
     main = (VK / "vk_main.cpp").read_text(encoding="utf-8")
-    at = main.index("dev.fixes = vendor_fixes(facts);")
-    for text in ("vendor_fixes_env(dev.fixes,",):
+    at = main.index("dev.policy = device_policy(pf);")
+    for text in ("device_policy_fixes_env(dev.policy,",):
         if main.find(text, at) < 0:
             raise SystemExit("FAIL: vk_main.cpp: %s not after the fixes are made" % text)
-    if main.index("dev.fixes = vendor_fixes(facts);") > main.index("vkCreateDevice(dev.physical, &ci"):
+    if main.index("device_policy_fixes_env(dev.policy,") > main.index("vkCreateDevice(dev.physical, &ci"):
         raise SystemExit("FAIL: the fixes are made after the device")
-    for field in ("vendor_id = p2.properties.vendorID", "driver_id = drv.driverID", "device_type = p2.properties.deviceType",
-                  "driver_info = drv.driverInfo"):
-        if "facts." + field not in main:
-            raise SystemExit("FAIL: vk_main.cpp does not fill facts.%s" % field)
+    for field in ("vendor_id = dev.props.vendorID", "driver_id = dev.driver.driverID", "device_type = dev.props.deviceType",
+                  "driver_info = dev.driver.driverInfo"):
+        if "pf." + field not in main:
+            raise SystemExit("FAIL: vk_main.cpp does not fill the facts' %s" % field)
     coop = (VK / "vk_coopmat.cpp").read_text(encoding="utf-8")
-    for text in ("Shader::Backend::SPIRV::fetch_bounds = dev.fixes.fetch_bounds;", "Shader::Backend::SPIRV::nan_bits = dev.fixes.nan_bits;",
-                 "Shader::Backend::SPIRV::fetch_bounds_buffers = dev.fixes.fetch_bounds && !dev.features.robustBufferAccess;"):
+    for text in ("Shader::Backend::SPIRV::fetch_bounds = dev.policy.fetch_bounds;", "Shader::Backend::SPIRV::nan_bits = dev.policy.nan_bits;",
+                 "Shader::Backend::SPIRV::fetch_bounds_buffers = dev.policy.fetch_bounds && !dev.features.robustBufferAccess;"):
         if text not in cut(coop, "void coopmat_init() {"):
             raise SystemExit("FAIL: coopmat_init does not set %s" % text)
     shader = (VK / "vk_shader.cpp").read_text(encoding="utf-8")
-    if "p.need_gather_subpixel_offset = dev.fixes.gather_offset;" not in cut(shader, "Shader::Profile make_profile() {"):
+    if "p.need_gather_subpixel_offset = dev.policy.gather_offset;" not in cut(shader, "Shader::Profile make_profile() {"):
         raise SystemExit("FAIL: make_profile does not set the gather offset")
     stamp = cut(shader, "uint64_t translator_stamp() {")
     for text in ("fetch_bounds ? 16u : 0u", "nan_bits ? 32u : 0u", "profile().need_gather_subpixel_offset ? 64u : 0u",

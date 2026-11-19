@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-RUN_ALL_ARGS = ["--cxx", "{cxx}"]
+RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]
 
 ROOT = Path(__file__).resolve().parents[1]
 VK = ROOT / "gpu" / "vk"
@@ -34,12 +34,18 @@ def block(text, marker):
 VENDORS = {"intel": 0x8086, "amd": 0x1002, "nvidia": 0x10DE}
 CASES = ([(None, "intel", 1), (None, "amd", 0), (None, "nvidia", 0)] +
          [(v, g, 1) for v in ("1", "on", "yes") for g in VENDORS] +
-         [(v, g, 0) for v in ("0", "off", "false", "no", "") for g in VENDORS])
+         [(v, g, 0) for v in ("0", "off", "false", "no") for g in VENDORS] +
+         # (an empty value is the PC's default, by device_policy.h's one rule for the switches; it was off)
+         [("", "intel", 1), ("", "amd", 0), ("", "nvidia", 0)])
+# The decision is device_policy.h's (ub_snapshot: the rule, then the switch by device_policy_env), which ub_snapshot_wanted
+# returns: the fixture makes the policy of a GPU of that vendor with the switch's value in place of the environment, and
+# asks the function cut from vk_draw.cpp
 FIXTURE = r"""
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-struct { struct { unsigned vendorID; } props; } dev;
+#include "device_policy.h"
+static struct { mkwvk::DevicePolicy policy; } dev;
 static const char* the_value;   // (the switch's value, nullptr: unset; read in place of the environment)
 static const char* fake_getenv(const char* name) { return strcmp(name, "RX_VK_UB_SNAPSHOT") ? nullptr : the_value; }
 @@DECISION@@
@@ -47,11 +53,14 @@ int main(int argc, char** argv) {
     // (argv: value or -unset, the vendor, 1 snapshotted or 0)
     for (int i = 1; i + 2 < argc; i += 3) {
         the_value = strcmp(argv[i], "-unset") ? argv[i] : nullptr;
-        dev.props.vendorID = (unsigned)strtoul(argv[i + 1], nullptr, 0);
+        mkwvk::DeviceFacts f;
+        f.vendor_id = (unsigned)strtoul(argv[i + 1], nullptr, 0);
+        dev.policy = mkwvk::device_policy(f);
+        mkwvk::device_policy_env(dev.policy, f, fake_getenv);
         const bool got = ub_snapshot_wanted();
         if (got != (atoi(argv[i + 2]) != 0)) {
             printf("FAIL: RX_VK_UB_SNAPSHOT=[%s], vendor 0x%04x: %s\n", the_value ? the_value : "(unset)",
-                   dev.props.vendorID, got ? "snapshotted" : "bound in place");
+                   (unsigned)f.vendor_id, got ? "snapshotted" : "bound in place");
             return 1;
         }
     }
@@ -63,6 +72,7 @@ int main(int argc, char** argv) {
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cxx", default="g++")
+    p.add_argument("--headers", type=Path, default=None)   # (the Vulkan headers device_policy.h needs; else the compiler's own)
     args = p.parse_args()
     src = (VK / "vk_draw.cpp").read_text(encoding="utf-8")
 
@@ -79,9 +89,13 @@ def main():
     with tempfile.TemporaryDirectory(prefix="ub-snapshot-") as tmp:
         tmp = Path(tmp)
         cpp, exe = tmp / "t.cpp", tmp / "t.exe"
-        cpp.write_text(FIXTURE.replace("@@DECISION@@", decision.replace("getenv(", "fake_getenv(")), encoding="utf-8")
+        if "return dev.policy.ub_snapshot;" not in decision:
+            raise SystemExit("FAIL: ub_snapshot_wanted no longer returns device_policy.h's ub_snapshot (a second rule?)")
+        cpp.write_text(FIXTURE.replace("@@DECISION@@", decision), encoding="utf-8")
+        # (-isystem: the renderer's headers are not this check's to warn about)
+        headers = ["-isystem", str(VK)] + (["-isystem", str(args.headers)] if args.headers else [])
         r = subprocess.run([args.cxx, "-std=c++20", "-include", str(VK / "compat" / "longshot_env.h"), "-Wall",
-                            "-Wextra", "-Werror", str(cpp), "-o", str(exe)], capture_output=True, text=True, timeout=120)
+                            "-Wextra", "-Werror", *headers, str(cpp), "-o", str(exe)], capture_output=True, text=True, timeout=120)
         if r.returncode:
             print(r.stdout + r.stderr)
             raise SystemExit("FAIL: ub_snapshot_wanted did not build alone")

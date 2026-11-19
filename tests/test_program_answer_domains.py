@@ -167,16 +167,11 @@ def main():
         # Each child reads the existing settings once, just like canonical_answer's static gate.
         for name, overrides, strict in (
             ('default', {}, False),
-            ('handles-live-zero', {'RX_VK_HANDLES_LIVE': '0'}, False),   # (an on/off switch too: env_on)
-            ('handles-live-one', {'RX_VK_HANDLES_LIVE': '1'}, True),
-            ('register-at-once-zero', {'RX_VK_REGISTER_AT_ONCE': '0'}, False),   # (an on/off switch: 0 is off, env_on)
-            ('register-at-once-one', {'RX_VK_REGISTER_AT_ONCE': '1'}, True),
             ('capture-zero', {'RX_VK_CAPTURE': '0'}, True),
             ('capture-one', {'RX_VK_CAPTURE': '1'}, False),
         ):
             env = os.environ.copy()
-            for key in ('RX_VK_HANDLES_LIVE', 'RX_VK_REGISTER_AT_ONCE', 'RX_VK_CAPTURE'):
-                env.pop(key, None)
+            env.pop('RX_VK_CAPTURE', None)
             env.update(overrides)
             print(name, flush=True)
             result = subprocess.run([str(exe)] + (['strict'] if strict else []), cwd=folder, env=env)

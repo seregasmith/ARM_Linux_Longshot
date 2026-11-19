@@ -19,7 +19,7 @@ from unittest import mock
 # (Linux only)
 RUN_ALL_SKIP = {
     "windows": "the save script's folder discovery is the Linux one"
-               " (on Windows Longshot's saves are in the game folder: --longshot)",
+               " (the tests lay folders out as Linux does; the Windows ones are tried with WINDOWS patched)",
 }
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -737,16 +737,17 @@ class Hookshot(Case):
         self.assertEqual(code, 1)
         self.assertIn("--hookshot", err)
 
-    def test_windows_import_into_the_game_folder(self):
+    def test_windows_import_into_a_game_folder_named_with_longshot(self):
+        # (the launcher's folder is the default, WindowsDefault below; a game folder is named with --longshot: its user\save)
         hk = self.home / "Games" / "Hookshot" / "user" / "save" / oot.USER_ID
         make_save(hk, b"W")
-        game = self.home / "Games" / "Longshot"
+        game = self.tmp / "Longshot game"
         with mock.patch.object(oot, "WINDOWS", True):
-            code, out, err = self.run_main("import", "hookshot")   # (no Longshot game folder: nowhere to put it)
+            code, out, err = self.run_main("import", "hookshot", "--longshot", str(game))   # (no such folder: nowhere to put it)
             self.assertEqual(code, 1)
-            self.assertIn("--longshot", err)
+            self.assertIn("no folder at", err)
             game.mkdir(parents=True)
-            code, out, err = self.run_main("import", "hookshot")
+            code, out, err = self.run_main("import", "hookshot", "--longshot", str(game))
             self.assertEqual(code, 0, err)
         self.assertEqual(tree(game / "user" / "save" / oot.USER_ID), tree(hk))
 
@@ -836,6 +837,47 @@ def caption(jpeg, scene=b"TestScene", map_=b"TestScene/Room_1", date=None, date_
 NAME_AT = 100
 PROGRESS = bytes(range(256)) * 2   # (made up; "PLAYER" at NAME_AT stands for a name)
 PROGRESS = PROGRESS[:NAME_AT] + b"PLAYER\0\0" + PROGRESS[NAME_AT + 8:]
+
+
+class BackupFolder(Case):
+    """Where a copy's backup goes with no --backup-dir: the launcher's backups folder (LongshotLauncher issue 188). On Linux
+    that is longshot/save-backup in the data folder, beside the saves; the script's backups from before stay where they are."""
+
+    def run_default(self, *args):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = oot.main(list(args))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_linux_default_is_the_launchers(self):
+        with mock.patch.object(oot, "WINDOWS", False):
+            self.assertEqual(oot.default_backup_dir(), os.path.join(str(self.data), "longshot", "save-backup"))
+
+    def test_linux_default_without_xdg_data_home(self):
+        env = {k: v for k, v in os.environ.items() if k != "XDG_DATA_HOME"}
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(oot, "WINDOWS", False):
+            self.assertEqual(oot.default_backup_dir(),
+                             os.path.join(os.path.expanduser("~"), ".local", "share", "longshot", "save-backup"))
+
+    def test_windows_default_unchanged(self):
+        with mock.patch.object(oot, "WINDOWS", True):
+            self.assertEqual(oot.default_backup_dir(), os.path.join(str(self.localappdata), "Longshot", "oot-save-backups"))
+
+    def test_copy_backs_up_beside_the_saves_and_leaves_old_backups(self):
+        old = self.data / "oot-save-backups" / "import-orchid-20260101-000000"
+        make_save(old, b"OLD", slots=("slot_00",))
+        old_tree = tree(old)
+        before = tree(self.hs)
+        with mock.patch.object(oot, "WINDOWS", False):
+            code, out, err = self.run_default("import", "orchid")
+        self.assertEqual(code, 0, err)
+        new_root = self.data / "longshot" / "save-backup"
+        (backup,) = sorted(new_root.iterdir())
+        self.assertTrue(backup.name.startswith("import-orchid-"))
+        self.assertEqual(tree(backup), before)
+        # (the backups an older script made are left as they were: nothing moved, nothing added beside them)
+        self.assertEqual(sorted(p.name for p in old.parent.iterdir()), [old.name])
+        self.assertEqual(tree(old), old_tree)
 
 
 class RepoSaves(unittest.TestCase):
@@ -1100,6 +1142,123 @@ class RepoSaves(unittest.TestCase):
     def test_the_checkouts_repo_saves_pass(self):
         # (whatever assets/saves holds in this checkout: every save added there is checked with the other tests)
         self.assertEqual(oot.repo_save_problems(oot.REPO_SAVES), [])
+
+class WindowsDefault(Case):
+    """The Windows default for Longshot is the launcher's %APPDATA%\\Longshot\\save (docs/saves.md); the old game folder
+    (%USERPROFILE%\\Games\\Longshot\\user\\save, the 2.x Builder's and a build started on its own) is still found and said."""
+
+    def setUp(self):
+        super().setUp()
+        patch = mock.patch.object(oot, "WINDOWS", True)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.launcher = self.appdata / "Longshot" / "save" / UID
+        self.fresh = self.appdata / "Longshot" / "save" / oot.USER_ID   # (where a save with none yet is made: the game's user)
+        self.old = self.home / "Games" / "Longshot" / "user" / "save" / UID
+        self.hk = self.home / "Games" / "Hookshot" / "user" / "save" / UID
+
+    def test_the_launchers_folder_comes_first_then_the_old_game_folder(self):
+        self.assertEqual(oot.folders(oot.LONGSHOT), [str(self.appdata / "Longshot"), str(self.home / "Games" / "Longshot")])
+        with mock.patch.object(oot, "WINDOWS", False):
+            self.assertEqual(oot.folders(oot.LONGSHOT), [str(self.data / "longshot")])
+
+    def test_the_launchers_save_is_found_and_nothing_is_said(self):
+        make_save(self.launcher, b"R")
+        self.assertEqual(oot.locate(oot.LONGSHOT, None, "--longshot"),
+                         (str(self.appdata / "Longshot"), {UID: str(self.launcher)}))
+        code, out, err = self.run_main("list")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Longshot: %s" % (self.appdata / "Longshot"), out)
+        self.assertNotIn("old game folder", out)
+        self.assertNotIn("old game folder", err)
+
+    def test_the_old_game_folder_is_still_found_and_said(self):
+        make_save(self.old, b"O")
+        self.assertEqual(oot.locate(oot.LONGSHOT, None, "--longshot")[1], {UID: str(self.old)})
+        code, out, err = self.run_main("list")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Longshot: %s" % (self.home / "Games" / "Longshot"), out)
+        self.assertIn("the old game folder", out)
+        self.assertIn(str(self.appdata / "Longshot" / "save"), out)         # (where the launcher keeps it)
+        # (an export from it works and says it too)
+        make_save(self.hk, b"H")
+        code, out, err = self.run_main("export", "hookshot")
+        self.assertEqual(code, 0, err)
+        self.assertIn("the old game folder", out)
+        self.assertEqual(tree(self.hk), tree(self.old))
+
+    def test_with_both_the_launchers_is_used_and_the_old_one_is_said(self):
+        make_save(self.launcher, b"R")
+        make_save(self.old, b"O")
+        self.assertEqual(oot.locate(oot.LONGSHOT, None, "--longshot")[1], {UID: str(self.launcher)})
+        code, out, err = self.run_main("list")
+        self.assertIn("Longshot: %s" % (self.appdata / "Longshot"), out)
+        self.assertIn("also holds a save", out)
+        self.assertIn(str(self.home / "Games" / "Longshot"), out)
+        make_save(self.hk, b"H")
+        code, out, err = self.run_main("export", "hookshot")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(tree(self.hk), tree(self.launcher))                  # (the launcher's save is the one copied)
+        self.assertIn("also holds a save", out)
+
+    def test_nothing_found_says_both_places(self):
+        with self.assertRaises(oot.Fail) as e:
+            oot.locate(oot.LONGSHOT, None, "--longshot")
+        for place in (self.appdata / "Longshot", self.home / "Games" / "Longshot"):
+            self.assertIn(str(place), str(e.exception))
+        self.assertIn("--longshot", str(e.exception))
+
+    def test_a_save_copied_in_with_none_goes_to_the_launchers_folder(self):
+        make_save(self.hk, b"H")
+        (self.home / "Games" / "Longshot").mkdir(parents=True)   # (a 2.x game folder with no save of its own)
+        code, out, err = self.run_main("import", "hookshot")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(tree(self.fresh), tree(self.hk))
+        self.assertFalse((self.home / "Games" / "Longshot" / "user").exists())
+        self.assertEqual(oot.default_backup_dir(), str(self.localappdata / "Longshot" / "oot-save-backups"))
+
+    def test_a_save_copied_in_goes_where_the_save_already_is(self):
+        make_save(self.old, b"O")
+        make_save(self.hk, b"H")
+        before_hk = tree(self.hk)
+        code, out, err = self.run_main("import", "hookshot")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(tree(self.old), before_hk)
+        self.assertIn("the old game folder", out)
+        self.assertFalse(self.launcher.exists())
+
+    def test_longshot_names_a_game_folder_or_a_user_folder(self):
+        make_save(self.hk, b"H")
+        game = self.tmp / "G"
+        (game / "user").mkdir(parents=True)
+        user = self.tmp / "U"
+        (user / "save").mkdir(parents=True)
+        empty = self.tmp / "E"
+        empty.mkdir()
+        for folder, where in ((game, game / "user" / "save" / oot.USER_ID), (user, user / "save" / oot.USER_ID),
+                              (empty, empty / "user" / "save" / oot.USER_ID)):
+            code, out, err = self.run_main("import", "hookshot", "--longshot", str(folder))
+            self.assertEqual(code, 0, err)
+            self.assertEqual(tree(where), tree(self.hk), folder)
+            self.assertNotIn("the old game folder", out)
+        self.assertFalse(self.launcher.exists())
+        self.assertEqual(oot.locate(oot.LONGSHOT, str(user), "--longshot")[1], {oot.USER_ID: str(user / "save" / oot.USER_ID)})
+
+    def test_hookshot_keeps_its_game_folder(self):
+        # (only Longshot's default moved: Hookshot's is still %USERPROFILE%\Games\Hookshot\user\save, made when that folder is there)
+        make_save(self.launcher, b"R")
+        code, out, err = self.run_main("export", "hookshot")
+        self.assertEqual(code, 1)
+        self.assertIn("--hookshot", err)
+        (self.home / "Games" / "Hookshot").mkdir(parents=True)
+        code, out, err = self.run_main("export", "hookshot")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(tree(self.hk.parent / oot.USER_ID), tree(self.launcher))
+
+    def test_linux_says_nothing_of_old_folders(self):
+        with mock.patch.object(oot, "WINDOWS", False):
+            code, out, err = self.run_main("list")
+        self.assertNotIn("old game folder", out)
 
 if __name__ == "__main__":
     unittest.main()

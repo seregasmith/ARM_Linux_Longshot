@@ -1,6 +1,6 @@
-"""The game's own name and icon, read from its .nup, for what the build makes of them: the window's title and icon, and on
-Windows the exe's icon and the name Windows shows for it (Task Manager, the taskbar, its Properties). Without them the game
-was "Longshot" with no icon.
+"""The game's own name and icon, read from its .nup, for what the build makes of them: the window's title, and on Windows the
+name Windows shows for the exe (Task Manager, the taskbar, its Properties). The exe's icon is always Longshot's
+(builder/setup/longshot.ico, nx2/build.py exe_resources), not the game's. Without a name the game is "Longshot".
 
     python -I nx2/game_title.py <file.nup>          the name and the icon's size, nothing written
 
@@ -20,7 +20,7 @@ import nup as _nup  # noqa: E402
 
 TITLE_FILE = "longshot_title.txt"
 ICON_FILE = ".longshot_icon.jpg"
-RES_FILE = "longshot_game.res"   # (in the work folder: linked into the exe instead of a developer's longshot.res, nx2/build.py)
+RES_FILE = "longshot_game.res"   # (in the work folder: the name Windows shows, linked into the exe beside Longshot's icon, nx2/build.py)
 SUFFIX = " (Longshot)"
 ICON, NAME = 3, 5
 # (the names in a .nup are fit for a file name: its dumper drops what Windows refuses in one, so the colon of the name the game
@@ -120,18 +120,16 @@ def picture(icon):
 
 
 def write_res(out, path):
-    """(Windows) the exe's icon and the name Windows shows for it, at path; True when written. Removed when the folder has
-    neither, so a developer's own longshot.res (nx2/make_icon.py) is linked instead"""
+    """(Windows) the name Windows shows for the exe, at path (version strings alone: the exe's icon is always Longshot's,
+    builder/setup/longshot.ico, nx2/build.py exe_resources); True when written. Removed when the folder has no name"""
     import make_icon
-    title, icon = kept(out)
-    im = picture(icon)
-    if not title and im is None:
+    title, _icon = kept(out)
+    if not title:
         if os.path.exists(path):
             os.remove(path)
         return False
-    strings = {"FileDescription": title, "ProductName": title, "InternalName": "longshot",
-               "OriginalFilename": "longshot.exe"} if title else None
-    write_if_changed(path, make_icon.res_of(make_icon.images_of(im) if im is not None else (), strings))
+    strings = {"FileDescription": title, "ProductName": title, "InternalName": "longshot", "OriginalFilename": "longshot.exe"}
+    write_if_changed(path, make_icon.res_of((), strings))
     return True
 
 

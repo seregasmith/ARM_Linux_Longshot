@@ -108,10 +108,11 @@ void fps_presented() {
     const bool breakdown = level >= fs::kBreakdown || perf;
     int64_t slept[2] = {0, 0}, gpu = 0, pipes = 0, left = 0, slot = 0;
     double wait_ms = 0;   // (the draws' waits for a translation, in all: the performance summary's too)
+    int64_t waits = 0;   // (how many draws waited; the perf summary's per-cause detail)
     if (breakdown) {
         if (host->slept_ns) host->slept_ns(slept);
         gpu = gpu_time_ns(), slot = slot_wait_ns();
-        int64_t d = 0, sk = 0, di = 0, waits = 0;
+        int64_t d = 0, sk = 0, di = 0;
         draw_stats(&d, &sk, &di, &pipes);
         draw_stats3(&left, &waits, &wait_ms);
     }
@@ -143,7 +144,7 @@ void fps_presented() {
             f.pipelines = (uint16_t)std::clamp<int64_t>(pipes - last_pipes, 0, 65535);
             f.left_out = (uint16_t)std::clamp<int64_t>(left - last_left, 0, 65535);
         }
-        if (perf && f.ms > 0) perf_frame(f, wait_ms);   // (two presents in the same clock tick: not a frame)
+        if (perf && f.ms > 0) perf_frame(f, wait_ms, waits);   // (two presents in the same clock tick: not a frame)
         {
             std::lock_guard lk(ring_mu);
             last_frame = f;

@@ -3,6 +3,9 @@
 
   - the status line, the first line: "**Type:** fix · **Risk:** low · **Tested on:** <OS, GPU> · **Needs:** <OS, GPU,
     or none>", the type one of the title types, the risk low, medium or high;
+  - the TL;DR (a plain summary of 120 words or fewer) and the Breakdown (short bullets), the two sections after the
+    status line: kept, each is filled in, the Breakdown with a bullet each, none empty; left out, a warning that
+    suggests them and not a failure, as the pull requests written before the template had them leave them out;
   - Why, filled in;
   - How to reproduce, for a fix (the title's type, or the status line's when there is no title): Seen on, Steps,
     Expected and Actual, each filled in. Another PR may leave it out; kept, it is filled in;
@@ -15,7 +18,8 @@
   - ### Flags and settings under Measurements: "None", or a summary line and a row per flag with every cell filled in
     (its before and after value, effect, where it helps, the recommendation);
   - Testing: Tested, Not tested and Must be tested, each filled in; Must be tested is "None", or an item per thing,
-    each "<where>: <how>, expecting <the result>", saying who runs it: the Test Farm ("@Beanstalk ...") or by hand;
+    each "<where>: <how>, expecting <the result>", saying who runs it: the Test Farm ("@Beanstalk ...") or by hand.
+    Not testable by hand may be left out; kept, it is filled in;
   - Risks, filled in, with its Compatibility part;
   - Issues may be left out; kept, no bare "Fixes #";
   - the checklist: every box of "Everyone" there and ticked. "When it applies" keeps only the boxes that apply (or is
@@ -25,7 +29,7 @@ Warnings, which do not fail it: an RX_*, HOS_* or LONGSHOT_* name the diff adds 
 a change to the menu's code while it says None, a PR rebased onto a newer main than the one measured, a box marked n/a
 (delete it instead), a box the diff suggests that isn't there, the status line's type other than the title's, its
 Needs disagreeing with Must be tested, and Not tested or Must be tested naming something the Measurements say was
-measured.
+measured, and a TL;DR or Breakdown left out.
 
 A pull request still in work in progress (a title starting with WIP: or [WIP], Forgejo's draft mark, or the API's
 draft) is not checked: it passes with a notice listing what is left. The check applies once it is marked ready for
@@ -62,6 +66,16 @@ RISKS = ("low", "medium", "high")
 STATUS = ("Type", "Risk", "Tested on", "Needs")
 # The sections a description fills in; Issues may be left out, How to reproduce is for a fix
 REQUIRED = ("Why", "What changed", "Measurements", "Testing", "Risks")
+# The summary after the status line. Either may be left out (the pull requests open when the template got them have
+# none: that is a warning that suggests it); kept, it is filled in
+SUMMARY = ("TL;DR", "Breakdown")
+TLDR_WORDS = 120
+BREAKDOWN_OF = ("who it helps, what was wrong, what changes, what does not change, how it was checked, what is still "
+                "open and the risk")
+SUMMARY_LEFT_OUT = {
+    "TL;DR": "no ## TL;DR: add it right after the status line, two to four plain sentences a player could follow (what "
+             "was wrong or missing, what this changes, the headline result and how it was checked)",
+    "Breakdown": "no ## Breakdown: add it after the TL;DR, a short bullet each for " + BREAKDOWN_OF}
 REPRODUCE = "How to reproduce"
 REPRODUCE_PARTS = ("Seen on", "Settings and switches", "Steps", "Expected", "Actual")
 REPRODUCE_NEEDED = ("Seen on", "Steps", "Expected", "Actual")
@@ -69,6 +83,7 @@ FLAGS = "Flags and settings"
 FLAG_COLUMNS = ("Before this PR", "After this PR", "Effect", "Recommendation")
 MEASURE_LINES = ("Hardware", "Scene", "Method", "How to reproduce")
 TESTING_PARTS = ("Tested", "Not tested", "Must be tested")
+UNTESTABLE = "Not testable by hand"   # (Testing's optional part: what the fix's own case can't be run by hand, and why)
 MUST = "Must be tested"
 RISK_PARTS = ("What could break", "Turning it off", "Compatibility")
 EVERYONE, APPLIES = "Everyone", "When it applies"
@@ -181,7 +196,7 @@ def parts(text, names):
 
 
 def testing_parts(text):
-    return parts(text, TESTING_PARTS)
+    return parts(text, TESTING_PARTS + (UNTESTABLE,))
 
 
 def items(text):
@@ -232,6 +247,42 @@ def status_problems(fields):
         out.append("the status line's type '%s' is not a title type: one of %s" % (kind, ", ".join(TYPES)))
     if risk and risk not in RISKS:
         out.append("the status line's risk '%s': write low, medium or high" % risk)
+    return out
+
+
+# --- TL;DR and Breakdown ----------------------------------------------------------------------------------------
+
+def summary(top, name):
+    """the text of the ## section called name (TL;DR also as TLDR, in any case), None when it is left out"""
+    want = re.sub(r"\W", "", name).lower()
+    return next((text for heading, text in top.items() if re.sub(r"\W", "", heading).lower() == want), None)
+
+
+def tldr_problems(text):
+    words = len(without_code(text).split())
+    if words <= TLDR_WORDS:
+        return []
+    return ["## TL;DR is %d words: keep it to %d or fewer, what a player reads in a breath; the detail goes in the "
+            "sections below" % (words, TLDR_WORDS)]
+
+
+def breakdown_problems(text):
+    lines = without_code(text).splitlines()
+    if not any(BULLET.match(ln) for ln in lines):
+        return ["## Breakdown has no bullets: one short bullet each for " + BREAKDOWN_OF]
+    bullets = []   # (a bullet's text, with the lines under it: it may wrap or hold a list)
+    for ln in lines:
+        if re.match(r"^ ?(?:[-*+]|\d+[.)])\s", ln):
+            bullets.append(re.sub(r"^\s*(?:[-*+]|\d+[.)])\s*", "", ln))
+        elif bullets and ln.strip():
+            bullets[-1] += " " + ln.strip()
+    out = []
+    for bullet in bullets:
+        text = plain(bullet).strip()
+        label = re.match(r"^(.{1,60}?):$", text)
+        if label or not text:
+            out.append("## Breakdown's bullet '%s' says nothing: write it, or 'nothing' when there is nothing to say"
+                       % (label.group(1).strip() if label else ""))
     return out
 
 
@@ -400,6 +451,8 @@ def testing_problems(text):
         elif not found[name].strip():
             out.append("## Testing's '%s:' is empty%s" % (name, ": write None when Tested covers everything"
                                                            if name == MUST else ""))
+    if UNTESTABLE in found and not found[UNTESTABLE].strip():
+        out.append("## Testing's '%s:' is empty: say what can't be run by hand and why, or delete it" % UNTESTABLE)
     must = found.get(MUST, "").strip()
     if must and not NONE.match(must):
         for item in items(must):
@@ -584,6 +637,18 @@ def review(body, diff=None, merge_base=None, template=None, title=None):
             and not STAND_IN.search(fields["Type"]):
         warn.append("the status line's type is '%s' and the title's '%s': make them the same" % (
             fields["Type"].strip(), title_type(title)))
+    for name in SUMMARY:
+        text = summary(top, name)
+        if text is None:
+            warn.append(SUMMARY_LEFT_OUT[name])
+            continue
+        left = placeholders("## " + name, text)
+        if left:
+            out += left
+        elif not text.strip():
+            out.append("## %s is empty" % name)
+        else:
+            out += tldr_problems(text) if name == "TL;DR" else breakdown_problems(text)
 
     for name in REQUIRED[:1] + (REPRODUCE,) + REQUIRED[1:]:
         text = top.get(name)

@@ -11,8 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def check_source():
     """The texture cache still notes a texture when its GPU contents begin, asks the rule each frame, finishes a batch only
-    once the GPU is past its copies and the texture is as it was, writes by compare and write with the undo, and reads the
-    switch"""
+    once the GPU is past its copies and the texture is as it was, and writes by compare and write with the undo"""
     src = (ROOT / "gpu/vk/vk_texture.cpp").read_text(encoding="utf-8")
     for needle in ('#include "drawn_writeback.h"',
                    "if (!tex->gpu_written || tex->released) tex->first_written = frame_no, drawn_writeback_note(tex);",
@@ -35,8 +34,7 @@ def check_source():
                    "f.written_hash = drawn_writeback::hash(again.data(), again.size());",
                    "f.t->written_back_hash = f.written_hash;",
                    "    frame_no++;\n    drawn_writeback_frame();",
-                   "f.t->written_back_for = f.t->last_written;",
-                   'env_on("RX_VK_NO_DRAWN_WRITEBACK")'):
+                   "f.t->written_back_for = f.t->last_written;"):
         if needle not in src:
             raise SystemExit("vk_texture.cpp no longer has: " + needle)
 

@@ -7,9 +7,12 @@ the menu's Options, run create_swapchain's own choice of mode over the lists dri
 and check the swapchain and present code by their text. No game or GPU is needed.
 
 V-Sync Auto is FIFO for NVIDIA DLSS Frame Generation only while DLSS-G makes the frames (swapchain_dlssg and vk_dlss.cpp's
-dlss_fg_runs, the real ones, compiled into the choice): asked for 3 made frames (4x) of a runtime that makes 1 at most, the
-renderer's own makes them and Auto keeps its mailbox. It stayed FIFO, which held the game at the refresh over the multiplier
-(issue 2695: 36 fps on 144 Hz).
+dlss_fg_runs, the real ones, compiled into the choice): given up, or on a device DLSS does not run on, the renderer's own
+makes them and Auto keeps its mailbox. Asked for 3 made frames (4x) of a runtime that makes 1 at most, it stayed FIFO while
+the renderer's own made them, which held the game at the refresh over the multiplier (issue 2695: 36 fps on 144 Hz). Now
+the multiplier as it runs stops at the runtime's most + 1 while DLSS-G makes the frames (vk_framegen.cpp framegen_now and
+vk_dlss.cpp dlss_fg_most, the real ones too): 4x there runs as 2x, made by DLSS-G, and Auto is FIFO for it; dlss_fg_runs
+still says no to a set of more frames than the runtime makes.
 """
 import argparse
 import os
@@ -81,9 +84,14 @@ Fg& fgs() { static Fg f; return f; }
 int menu_vsync() { return row; }
 bool fg_asked() { return asked; }
 bool dlss_fg_wanted() { return asked; }
+bool temporal = true;       // (a temporal Upscaler chosen: DLSS-G's inputs, vk_temporal.cpp)
+bool temporal_wanted() { return temporal; }
 DlssWhy dlss_why() { return why; }
 void logf(const char*, ...) {}
 /* RUNS */
+/* MOST */
+/* CAPPED */
+/* NOW */
 /* FRAMEGEN */
 /* DLSSG */
 VkPresentModeKHR choose(const std::vector<VkPresentModeKHR>& modes) {
@@ -130,29 +138,37 @@ int main() {
             return 1;
         }
     }
-    // (DLSS-G asked for, but the renderer's own makes the frames: Auto as without DLSS-G. `most`: what NGX said its runtime
-    // makes between two game frames, 0 before its answer (the first present); given_up: NGX's no, or its feature given up)
-    struct Made { int framegen; unsigned most; bool given_up; DlssWhy why; bool dlssg; } made[] = {
-        {4, 0, false, DLSS_OK, true},    // (NGX not asked yet: taken to make them, the swapchain made again once if not)
-        {2, 1, false, DLSS_OK, true},    // (2x of a runtime that makes 1: DLSS-G's)
-        {3, 1, false, DLSS_OK, false},   // (3x and 4x of it: the renderer's own, issue 2695)
-        {4, 1, false, DLSS_OK, false},
-        {4, 3, false, DLSS_OK, true},    // (a runtime that makes 3: up to 4x)
-        {5, 3, false, DLSS_OK, false},   // (5x and up asks for more, though the swapchain's images stop at 4x's)
-        {8, 3, false, DLSS_OK, false},
-        {2, 1, true, DLSS_OK, false},    // (given up)
-        {2, 1, false, DLSS_NEEDS_RTX, false},   // (a device DLSS does not run on)
-        {1, 3, false, DLSS_OK, false},   // (Auto and off: no fixed multiplier)
-        {0, 3, false, DLSS_OK, false},
+    // (DLSS-G asked for (`asked`), or the renderer's own makes the frames: Auto as without DLSS-G. `most`: what NGX said its
+    // runtime makes between two game frames, 0 before its answer (the start-up screen or the first present); given_up: NGX's
+    // no, or its feature given up. `now`: the multiplier as it runs, framegen_now: at most the runtime's most + 1 while DLSS-G
+    // makes the frames)
+    struct Made { int framegen; unsigned most; bool given_up; DlssWhy why; bool asked; bool dlssg; int now; } made[] = {
+        {4, 0, false, DLSS_OK, true, true, 4},    // (NGX not asked yet: taken to make them, the swapchain made again once if not)
+        {2, 1, false, DLSS_OK, true, true, 2},    // (2x of a runtime that makes 1: DLSS-G's)
+        {3, 1, false, DLSS_OK, true, true, 2},    // (3x and 4x of it: its top, 2x, DLSS-G's. They were the renderer's own, and
+        {4, 1, false, DLSS_OK, true, true, 2},    //  FIFO held them at the refresh: issue 2695)
+        {4, 3, false, DLSS_OK, true, true, 4},    // (a runtime that makes 3: up to 4x)
+        {5, 3, false, DLSS_OK, true, true, 4},    // (5x and up: its top, 4x)
+        {8, 3, false, DLSS_OK, true, true, 4},
+        {8, 5, false, DLSS_OK, true, true, 6},    // (an RTX 50's runtime, 5: 6x)
+        {7, 5, false, DLSS_OK, true, true, 6},
+        {2, 1, true, DLSS_OK, true, false, 2},    // (given up: the renderer's own, at the row's multiplier)
+        {8, 1, true, DLSS_OK, true, false, 8},
+        {2, 1, false, DLSS_NEEDS_RTX, true, false, 2},   // (a device DLSS does not run on)
+        {8, 5, false, DLSS_OK, false, false, 8},  // (another engine chosen: the row's, past DLSS-G's top too)
+        {1, 3, false, DLSS_OK, true, false, 1},   // (Auto and off: no fixed multiplier)
+        {0, 3, false, DLSS_OK, true, false, 0},
     };
     for (const Made& c : made) {
-        opts.framegen = c.framegen, fgs().most_known = c.most, fgs().start_failed = c.given_up, why = c.why;
+        opts.framegen = c.framegen, fgs().most_known = c.most, fgs().start_failed = c.given_up, why = c.why, asked = c.asked;
         const VkPresentModeKHR auto_all = c.dlssg ? F : M, auto_none = c.dlssg ? F : windows ? I : F;
         row = 0;
-        if (swapchain_dlssg() != c.dlssg || choose(all) != auto_all || choose(no_mailbox) != auto_none) {
-            std::fprintf(stderr, "FAIL: frame generation %dx, DLSS-G's runtime making %u, given up %d, DLSS %d: the swapchain "
-                         "for DLSS-G %d (wanted %d), V-Sync Auto chose mode %d (wanted %d)\n", c.framegen, c.most,
-                         (int)c.given_up, (int)c.why, (int)swapchain_dlssg(), (int)c.dlssg, (int)choose(all), (int)auto_all);
+        if (framegen_now() != c.now || swapchain_framegen() != (c.now >= 2 ? std::min(c.now, 4) : 0) ||
+            swapchain_dlssg() != c.dlssg || choose(all) != auto_all || choose(no_mailbox) != auto_none) {
+            std::fprintf(stderr, "FAIL: frame generation %dx, DLSS-G's runtime making %u, given up %d, DLSS %d, asked %d: runs "
+                         "at %dx (wanted %dx), the swapchain for DLSS-G %d (wanted %d), V-Sync Auto chose mode %d (wanted "
+                         "%d)\n", c.framegen, c.most, (int)c.given_up, (int)c.why, (int)c.asked, framegen_now(), c.now,
+                         (int)swapchain_dlssg(), (int)c.dlssg, (int)choose(all), (int)auto_all);
             return 1;
         }
         row = 1;
@@ -160,6 +176,16 @@ int main() {
         row = 2;
         if (choose(all) != I) return std::fprintf(stderr, "FAIL: V-Sync Off is not immediate at %dx\n", c.framegen), 1;
     }
+    // (a set of more made frames than the runtime makes is still not DLSS-G's: dlss_fg_runs as it was)
+    asked = true, why = DLSS_OK, fgs().start_failed = false, fgs().most_known = 1;
+    if (dlss_fg_runs(3) || !dlss_fg_runs(1))
+        return std::fprintf(stderr, "FAIL: dlss_fg_runs: 3 made frames of a runtime that makes 1\n"), 1;
+    // (no temporal Upscaler: DLSS-G has no inputs and the renderer's own or FSR 3.1 makes every set, at the row's multiplier)
+    temporal = false, opts.framegen = 4;
+    if (framegen_now() != 4 || swapchain_framegen() != 4 || swapchain_dlssg())
+        return std::fprintf(stderr, "FAIL: 4x without a temporal Upscaler runs at %dx, DLSS-G's swapchain %d\n", framegen_now(),
+                            (int)swapchain_dlssg()), 1;
+    temporal = true;
     std::puts(windows ? "PASS: the present mode for each V-Sync choice (Windows)" : "PASS: the present mode for each V-Sync choice (Linux)");
 }
 """
@@ -198,6 +224,10 @@ def main():
         raise SystemExit("FAIL: dlss_fg_runs is not asked for a number of made frames: V-Sync Auto stays FIFO when DLSS-G's "
                          "runtime makes fewer than the multiplier asks and the renderer's own makes them")
     runs = block(dlss, "bool dlss_fg_runs(int frames) {")
+    most = block(dlss, "int dlss_fg_most() {\n")
+    framegen_cpp = (ROOT / "gpu" / "vk" / "vk_framegen.cpp").read_text(encoding="utf-8")
+    capped = block(framegen_cpp, "int framegen_capped(")
+    now = block(framegen_cpp, "int framegen_now() {")
     framegen = re.search(r"int swapchain_framegen\(\) \{[^\n]*\}", main_cpp)
     dlssg = re.search(r"bool swapchain_dlssg\(\) \{[^\n]*\}", main_cpp)
     if not framegen or not dlssg:
@@ -214,7 +244,8 @@ def main():
         for windows in (0, 1):
             src = Path(tmp) / "choice.cpp"
             exe = Path(tmp) / ("choice%d%s" % (windows, ".exe" if os.name == "nt" else ""))
-            src.write_text(CHOICE.replace("/* CHOICE */", choice).replace("/* RUNS */", runs)
+            src.write_text(CHOICE.replace("/* CHOICE */", choice).replace("/* RUNS */", runs).replace("/* MOST */", most)
+                           .replace("/* CAPPED */", capped).replace("/* NOW */", now)
                            .replace("/* FRAMEGEN */", framegen.group(0)).replace("/* DLSSG */", dlssg.group(0)),
                            encoding="utf-8")
             if Path(args.cxx).name.lower() in ("cl", "cl.exe", "clang-cl", "clang-cl.exe"):

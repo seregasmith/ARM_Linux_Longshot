@@ -29,7 +29,9 @@ def main():
     fg = (a.source / "gpu/vk/vk_framegen.cpp").read_text(encoding="utf-8")
     structs = fg[fg.index("struct Img {"):fg.index("int64_t now_ns()")]
     functions = "\n".join([block(replay, "void blit_crop_to_rect("), block(replay, "void blit_crop("),
-                           block(fg, "bool framegen_record("), block(fg, "VkImage framegen_hdr(")])
+                           block(fg, "void fixed_dues("), block(fg, "int64_t pace_lead("),
+                           block(fg, "bool framegen_record("),
+                           block(fg, "VkImage framegen_hdr(")])
     template = (ROOT / "tests/present_source_crop_test.cpp").read_text(encoding="utf-8")
     fixture = template.replace("/* ACTUAL_STATE */", structs).replace("/* ACTUAL_FUNCTIONS */", functions)
     with tempfile.TemporaryDirectory(prefix="present-source-crop-") as temp:

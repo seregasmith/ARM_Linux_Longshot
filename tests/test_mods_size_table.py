@@ -313,7 +313,9 @@ int main(int argc, char **argv) {
 ''', encoding="utf-8")
     exe = tmp / "fixture"
     subprocess.run([cc, "-std=gnu11", "-D_GNU_SOURCE", "-DZSTD_DISABLE_ASM", "-DZSTD_LEGACY_SUPPORT=0", "-DZSTD_MULTITHREAD=0",
-                    "-I", str(ROOT / "host"), "-I", str(ROOT / "host/posix"), "-I", str(ZSTD), str(src / "mods.c"),
+                    "-I", str(ROOT / "host"), "-I", str(ROOT / "host/posix"), "-I", str(ZSTD),
+                    "-include", str(ROOT / "gpu/vk/compat/longshot_env.h"),   # (texts.c is a copy: its own path to it is gone)
+                    str(src / "mods.c"),
                     str(src / "prompts.c"), str(src / "texts.c"), str(tmp / "posix.c"), str(tmp / "main.c"),
                     *(str(ZSTD / f) for f in ZSTD_SOURCES), "-o", str(exe)], check=True)
 

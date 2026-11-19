@@ -18,9 +18,10 @@ struct Options {
     int pace = 0;         // frames shown on an even line (vk_framegen.cpp)
     int vsync = 0;        // (longshot) V-Sync, the swapchain's present mode (vk_main.cpp create_swapchain, made again at once): 0 Auto
                           // (mailbox where the driver has it), 1 On (FIFO), 2 Off (immediate). RX_VK_FIFO / RX_VK_IMMEDIATE over it
-    int threaded_rendering = 0;   // (longshot) Threaded rendering (threaded_rendering.h): 0 Auto (by the CPU; off everywhere were
-                          // threaded::kAutoEnabled off), 1 On (the render thread and the recorder thread), 2 Off. Read once, at the
-                          // start (menu_threaded_rendering); RX_VK_ASYNC and RX_VK_RECORDER, when set, over it
+    int threaded_rendering = 0;   // (longshot) Threaded rendering (threaded_rendering.h): 0 Auto (by the CPU's cores: both threads
+                          // from 6, the render thread alone with 4 or 5; off everywhere were threaded::kAutoEnabled off), 1 On (the
+                          // render thread and the recorder thread), 2 Off. Read once, at the start (menu_render_thread,
+                          // menu_recorder_thread); RX_VK_ASYNC and RX_VK_RECORDER, when set, over it
     int hdr = 0;          // (longshot) HDR10 out (vk_framegen.cpp framegen_hdr): 0 off, 1 the SDR picture expanded, 2 the game's own (native) HDR; when the display has it (the swapchain made again at once)
     int hdr_white = 200;  // HDR paper white, nits (the picture's white)
     int hdr_peak = 1000;  // HDR peak brightness, nits (its brightest highlights)
@@ -44,6 +45,8 @@ struct Options {
     int dlss_model = 0;   // DLSS's network, by its preset: 0 K (transformer; E, the CNN, under 7 GB of video memory), 1 M, 2 L
                           // (second-generation transformer), 3 NVIDIA's default (upscaler_rows.h model_preset; vk_dlss.cpp).
                           // RX_VK_DLSS_PRESET over it
+    int dlss_pre_bloom = 0;   // (longshot) DLAA before the bloom: 0 off (DLAA after the game's bloom and tone map), 1 on
+                              // (vk_temporal.cpp pre_bloom_wanted; DLAA only). Saved as dlss_pre_bloom; RX_VK_DLSS_PRE_BLOOM over it
     int sharpness = 0;    // 0 to 100
     int anisotropy = 4;   // (longshot) Anisotropic filtering: 0 the game's own (1x or 2x), 1 2x, 2 4x, 3 8x, 4 16x (the
                           // device's limit at most; gpu/vk/vk_draw.cpp aniso_override, RX_VK_ANISO over it)
@@ -94,7 +97,8 @@ struct Options {
     int rumble = 100;     // the controllers' rumble in percent of the game's: 0 Off, 25 to 150 (host/pad_sdl.c)
     int stick_dead_zone = 0;  // circular stick cutoff: 0 XInput's 7849 (~24%), 1..5 5% to 30% (host/nn_hid.c)
     int hold_toggle = 0;  // enabled Switch buttons (1 << HOS_SW_*); persisted as toggle_<button>, not one mask entry
-    int pad_layout = 0;   // 0 Nintendo (default), 1 Xbox / PC, 2 Swap Face Buttons, 3 Custom
+    int pad_layout = 0;   // 0 Nintendo (default), 1 Xbox / PC, 2 Swap Face Buttons, 3 Switch 2 Pro (every button the pad's own), 4 Custom
+    int pad_menu = 1;     // the controller's button that opens and closes the Insert menu: 0 none, 1 Home, 2 GL, 3 GR (the back buttons)
     int gyro = 1;         // motion controls from a pad's gyroscope (host/pad_sdl.c, host/hos_motion.h); on by default
     int gyro_sens_x = 100;   // the motion aim's horizontal sensitivity in percent
     int gyro_sens_y = 100;   // the motion aim's vertical sensitivity in percent
@@ -103,6 +107,8 @@ struct Options {
     int gyro_deadzone = 1;   // the motion's deadzone: 0 tight, 1 standard (the console's default), 2 loose
     int prompts = 0;      // the button icons: 0 Auto (the controller), 1 Switch, 2 Xbox, 3 PS4, 4 PS5, 5 Steam Deck (host/prompts.c)
     int robust = 0;       // bounds-checked buffer access: 0 Auto (on), 1 Off, 2 On (gpu/vk/vk_main.cpp; RX_VK_ROBUST)
+    int present_queue = 0;   // (longshot) Present queue (Debug tab): 0 Off, 1 On, the presents on a compute family's queue of
+                             // their own (gpu/vk/vk_main.cpp create_device; RX_VK_PRESENT_QUEUE over it). Read once, at the start
     int descriptor_reuse = 1;  // (on by default since options_version 4) a draw keeps its descriptors through other slots' registrations (gpu/vk/vk_draw.cpp; RX_VK_DESC_REUSE)
     int sampler_cache = 0;     // sampler ids answer their parameters without the registrations' lock (gpu/vk/vk_draw.cpp; RX_VK_SAMPLER_CACHE)
     int astc_rgba8 = 0;   // (longshot) big ASTC textures kept as decoded RGBA8, not re-encoded to BC3 (gpu/vk/vk_texture.cpp bc_ready;
@@ -116,7 +122,8 @@ struct Options {
                           // 6 Auto (this PC), kAutoPreset (its tier: budget)
     int budget = 0;       // the preset the settings came from, kept when another row turns the preset to Custom: Minimum's (1)
                           // trims the textures' mips on a small card (vk_texture.cpp low_vram_texture_mips). Saved as memory_budget;
-                          // 0: none. No preset or row sets the VRAM budgets: one rule by the card (texture_budget.h, mirror_budget.h)
+                          // 0: none, and Custom goes by Auto (this PC)'s tier (menu_memory_tier). No preset or row sets the
+                          // VRAM budgets: one rule by the card (texture_budget.h, mirror_budget.h)
     int audio_output = 0; // (longshot) the speakers the game mixes for: 0 Auto (the default output's), 1 Stereo, 2 5.1, 3 Mono; layout read at the start (host/nn_audio.c; HOS_AUDIO_CHANNELS)
     int discord = 1;   // (longshot) the Discord status (host/discord_rpc.c): 1 on, shown while a Discord client runs on this PC
     int debug_tools = 0;   // (longshot) the Debug tab's tools (#785: flight, free camera, teleport, inventory): 0 off; HOS_OOT_CHEATS=1 also turns them on
@@ -140,10 +147,12 @@ void menu_auto_tune(double gpu_ms, double draws, double fps);   // (the replay's
 /// (for the run only: the row keeps the player's choice). 0 Auto, 1 On, 2 Off
 int menu_vsync();
 /// (longshot) The Threaded rendering row as this run resolved it, once, at the start (threaded_rendering.h's rule: On, or what
-/// Auto picks for this PC): true, the render thread and the recorder thread. What the row says, not the environment's
-/// switches: RX_VK_ASYNC and RX_VK_RECORDER, when set, are read over it by their own readers (vk_replay.cpp
-/// render_thread_mode, vk_recorder.h mode_from_env). A change of the row applies at the next start. Any thread
-bool menu_threaded_rendering();
+/// Auto picks for this PC), in its two halves: menu_render_thread, the render thread (On; Auto from 4 cores), and
+/// menu_recorder_thread, the recorder thread (On; Auto from 6 cores, never without the render thread). What the row says,
+/// not the environment's switches: RX_VK_ASYNC and RX_VK_RECORDER, when set, are read over it by their own readers
+/// (vk_replay.cpp render_thread_mode, vk_recorder.h mode_from_env). A change of the row applies at the next start. Any thread
+bool menu_render_thread();
+bool menu_recorder_thread();
 void menu_set_gpu_count(int count);
 std::string driver_text();   // (vk_main.cpp: the driver as it names itself, for the log and Save my pipeline list)
 std::string device_name_text();   // (vk_main.cpp: the GPU the game runs on, as its driver names it)
@@ -161,6 +170,10 @@ int menu_player_flight();
 int menu_free_camera();
 int menu_link_speed();   // (Movement speed in percent, 100 while the tools are off)
 int menu_transition_autosave();
+/// The memory tier the settings go by (1 Minimum ... 5 Ultra): the preset Custom came from (memory_budget), else the preset's,
+/// else, for Custom with none (Custom chosen on the preset row, or an options file from before memory_budget), Auto (this PC)'s
+/// tier for this PC; 0 before the card is known
+int menu_memory_tier();
 int menu_shadow_res();   // (Shadow resolution, HOS_OPT_SHADOW_RES: the size drawn, Auto resolved)
 int menu_damage_taken();   // (Damage taken, HOS_OPT_DAMAGE_TAKEN: 1, Normal, while the tools are off)
 int menu_take_cheat_action();
@@ -171,6 +184,7 @@ void menu_note_present_sizes(uint32_t picture_w, uint32_t picture_h, uint32_t wi
 /// Over the window's image `index` (TRANSFER_DST_OPTIMAL before and after), w x h: the start-up screen, the menu and the FPS
 /// counter, drawn with Dear ImGui (vk_imgui.h, vk_ui.h). Nothing recorded while none of them shows
 void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h);
+void menu_rumble_tick();   // (once a present: the Rumble strength row's own rumble)
 /// (headless shots, RX_VK_SHOT_MENU) The menu and the counter over another image: TRANSFER_DST_OPTIMAL before and after,
 /// R8G8B8A8_UNORM with colour-attachment use, view a view of it
 void menu_record_image(VkCommandBuffer cmd, VkImage image, VkImageView view, uint32_t w, uint32_t h);

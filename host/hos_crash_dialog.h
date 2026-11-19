@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../gpu/vk/compat/longshot_redact.h"   /* (the home folder and the user's name out: one implementation) */
 
 #define HOS_CRASH_WATCH_ARG "--crash-watch"
 #define HOS_CRASH_SHOW_ARG "--crash-show"
@@ -164,6 +165,8 @@ typedef struct HosCrashLog {
     /* (what Report automatically's card says too, from the same lines as build_report (hos_crash_dialog.c): the report: lines, the
        place (the last map, else the shaders' preparation or the title and intro) and the crash in one line) */
     char os[200], cpu[200], renderer[120], place[120], crash[200];
+    /* (the renderer's own `report: gpu` line, the card and its driver (gpu/vk/vk_main.cpp); room for gpu ", " driver too) */
+    char gpu_report[328];
 } HosCrashLog;
 static inline void hos_crash_take(char *dst, size_t cap, const char *from) {
     size_t n = 0;
@@ -316,6 +319,7 @@ static inline void hos_crash_log_line(HosCrashLog *f, const char *line) {
             strncat(f->devices, name + 2, (size_t)(end - name - 2));
         }
     }
+    if ((at = strstr(line, "] report: gpu "))) hos_crash_take(f->gpu_report, sizeof f->gpu_report, at + 14);
     if ((at = strstr(line, "] report: os "))) hos_crash_take(f->os, sizeof f->os, at + 13);
     if ((at = strstr(line, "] report: cpu "))) hos_crash_take(f->cpu, sizeof f->cpu, at + 14);
     if ((at = strstr(line, "] report: renderer "))) hos_crash_take(f->renderer, sizeof f->renderer, at + 19);
@@ -340,6 +344,14 @@ static inline int hos_crash_stage(const HosCrashLog *f) {
 /* (a start that stopped before play for a reason the log names) */
 static inline int hos_crash_start_failed(const HosCrashLog *f) {
     return !f->map && (f->files || f->vulkan || f->window || f->reserve);
+}
+/* The graphics card with its driver, as Report automatically sends it ("NVIDIA GeForce RTX 3090, NVIDIA 580.95.05"): the
+   renderer's own `report: gpu` line, else the device chosen and its `vk: driver:` line joined the same way, else the
+   device's name alone; "" when the log names no device in use */
+static inline void hos_crash_gpu(char *out, size_t cap, const HosCrashLog *f) {
+    if (f->gpu_report[0]) snprintf(out, cap, "%s", f->gpu_report);
+    else if (f->gpu[0] && f->driver[0]) snprintf(out, cap, "%s, %s", f->gpu, f->driver);
+    else snprintf(out, cap, "%s", f->gpu);
 }
 
 /* ---- a pending record (hos_crash_record.c format_record): its "key: value" lines ---- */
@@ -498,56 +510,13 @@ static inline size_t hos_crash_message(char *out, size_t cap, int verdict, int s
 }
 
 /* ---- privacy: the same rules as the Insert menu's Bug report (gpu/vk/vk_bug_report.cpp redact, value_shown) ---- */
-static inline int hos_crash_sep(char c) { return c == '/' || c == '\\'; }
-static inline int hos_crash_name_char(char c) {
-    const unsigned char u = (unsigned char)c;
-    return (u >= '0' && u <= '9') || (u >= 'a' && u <= 'z') || (u >= 'A' && u <= 'Z') || c == '.' || c == '_' || c == '-' || u >= 0x80;
-}
-static inline int hos_crash_matches_at(const char *s, size_t n, size_t at, const char *what, size_t wn, int windows) {
-    if (!wn || at + wn > n) return 0;
-    for (size_t i = 0; i < wn; i++) {
-        char a = s[at + i], b = what[i];
-        if (hos_crash_sep(a) && hos_crash_sep(b)) {
-            if (!windows && a != b) return 0;
-            continue;
-        }
-        if (windows) {
-            if (a >= 'A' && a <= 'Z') a = (char)(a + 32);
-            if (b >= 'A' && b <= 'Z') b = (char)(b + 32);
-        }
-        if (a != b) return 0;
-    }
-    return 1;
-}
+static inline int hos_crash_sep(char c) { return longshot_redact_sep(c); }
 /* A log line with the home folder written ~ (%USERPROFILE% on Windows) and the user's name as a folder <user>: the menu's
-   redact(), the same output for the same line. The length written (cut to cap) */
+   redact(), and the game's log as it writes it (host/log_redact.c), one implementation (gpu/vk/compat/longshot_redact.h).
+   The length written (cut to cap) */
 static inline size_t hos_crash_redact_line(char *out, size_t cap, const char *line, size_t n, const char *home, const char *user,
                                            int windows) {
-    size_t hn = home ? strlen(home) : 0, un = user ? strlen(user) : 0, o = 0;
-    while (hn > 1 && hos_crash_sep(home[hn - 1])) hn--;
-    const int with_home = hn > 1;
-    if (!cap) return 0;
-#define HOS_CRASH_OUT(s, k) do { for (size_t j_ = 0; j_ < (k) && o + 1 < cap; j_++) out[o++] = (s)[j_]; } while (0)
-    for (size_t i = 0; i < n;) {
-        if (with_home && (i == 0 || (!hos_crash_name_char(line[i - 1]) && !hos_crash_sep(line[i - 1]))) &&
-            hos_crash_matches_at(line, n, i, home, hn, windows) && (i + hn >= n || !hos_crash_name_char(line[i + hn]))) {
-            const char *w = windows ? "%USERPROFILE%" : "~";
-            HOS_CRASH_OUT(w, strlen(w));
-            i += hn;
-            continue;
-        }
-        if (un && i > 0 && hos_crash_sep(line[i - 1]) && hos_crash_matches_at(line, n, i, user, un, windows) &&
-            (i + un >= n || !hos_crash_name_char(line[i + un]))) {
-            HOS_CRASH_OUT("<user>", 6);
-            i += un;
-            continue;
-        }
-        HOS_CRASH_OUT(line + i, 1);
-        i++;
-    }
-#undef HOS_CRASH_OUT
-    out[o] = 0;
-    return o;
+    return longshot_redact_line(out, cap, line, n, home, user, windows);
 }
 /* Whether a setting's value goes into the report: a number of at most 12 characters (60, -1, 1.5), a size (1920x1080), or
    on/off, true/false, yes/no, or empty; and, for a switch (name not NULL), never for a name that may hold a secret, a place or

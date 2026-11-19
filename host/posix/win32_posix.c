@@ -3,6 +3,9 @@
 #define _GNU_SOURCE
 #include <windows.h>
 #include <mmsystem.h>
+#ifdef TRACY_ENABLE
+#include "../hos_tracy.h"
+#endif
 
 #include <dirent.h>
 #include <dlfcn.h>
@@ -85,20 +88,23 @@ static struct timespec rel_ms(DWORD ms) {
     struct timespec ts = {(time_t)(ms / 1000), (long)(ms % 1000) * 1000000L};
     return ts;
 }
-void WakeConditionVariable(CONDITION_VARIABLE *cv) {
+/* A sleeper registers under its associated lock before releasing that lock.
+   The sequence handles a wake between the unlock and entering the kernel. */
+static void cv_wake(CONDITION_VARIABLE *cv, int count) {
+    if (!__atomic_load_n(&cv->waiters, __ATOMIC_SEQ_CST)) return;
     __atomic_add_fetch(&cv->seq, 1, __ATOMIC_SEQ_CST);
-    futex(&cv->seq, FUTEX_WAKE_PRIVATE, 1, NULL);
+    futex(&cv->seq, FUTEX_WAKE_PRIVATE, count, NULL);
 }
-void WakeAllConditionVariable(CONDITION_VARIABLE *cv) {
-    __atomic_add_fetch(&cv->seq, 1, __ATOMIC_SEQ_CST);
-    futex(&cv->seq, FUTEX_WAKE_PRIVATE, INT_MAX, NULL);
-}
+void WakeConditionVariable(CONDITION_VARIABLE *cv) { cv_wake(cv, 1); }
+void WakeAllConditionVariable(CONDITION_VARIABLE *cv) { cv_wake(cv, INT_MAX); }
 static BOOL cv_wait(CONDITION_VARIABLE *cv, DWORD ms, void (*unlock)(void *), void (*relock)(void *, ULONG), void *l, ULONG flags) {
+    __atomic_add_fetch(&cv->waiters, 1, __ATOMIC_SEQ_CST);
     const uint32_t seq = __atomic_load_n(&cv->seq, __ATOMIC_SEQ_CST);
     unlock(l);
     struct timespec ts = rel_ms(ms);
     const long r = futex(&cv->seq, FUTEX_WAIT_PRIVATE, seq, ms == INFINITE ? NULL : &ts);
     const int timed_out = r == -1 && errno == ETIMEDOUT;
+    __atomic_sub_fetch(&cv->waiters, 1, __ATOMIC_SEQ_CST);
     relock(l, flags);
     if (timed_out) { last_error = ERROR_TIMEOUT; return FALSE; }
     return TRUE;
@@ -411,6 +417,9 @@ HRESULT SetThreadDescription(HANDLE h, PCWSTR name) {
     char shortname[16];
     snprintf(shortname, sizeof shortname, "%s", t->name);   /* (the kernel keeps 15 characters) */
     pthread_setname_np(t->th, shortname);
+#ifdef TRACY_ENABLE
+    if (pthread_equal(t->th, pthread_self())) HT_THREAD_NAME(t->name);   /* (LONGSHOT_TRACY: the whole name) */
+#endif
     return S_OK;
 }
 HRESULT GetThreadDescription(HANDLE h, PWSTR *name) {

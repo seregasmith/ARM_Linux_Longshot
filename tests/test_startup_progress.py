@@ -184,9 +184,9 @@ def main():
     main_cpp = (ROOT / "gpu" / "vk" / "vk_main.cpp").read_text(encoding="utf-8")
     draw = (ROOT / "gpu" / "vk" / "vk_draw.cpp").read_text(encoding="utf-8")
     started = main_cpp[main_cpp.index("bool started_up() {"):main_cpp.index("int start(void* hwnd) {")]
-    if "if (!dev.offscreen && screen_wanted())" not in started:
+    if "if (!dev.offscreen) {\n            prepare_with_screen();" not in started:
         raise SystemExit("a windowed start no longer prepares the shaders behind the start-up screen")
-    if started.index("screen_wanted()") > started.index("if (console) CloseHandle(console)"):
+    if started.index("prepare_with_screen();") > started.index("if (console) CloseHandle(console)"):
         raise SystemExit("the start-up screen is chosen after the headless preparation")
     screen = main_cpp[main_cpp.index("void prepare_with_screen() {"):main_cpp.index("bool started_up() {")]
     for need, why in (("std::thread worker(", "the preparation runs on the window's own thread"),

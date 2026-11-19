@@ -34,6 +34,8 @@ UNIFORM(4) uint x_shift;
 UNIFORM(5) uint block_height;
 UNIFORM(6) uint block_height_mask;
 UNIFORM(7) uint native_tiling;
+UNIFORM(8) uint blocks_x;
+UNIFORM(9) uint blocks_y;
 END_PUSH_CONSTANTS
 
 struct EncodingData {
@@ -1416,6 +1418,8 @@ uint SwizzleOffset(uvec2 pos) {
 
 void main() {
     uvec3 pos = gl_GlobalInvocationID;
+    // The shared BC scratch can be much larger than the mip being decoded.
+    if (pos.x >= blocks_x || pos.y >= blocks_y) return;
     pos.x <<= BYTES_PER_BLOCK_LOG2;
     uint swizzle = SwizzleOffset(pos.xy);
     if (native_tiling != 0u) {
@@ -1437,6 +1441,6 @@ void main() {
     if (any(greaterThanEqual(coord, image_extent))) {
         return;
     }
-    local_buff = astc_data[offset / 16];
+    local_buff = offset / 16 < uint(astc_data.length()) ? astc_data[offset / 16] : uvec4(0);
     DecompressBlock(coord);
 }

@@ -53,7 +53,7 @@ int main() {
     CHECK("at RX_VK_DEAD_EVERY=2 the sweep runs at the even presents between", looked == 40);
     CHECK("0 is taken as 1", dead_targets::sweep_due(3, 0, true));
 
-    // (off: RX_VK_DEAD_TARGETS=0 or RX_VK_NO_EVICT)
+    // (off: RX_VK_NO_EVICT)
     looked = 0;
     for (unsigned long long f = 1; f <= 100; f++) looked += dead_targets::sweep_due(f, 1, false);
     CHECK("off, the sweep never runs", looked == 0);
@@ -93,20 +93,34 @@ def wiring():
         body = frame[gate:frame.index("return;", gate)]
         need("dead_targets::sweep_due(frame_no, dead_every_presents()," in body, "the gate asks sweep_due with RX_VK_DEAD_EVERY")
         need("dead_targets_sweep(completed);" in body, "the gate calls the sweep before it returns")
-        need('env_on("RX_VK_NO_EVICT")' in body and "dead_targets_on()" in body, "the sweep is off with RX_VK_NO_EVICT or RX_VK_DEAD_TARGETS=0")
+        need('env_on("RX_VK_NO_EVICT")' in body and "dead_every_presents(), evicting)" in body, "the sweep is off with RX_VK_NO_EVICT")
         need(frame.index("pool_trim();") < gate, "the pool is trimmed before the gate, every present")
     sweep = block(tex, "void dead_targets_sweep(uint64_t completed)")
     for part in ("dead_min_unused_presents()", "dead_targets::candidate(frame_no, tex->last_frame, need, tex->last_value, completed,",
-                 "tex->levels == 1 && tex->layers == 1 && tex->depth <= 1", "target_overlap::shifted_over(lo, hi, tex->last_frame,",
-                 "(*it)->last_written", "destroy_later(*tex);", "forget_gpu(tex);", "remade.erase(tex);", "textures.erase(it)"):
+                 "tex->levels == 1 && tex->layers == 1 && tex->depth <= 1", "target_overlap::ShiftedOver over{lo, hi, tex->last_frame};",
+                 "(*it)->last_written", "destroy_later(*tex, completed);", "forget_gpu(tex);", "remade.erase(tex);", "textures.erase(it)"):
         need(part in sweep, "the sweep: " + part)
+    # (the sweep runs at every present: it walks the rendered textures' list, not the whole table, and every texture that
+    # leaves the table has left that list first, so the list never holds a pointer the table has freed)
+    need("for (Texture* tex : rendered_targets)" in sweep and "for (const Texture* t : rendered_targets)" in sweep,
+         "the sweep walks rendered_targets")
+    need("kv : textures" not in sweep, "the sweep walks the whole texture table again")
+    rendered = block(tex, "void texture_rendered(Texture* tex)")
+    need("if (!tex->first_render_frame) tex->first_render_frame = frame_no, rendered_targets.push_back(tex);" in rendered,
+         "a texture joins rendered_targets when it is first rendered into, once")
+    need(tex.count("rendered_targets.push_back(") == 1, "rendered_targets is added to in one place")
+    erases = tex.count("textures.erase(")
+    guarded = tex.count("    rendered_forget(gone);\n    for (auto it = textures.begin(); it != textures.end() && !gone.empty();) {\n"
+                        "        if (gone.erase(it->second.get())) it = textures.erase(it);")
+    need(erases > 0 and erases == guarded and "textures.clear(" not in tex,
+         "every erase from the texture table (%d) is right after rendered_forget(gone) (%d are)" % (erases, guarded))
     for part in ("flush_textures", "flush_texture(", "readback"):
         need(part not in sweep, "the sweep writes nothing back (%s)" % part)
     every = block(tex, "uint64_t dead_every_presents()")
     need('getenv("RX_VK_DEAD_EVERY")' in every and ": 1;" in every, "RX_VK_DEAD_EVERY defaults to 1")
     trim = block(tex, "size_t pool_trim()")
     need('getenv("RX_VK_POOL_IDLE")' in trim and "target_pool::kIdlePresents" in trim, "RX_VK_POOL_IDLE defaults to target_pool.h's")
-    need("!target_pool::idle_out(frame_no, v[i].since, idle)" in trim, "the trim uses target_pool::idle_out")
+    need("!target_pool::idle_out(frame_no, oldest.since, idle)" in trim, "the trim uses target_pool::idle_out")
     return fails
 
 

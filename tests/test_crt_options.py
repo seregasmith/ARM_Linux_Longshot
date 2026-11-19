@@ -85,6 +85,11 @@ int custom_index() { return (int)outputs().size(); }
 int parse_output(const char*) { CHECK(false); return 0; }
 int step_output_choice(int, int) { CHECK(false); return 0; }
 int output_for_aspect(int) { CHECK(false); return 0; }
+// (the Frame generation rows in set_row: DLSS FG offered (framegen_by_dlss_offered); no DLSS FG top here (vk_dlss.cpp
+// dlss_fg_most, vk_framegen.cpp framegen_capped))
+bool framegen_by_dlss_offered() { return true; }
+int dlss_fg_most() { return 0; }
+int framegen_capped(int framegen, int) { return framegen; }
 bool aspect_follows_host(int) { return false; }
 int aspect_started = 0, ultrawide_read = 1;
 void logf(const char*, ...) {}

@@ -14,7 +14,7 @@ MagicBeanDev/LongshotLauncher. The secrets and the variable the release workflow
 | Label | Used by | What it must be |
 |---|---|---|
 | `ubuntu-latest` | `ci.yml` (its title check and its Linux checks run on `ubuntu-24.04`), `third-party.yml`, the launcher's `ci.yml` | Linux, Docker: e.g. `ubuntu-latest:docker://ghcr.io/catthehacker/ubuntu:act-24.04` (Node for the actions, git, Python 3, curl, sudo and apt) |
-| `ubuntu-24.04` | `ci.yml`'s tests (with the Windows Builder's compile and --cli checks), `vulkan-dlss.yml` | the same image |
+| `ubuntu-24.04` | `ci.yml`'s tests (with the Windows Builder's compile and --cli checks), `vulkan-dlss.yml`, `vulkan-fixtures.yml` (software Vulkan) | the same image |
 | `quick` | the short jobs of 5 minutes or less: `ci.yml`'s title check and actionlint, `pr-description.yml`, `third-party.yml`'s check, `release.yml`'s *The version* and *Sign and publish*; the launcher's title check, *The version* and *Sign and publish* | the same image. A runner kept for them only (label `quick`, capacity 1) means they never wait behind a build; the other runners carry `quick` too and take them when they have room |
 | `release` | the releases' builds: `build-linux.yml` and `build-windows.yml` (all of it), which `release.yml` calls (or *Run workflow*); the launcher's *The launcher, both systems* | the same image, on a runner kept for releases only (it carries no other label), so CI never takes it. The AppImage job builds inside Ubuntu 22.04 itself (`scripts/linux/deps.sh` runs in its container) and needs Docker or enough disk (about 30 GB). The Windows jobs install Wine and Xvfb with apt, and download llvm-mingw's Linux build and the .NET 8 SDK. A release waits while no `release` runner is online |
 

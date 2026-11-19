@@ -43,6 +43,7 @@ static char *fake_getenv(const char *name) {
     return NULL;
 }
 #define getenv fake_getenv
+#include "ENV_ON_H"   /* (env_on_or, the switches' rule, reading through the fake) */
 #define hos_log(...) ((void)0)
 int hos_ini_option(const char *key, int other) { ++ini_reads; return !strcmp(key,"frame_rate_cap") ? chosen : other; }
 int rx_option(int id, int other) { return id == HOS_OPT_FPS_CAP ? chosen : id == 0 ? !per_frame : other; }
@@ -80,14 +81,15 @@ int main(int argc, char **argv) {
         chosen = 0; now += MOVIE_STALE_NS + 1; fps_refresh(); assert(fps_max() == 60);
         chosen = -1; fps_refresh(); assert(fps_max() == 30);
     }
-    assert(env_reads == 1 && ini_reads == 1 && movie_reads == (movie_override ? 2 : 1));
+    assert(env_reads == 1 && ini_reads == 1 && movie_reads == 1);
 }
-'''.replace("CAP_ENUM", cap_enum).replace("SELECTION", selection).replace("INTERVAL", interval)
+'''.replace("ENV_ON_H", (ROOT / "gpu/vk/compat/longshot_env.h").as_posix()).replace("CAP_ENUM", cap_enum).replace("SELECTION", selection).replace("INTERVAL", interval)
     with tempfile.TemporaryDirectory(prefix="cap-30-") as tmp:
         source = Path(tmp) / "fixture.c"
         exe = Path(tmp) / "fixture.exe"
         source.write_text(fixture, encoding="utf-8")
-        subprocess.run([args.cc, "-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", str(source), "-o", str(exe)], check=True)
+        subprocess.run([args.cc, "-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", str(source), "-o", str(exe)],
+                       check=True)
         for cap, env, expected in [(-1,"unset",30), (0,"30",30), (6,"30",30), (-1,"60",60),
                                     (-1,"120",120), (-1,"1000",1000), (-1,"0",60), (-1,"invalid",60),
                                     (7,"unset",60), (-2,"unset",60)]:

@@ -49,8 +49,8 @@ def main():
         if stores:
             raise SystemExit(f"{name} is stored to outside the bind handlers' arrays")
     uniform = block(draw, "VkDescriptorBufferInfo uniform_range(")
-    if "bank_stage > 4 ? s.bind_gen" not in uniform or "RX_VK_BANK_GEN_OFF" not in uniform:
-        raise SystemExit("compute, task and mesh banks are not kept by bind_gen, or the switch is missing")
+    if "bank_stage > 4 ? s.bind_gen" not in uniform:
+        raise SystemExit("compute, task and mesh banks are not kept by bind_gen")
     if "c.bind_gen = gen;" not in uniform or "c.bind_gen == gen" not in uniform:
         raise SystemExit("the bank cache is not kept and checked by the same generation")
     print("PASS: a graphics stage's banks are kept by the generation of the bindings they are made from")

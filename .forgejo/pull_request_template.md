@@ -3,13 +3,41 @@
 <!-- The status line above is what a reviewer reads first: the title's type, how much could break, where you ran it and
      where it still has to run. E.g. "**Type:** fix · **Risk:** low · **Tested on:** Linux, RX 6700 XT ·
      **Needs:** Windows, any GPU".
-     Open as work in progress (forge.py pr create adds "WIP: ") and mark it ready (forge.py pr ready) once every
-     section and every Everyone box is done. Keep this description current, and post a comment for each new commit,
-     measurement or test run: CONTRIBUTING.md, "Commits and pull requests". -->
+     Open as work in progress (forge.py pr create adds "WIP: ") and mark it ready (forge.py pr ready) once it is
+     ready for review: done, tested on your own PC, the checks passing, measured, this description complete and every
+     Everyone box true (CONTRIBUTING.md, "Ready for review: out of WIP"). Keep this description current, and post a
+     comment for each new commit, measurement or test run: CONTRIBUTING.md, "Commits and pull requests". -->
+
+## TL;DR
+
+<!-- The whole PR in two to four plain sentences a player could follow, at most 120 words, for someone who reads
+     nothing else: what was wrong or missing, what this PR changes, the headline result and how it was checked. No file
+     or function names here: they go in What changed.
+     E.g. "At 4K the pause menu's text ran off the right edge, so the last option of each row couldn't be read. This PR
+     makes the menu's text grow with the screen's height. At 4K the widest row is now 302 px narrower and fits, and the
+     menu's frame time is the same; a new test fails on main and passes here, and I read every row in the game." -->
+
+<two to four plain sentences: what was wrong or missing, what this changes, the headline result and how it was checked>
+
+## Breakdown
+
+<!-- The same story as short bullets, one line each, for a reader who wants more than the TL;DR but not yet the
+     sections below: one bullet for each of these seven, in this order. "Nothing" is a fine answer to "What does not
+     change" or "What is still open"; an empty bullet is not.
+     E.g. "- **Who it helps:** anyone who plays at 4K or on any screen taller than 1080p.
+           - **What was wrong:** the menu's font kept its 1080p size, so wide rows ran past the screen's edge." -->
+
+- **Who it helps:** <who gains, in a player's words>
+- **What was wrong:** <the cause, in one plain sentence>
+- **What changes:** <what the game does differently now, in one sentence>
+- **What does not change:** <what stays as it was: defaults, other paths, saves, or "nothing">
+- **How it was checked:** <the tests and runs, with the headline result>
+- **What is still open:** <what was not tested or still has to be, or "nothing">
+- **Risk:** <low, medium or high, and what could go wrong, in one line>
 
 ## Why
 
-<!-- The reason for this PR, first, in plain words a player could follow: what goes wrong or what is missing, and for
+<!-- The reason for this PR, in plain words a player could follow: what goes wrong or what is missing, and for
      whom. Not the implementation. Search the issue tracker (forge.py issue list, or the web page) and link every
      issue that fits: "Fixes #N" closes it on merge, "See #N" links it.
      E.g. "At 4K the pause menu's text runs off the right edge, so the last option of each row can't be read.
@@ -81,8 +109,12 @@ How to reproduce: <the save or spot, the settings and switches, the commands>
 ## Testing
 
 <!-- Unmistakable: what has been tested, what hasn't, and what must be before merge.
-     Tested: what you ran and checked, where (OS, GPU, driver) and how: the game-free checks; in the game, the area and
-     the steps; a tester's result.
+     Tested: what you ran and checked, where (OS, GPU, driver) and how. First your own run, on your PC: a change the
+     game runs ran in the game (the area and the steps, and for a fix, that How to reproduce no longer shows the bug);
+     then the game-free checks and any tester's result.
+     Not testable by hand: only when the fix's own case can't be run by hand (hardware you don't have, a race or crash
+     you can't trigger): what can't be run, why, and what stands in for it (a game-free test, a log line, a Test Farm
+     run). Delete the line when everything could be run.
      Not tested: what this PR could affect that nobody has run, and why.
      Must be tested: one item per thing that has to be checked before merge and that you can't check yourself: exactly
      where (OS, GPU, driver, or a Test Farm tag such as linux, amd, radv, windows, steamdeck), the steps for someone
@@ -91,7 +123,9 @@ How to reproduce: <the save or spot, the settings and switches, the commands>
      E.g. "- Windows, any GPU (I'm on Linux; this is a Windows fix): start a new file, open the pause menu at 4K,
      expecting every row to end inside the screen (Test Farm: @Beanstalk windows, the pause menu at 4K)". -->
 
-**Tested:** <what, where and how>
+**Tested:** <what, where and how: your own run first>
+
+**Not testable by hand:** <what can't be run by hand, why, and what stands in for it; or delete this line>
 
 **Not tested:** <what, and why>
 
@@ -127,7 +161,11 @@ Fixes #
 - [ ] One topic.
 - [ ] The title is a Conventional Commit (`type(scope): description`) of the status line's type.
 - [ ] Why gives the reason plainly and links the issues that fit (the tracker searched).
+- [ ] Tested on my own PC where it runs (in the game, for a change the game runs), as Testing's Tested says; what
+  can't be run by hand is in Testing's Not testable by hand, with why.
 - [ ] Measurements has a verdict, or one line saying why there is nothing to measure.
+- [ ] Nothing gets worse that I know of: any cost (speed, latency, memory, a setup that worked before) is measured and
+  in Risks.
 - [ ] Testing names what was tested, what wasn't, and what must still be tested, where and how.
 - [ ] Rebased on current `main`.
 - [ ] `python -I -B tests/run_all.py` passes (any failure that also fails on `main` is named).

@@ -31,9 +31,12 @@ HEAD = r'''
 #include <thread>
 #define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); std::exit(1); } } while (0)
 typedef struct VkPipelineCache_T* VkPipelineCache;
-struct Props { unsigned vendorID; };
-struct Dev { Props props; } dev{{0x8086}};
 bool env_on(const char* name) { const char* v = std::getenv(name); return v && std::strcmp(v, "0"); }
+// (dev.policy, which pcache_fetch_lock_on and serial_builds_on read: gpu/vk/device_policy.h makes the two of the GPU's
+// driver and their switches, and tests/test_device_policy.py checks that. Here the lock is as the run's
+// RX_VK_PCACHE_FETCH_LOCK says, the two ways main() is run, and the builds are not serial)
+struct Policy { bool pcache_fetch_lock, compute_builds_serial; };
+struct Dev { Policy policy; } dev{{env_on("RX_VK_PCACHE_FETCH_LOCK"), false}};
 '''
 
 MAIN = r'''

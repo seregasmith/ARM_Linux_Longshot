@@ -1,6 +1,6 @@
 // jobs_wait (gpu/vk/vk_jobs.cpp): a waited-for job still in the queue runs on the waiting thread at once, instead of after
 // every job queued before it, and only once. Built against stand-ins for the renderer's headers
-// (tests/test_jobs_wait_runs_queued.py). argv[1]: "steal" (the default), "race", or "off" (run with RX_VK_JOB_STEAL off).
+// (tests/test_jobs_wait_runs_queued.py). argv[1]: "steal" (the default), "race", or "hurry" (run with RX_VK_WORKERS=1).
 #include "vk_jobs.h"
 
 #include <atomic>
@@ -99,24 +99,6 @@ void race() {
     std::printf("(race: %d of %d jobs ran on a waiting thread, the rest on a worker)\n", here, kRounds);
 }
 
-// RX_VK_JOB_STEAL off: the job waits for a worker, as before the steal
-void off() {
-    hold_every_worker();
-    std::atomic<bool> ready{false};
-    std::thread::id ran_on{};
-    jobs_push([&] { ran_on = std::this_thread::get_id(); ready.store(true, std::memory_order_release); jobs_notify(); }, false,
-              &ready);
-    std::thread releaser([] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        release();
-    });
-    const bool here = jobs_wait(ready);
-    releaser.join();
-    expect(ready.load(), "the job ran once the workers were released");
-    expect(!here && ran_on != std::this_thread::get_id(), "with the steal off, it ran on a worker");
-    for (unsigned i = 0; i < kHolds; i++) jobs_wait(holds_done[i]);
-}
-
 // (run with RX_VK_WORKERS=1) jobs_hurry: a queued job moved to the front runs next, on the worker, before what was queued
 // ahead of it; one not queued is not found
 void hurry() {
@@ -146,12 +128,11 @@ void hurry() {
 int main(int argc, char** argv) {
     const char* mode = argc > 1 ? argv[1] : "steal";
     if (!std::strcmp(mode, "race")) race();
-    else if (!std::strcmp(mode, "off")) off();
     else if (!std::strcmp(mode, "hurry")) hurry();
     else steal();
 
     if (failures) return EXIT_FAILURE;
-    std::printf("PASS (%s): a waited-for job still queued runs once, on the waiting thread unless the steal is off\n", mode);
+    std::printf("PASS (%s): a waited-for job still queued runs once, on the waiting thread\n", mode);
     std::fflush(stdout);
     std::_Exit(EXIT_SUCCESS);   // (the workers are detached and wait forever)
 }

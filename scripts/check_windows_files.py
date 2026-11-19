@@ -120,6 +120,8 @@ def files(a):
                 bad("the zip has %s: the builder has no window and needs no WPF or Windows Forms" % n)
         with open(os.path.join(b, "LongshotBuilder.runtimeconfig.json"), encoding="utf-8") as f:
             rc = json.load(f)["runtimeOptions"]
+        if "framework" in rc or "frameworks" in rc:
+            bad("the builder's runtimeconfig declares framework/frameworks: it must be self-contained")
         included = {x["name"]: x["version"] for x in rc.get("includedFrameworks", [])}
         if rc.get("tfm") != "net8.0":
             bad("the builder's runtimeconfig is for %s, not net8.0" % rc.get("tfm"))

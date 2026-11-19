@@ -3,7 +3,6 @@
 python -I -B tests/test_report_words.py [--cxx clang++]
 """
 import argparse
-import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -194,9 +193,7 @@ int main() {
         exe = Path(tmp) / 'fixture.exe'
         cpp.write_text(fixture, encoding='utf-8')
         subprocess.run([args.cxx, '-std=c++20', '-include', ENV_ON_H, '-Wall', '-Wextra', '-Werror', str(cpp), '-o', str(exe)], check=True)
-        # (memory_cpu_owned does nothing with RX_VK_WB_REPORTS set: not from the caller's environment)
-        env = {k: v for k, v in os.environ.items() if k != 'RX_VK_WB_REPORTS'}
-        subprocess.run([str(exe)], check=True, env=env)
+        subprocess.run([str(exe)], check=True)
 
 
 if __name__ == '__main__':

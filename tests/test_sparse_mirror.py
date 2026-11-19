@@ -68,7 +68,7 @@ def check_source():
                                                   "shadow_forget(", "return remember({p->buffer, off, size, 0});"],
          "gpu_buffer_bind()'s block with no memory")
     grow = block(mem, "void sparse_grow_all(const std::vector<Pool*>& pools) {")
-    need(grow, ["sparse_bind_infos(infos)", "full_barrier(up,", "vkCmdCopyBuffer(up, p.buffer, p.mirror", "cap_pages_over(p,",
+    need(grow, ["sparse_bind_infos(std::move(infos))", "full_barrier(up,", "vkCmdCopyBuffer(up, p.buffer, p.mirror", "cap_pages_over(p,",
                 "sparse_table(p, ma, i, i + 1)", "shadow_forget(p, c.dstOffset, c.size)", "p.released[i] = nullptr;", "++p.release_gen[i];",
                 "mirror_bytes + taking + b > mirror_budget()", "p.refill.clear();", "late_fix_emit();",
                 "vkCmdCopyBuffer(up, buf, p.mirror"], "sparse_grow_all()")
@@ -83,10 +83,10 @@ def check_source():
                "if (mirror_epoch - p.block_dead_since[i] < kSparseIdleEpochs) continue;", "mirror_epoch - last_bound_of(p, i) < kSparseIdleEpochs",
                "p.released[i] = p.blocks[i];"], "sparse_release()")
     need(block(mem, "void sparse_reap() {"), ["dead_blocks.front().value <= mem_completed", "sparse_live.count(d.buffer)",
-                                              "d.pool->release_gen[d.index] != d.gen", "sparse_bind_infos(infos, &unbound);", "free_sparse_block("], "sparse_reap()")
+                                              "d.pool->release_gen[d.index] != d.gen", "sparse_bind_infos(std::move(infos), &unbound);", "free_sparse_block("], "sparse_reap()")
     need(block(mem, "void mirror_free(Pool& p) {"), ["dead_sparse.back().blocks.push_back(a)", "std::erase(sparse_wanted, &p);", "if (d.pool == &p) d.pool = nullptr;",
                                                      "mirror_bytes -= std::min(mirror_bytes, size);"], "mirror_free()")
-    need(block(mem, "void sparse_reap() {"), ["sparse_live.erase(dead_sparse.front().buffer)", "destroy_sparse_buffer(",
+    need(block(mem, "void sparse_reap() {"), ["sparse_live.erase(d.buffer);", "destroy_sparse_buffer(",
                                               "dead_sparse.front().value <= mem_completed"], "sparse_reap()'s freed mirrors")
     need(block(mem, "void memory_end_submission(VkCommandBuffer cmd, uint64_t part) {"),
          ["if (p->sparse) {   // (longshot: never from a sparse mirror's block with no memory",
@@ -104,8 +104,9 @@ def check_source():
     if replay.count("if (memory_sparse_wait(&sparse_wait)) si.waitSemaphoreInfoCount = 1, si.pWaitSemaphoreInfos = &sparse_wait;") != 3:
         raise SystemExit("vk_replay.cpp: a submission of recordings (the flush, a submit, a parallel segment) does not wait for the sparse binds")
     binds = block(mem, "bool sparse_bind_infos(")
-    need(binds, ["si.pSignalSemaphores = &sparse_tl;", "vkQueueBindSparse(dev.queue, 1, &si, VK_NULL_HANDLE)",
-                 'env_on("RX_VK_SPARSE_WAIT")'], "sparse_bind_infos()")
+    need(binds, ["si.pSignalSemaphores = &sparse_tl;", "vkQueueBindSparse(dev.queue, 1, &si, VK_NULL_HANDLE)"], "sparse_bind_infos()")
+    if "vkWaitSemaphores(" in binds:
+        raise SystemExit("vk_memory.cpp: sparse_bind_infos() waits for the binds on the CPU again")
     # (the binds' semaphore is made under dev.present_mu, which memory_sparse_wait reads it under)
     if not binds.index("std::lock_guard qk(dev.present_mu);") < binds.index("vkCreateSemaphore(") < binds.index("vkQueueBindSparse("):
         raise SystemExit("vk_memory.cpp: sparse_bind_infos() makes the binds' semaphore outside dev.present_mu")

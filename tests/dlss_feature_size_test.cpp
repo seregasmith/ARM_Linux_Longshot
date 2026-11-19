@@ -49,6 +49,7 @@ struct State {
 State state;
 State& st() { return state; }
 std::atomic<bool> present_native_pq{false};
+bool temporal_hdr_input() { return false; }   // (vk_temporal.cpp: DLAA before the bloom, not in this fixture)
 uint64_t frame = 0;
 uint64_t texture_frame_no() { return frame; }
 unsigned preset = 11;

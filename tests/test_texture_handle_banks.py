@@ -77,7 +77,6 @@ int main() {
   v=3+off; std::memcpy(live_bytes+off,&v,4);
  }
  s.ubo[2][0]={4096,16};
- const bool live=std::getenv("RX_VK_HANDLES_LIVE")!=nullptr;
  Shader::TextureDescriptor t; Shader::ImageDescriptor i;
  auto all=[&](uint32_t bank,uint32_t offset,uint32_t expected,const char* label) {
   t={}; i={}; t.cbuf_index=i.cbuf_index=bank; t.cbuf_offset=i.cbuf_offset=offset;
@@ -86,15 +85,15 @@ int main() {
   eq(descriptor_handle(s,st,t),expected,label);
   eq(descriptor_handle(s,st,i),expected,label);
  };
- all(1,4,5,"inline c1"); all(3,4,live?7:6,"bound user bank");
+ all(1,4,5,"inline c1"); all(3,4,6,"bound user bank");
  all(0,4,driver_bank_word(s,0,2,4),"driver c0");
  all(2,4,driver_bank_word(s,2,2,4),"driver c2");
  all(1,13,0,"short inline"); all(3,13,0,"bounded user");
  all(4,0,0,"unbound user"); all(19,0,0,"unsupported bank");
- s.ubo[2][0].size=0; all(3,12,live?15:14,"unsized binding"); s.ubo[2][0].size=16;
+ s.ubo[2][0].size=0; all(3,12,14,"unsized binding"); s.ubo[2][0].size=16;
  t={}; t.has_secondary=true;
- eq(descriptor_handle(s,st,t),1U|((live?3U:2U)<<8),"secondary user");
- eq(handle_of(s,st,t,1),9U|((live?11U:10U)<<8),"array step primary and secondary");
+ eq(descriptor_handle(s,st,t),1U|(2U<<8),"secondary user");
+ eq(handle_of(s,st,t,1),9U|(10U<<8),"array step primary and secondary");
  t.cbuf_index=0; t.secondary_cbuf_index=1;
  eq(descriptor_handle(s,st,t),driver_bank_word(s,0,2,0)|(1U<<8),"secondary inline");
  t.secondary_cbuf_index=2;
@@ -106,8 +105,8 @@ int main() {
  eq(descriptor_handle(s,st,t),0xABC003,"VM texture bypass");
  eq(descriptor_handle(s,st,i),0xABC003,"VM image bypass");
  eq(vm_reads,3,"VM call count"); eq(recorded_reads+live_reads,before,"VM no ordinary reads");
- eq(live?recorded_reads:live_reads,0,"unchanged memory source");
- if(!failures) std::cout<<"bank-reader checks passed (live="<<live<<")\n";
+ eq(live_reads,0,"a bound bank is read as the stream's place sees it, not from the game's memory as it is now");
+ if(!failures) std::cout<<"bank-reader checks passed\n";
  return failures?1:0;
 }
 '''
@@ -115,17 +114,12 @@ int main() {
         src = Path(tmp) / 'check.cpp'
         exe = Path(tmp) / ('check.exe' if os.name == 'nt' else 'check')
         src.write_text(prelude + extracted + checks, encoding='utf-8')
-        env_on_h = str(a.source_root / 'gpu' / 'vk' / 'compat' / 'longshot_env.h')   # (env_on: RX_VK_HANDLES_LIVE)
+        env_on_h = str(a.source_root / 'gpu' / 'vk' / 'compat' / 'longshot_env.h')   # (env_on, should a cut function read a switch)
         subprocess.run([a.cxx, '-std=c++20', '-include', env_on_h, '-Wall', '-Wextra', '-Werror', str(src), '-o', str(exe)],
                        check=True, timeout=60)
-        for live in (False, True):
-            env = os.environ.copy()
-            env.pop('RX_VK_HANDLES_LIVE', None)
-            if live:
-                env['RX_VK_HANDLES_LIVE'] = '1'
-            result = subprocess.run([str(exe)], env=env, check=True, capture_output=True, text=True, timeout=10)
-            assert result.stdout.strip() == f'bank-reader checks passed (live={int(live)})', 'Fixture did not report completed bank checks'
-            print(result.stdout, end='')
+        result = subprocess.run([str(exe)], check=True, capture_output=True, text=True, timeout=10)
+        assert result.stdout.strip() == 'bank-reader checks passed', 'Fixture did not report completed bank checks'
+        print(result.stdout, end='')
 
 
 if __name__ == '__main__':

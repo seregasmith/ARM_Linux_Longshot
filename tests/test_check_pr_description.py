@@ -10,7 +10,12 @@ summary and a row per flag with every cell), Testing (Tested, Not tested, Must b
 where, how, the result to expect and who runs it: the Test Farm or by hand), Risks with Compatibility, a bare "Fixes #", and the checklist (Everyone kept
 whole and ticked; When it applies trimmed to what applies, every kept box ticked). Warnings: a switch the diff adds and
 Flags doesn't list, a menu change with no flags, a rebase since the measurements, n/a, a box the diff suggests, the
-status line's type against the title's, Needs against Must be tested, something measured said untested. A work-in-progress PR passes with a notice, and the workflow runs the script on Forgejo's events.
+status line's type against the title's, Needs against Must be tested, something measured said untested, the TL;DR or
+Breakdown left out. A work-in-progress PR passes with a notice, and the workflow runs the script on Forgejo's events.
+
+The TL;DR and Breakdown that follow the status line: kept, they are filled in (no placeholder; the TL;DR of 120 words
+or fewer; the Breakdown with bullets, none of them empty, and the status line still first); left out, as in the open
+pull requests written before the template had them, they are only a warning that suggests them.
 
 python -I -B tests/test_check_pr_description.py
 """
@@ -69,6 +74,11 @@ def drop(body, name, level="##"):
     return body[:start] + body[m.start() if m else len(body):]
 
 
+# The sample as the pull requests open before the template had a TL;DR and a Breakdown were written: without them. It
+# is the good sample less the two sections, so that it follows the template (and its checklist) when that changes.
+BEFORE = drop(drop(GOOD, "TL;DR"), "Breakdown")
+
+
 def example_measurements():
     """CONTRIBUTING.md's filled-in Measurements section"""
     text = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
@@ -84,7 +94,16 @@ def filled():
     """the template filled in the plainest way that passes: a docs change, one line of Measurements, no flags"""
     body = drop(TEMPLATE, "How to reproduce").replace(TEMPLATE.splitlines()[0], "**Type:** docs · **Risk:** low · "
                                                        "**Tested on:** Linux · **Needs:** none")
-    for name, text in (("Why", "Contributors can't tell how to run the build's tests on Windows."),
+    for name, text in (("TL;DR", "Contributors could not tell how to run the build's tests on Windows. This writes the "
+                                 "steps down, and a clean Linux checkout followed them."),
+                       ("Breakdown", "- **Who it helps:** anyone who wants to run the tests on Windows.\n"
+                                     "- **What was wrong:** the steps were nowhere.\n"
+                                     "- **What changes:** `docs/development.md` lists them.\n"
+                                     "- **What does not change:** the tests and the build.\n"
+                                     "- **How it was checked:** the steps were followed once on Linux.\n"
+                                     "- **What is still open:** a run on Windows.\n"
+                                     "- **Risk:** low: docs only."),
+                       ("Why", "Contributors can't tell how to run the build's tests on Windows."),
                        ("What changed", "The Windows steps are written down.\n\n- docs: `docs/development.md`."),
                        ("Measurements", measurements("Nothing to measure: docs only; run_all.py passes on main and "
                                                      "here.")),
@@ -115,10 +134,12 @@ class Samples(unittest.TestCase):
         self.assertIn("the status line still holds the template's placeholders", text)
         for name in check.REQUIRED:
             self.assertIn("## %s still holds the template's placeholders" % name, text)
+        for name in check.SUMMARY:
+            self.assertIn("## %s still holds the template's placeholders" % name, text)
         self.assertIn("## How to reproduce is for a fix: delete it, or fill it in", text)
         self.assertIn("### Flags and settings still holds the template's placeholders", text)
         self.assertIn("## Issues: 'Fixes #' names no issue", text)
-        self.assertEqual(sum(f.startswith("not ticked: ") for f in found), 10)
+        self.assertEqual(sum(f.startswith("not ticked: ") for f in found), 12)
         self.assertIn("How to reproduce still holds", " ".join(check.problems(TEMPLATE, title="fix: x")))
 
     def test_the_fix_sample_passes(self):
@@ -126,6 +147,8 @@ class Samples(unittest.TestCase):
                          ([], []))
         self.assertEqual(check.problems(GOOD.replace("\n", "\r\n"), title=FIX), [])
         self.assertNotIn("AI assistance", GOOD, "When it applies keeps only the boxes that apply")
+        for name in check.SUMMARY:
+            self.assertIn("## %s\n" % name, GOOD)
 
     def test_a_perf_change_with_a_variant_passes(self):
         self.assertEqual(check.review(perf(), title="perf(menu): x"), ([], []))
@@ -150,11 +173,136 @@ class Samples(unittest.TestCase):
             re.sub(r"^Baseline:.*\n", "", example, flags=re.M))))))
 
 
+class Summary(unittest.TestCase):
+    """## TL;DR and ## Breakdown after the status line: filled in when kept, a suggestion when left out (the open pull
+    requests were written without them and must keep passing)"""
+    NO_TLDR = ("no ## TL;DR: add it right after the status line, two to four plain sentences a player could follow "
+               "(what was wrong or missing, what this changes, the headline result and how it was checked)")
+    NO_BREAKDOWN = ("no ## Breakdown: add it after the TL;DR, a short bullet each for who it helps, what was wrong, "
+                    "what changes, what does not change, how it was checked, what is still open and the risk")
+    NO_BULLETS = ("## Breakdown has no bullets: one short bullet each for who it helps, what was wrong, what changes, "
+                  "what does not change, how it was checked, what is still open and the risk")
+
+    def tldr(self, text):
+        return section(GOOD, "TL;DR", text)
+
+    def breakdown(self, text):
+        return section(GOOD, "Breakdown", text)
+
+    def stand_ins(self, name):
+        return re.findall(r"<[^<>\n!]+>", check.without_comments(check.sections(TEMPLATE)[name]))
+
+    def test_the_template_has_them_right_after_the_status_line(self):
+        self.assertEqual(list(check.sections(TEMPLATE))[:3], ["TL;DR", "Breakdown", "Why"])
+        self.assertLess(TEMPLATE.index("**Type:**"), TEMPLATE.index("## TL;DR"))
+        self.assertLess(TEMPLATE.index("## TL;DR"), TEMPLATE.index("## Breakdown"))
+        self.assertLess(TEMPLATE.index("## Breakdown"), TEMPLATE.index("## Why"))
+        for name in check.SUMMARY:   # (the comment says what to write, with a short example)
+            text = check.sections(TEMPLATE)[name]
+            self.assertTrue(text.strip().startswith("<!--"), name)
+            self.assertIn("E.g.", text, name)
+        self.assertIn("%d words" % check.TLDR_WORDS, check.sections(TEMPLATE)["TL;DR"])
+        self.assertEqual(len(self.stand_ins("TL;DR")), 1)
+        self.assertEqual(re.findall(r"^- \*\*([^*]+):\*\*", check.without_comments(check.sections(TEMPLATE)["Breakdown"]),
+                                    re.M),
+                         ["Who it helps", "What was wrong", "What changes", "What does not change",
+                          "How it was checked", "What is still open", "Risk"])
+
+    def test_left_out_is_a_warning_never_an_error(self):
+        self.assertEqual(check.review(BEFORE, title=FIX), ([], [self.NO_TLDR, self.NO_BREAKDOWN]))
+        self.assertEqual(check.review(drop(GOOD, "TL;DR"), title=FIX), ([], [self.NO_TLDR]))
+        self.assertEqual(check.review(drop(GOOD, "Breakdown"), title=FIX), ([], [self.NO_BREAKDOWN]))
+
+    def test_the_command_passes_and_says_so(self):
+        with tempfile.TemporaryDirectory() as folder:
+            tmp = Path(folder) / "body.md"
+            tmp.write_text(BEFORE, encoding="utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(check.main(["--file", str(tmp), "--title", FIX]), 0)
+            self.assertIn("::warning::" + self.NO_TLDR, out.getvalue())
+            self.assertIn("::warning::" + self.NO_BREAKDOWN, out.getvalue())
+            self.assertNotIn("::error::", out.getvalue())
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):   # (a work in progress lists them in its notice)
+                self.assertEqual(check.main(["--file", str(tmp), "--title", "WIP: " + FIX]), 0)
+            self.assertIn("::notice::Work in progress", out.getvalue())
+            self.assertIn(self.NO_TLDR, out.getvalue())
+
+    def test_the_tldr_is_filled_in(self):
+        self.assertEqual(check.problems(self.tldr(""), title=FIX), ["## TL;DR is empty"])
+        self.assertEqual(check.problems(self.tldr("<!-- At 4K. -->"), title=FIX), ["## TL;DR is empty"])
+        stand_in = self.stand_ins("TL;DR")[0]
+        self.assertEqual(check.problems(self.tldr(stand_in), title=FIX),
+                         ["## TL;DR still holds the template's placeholders: " + stand_in])
+        self.assertEqual(check.problems(self.tldr("It is " + stand_in + " now."), title=FIX),
+                         ["## TL;DR still holds the template's placeholders: " + stand_in])
+
+    def test_the_tldr_is_short(self):
+        def words(n):
+            return " ".join(["word"] * (n - 1)) + " end."
+        self.assertEqual(check.TLDR_WORDS, 120)
+        self.assertEqual(check.review(self.tldr(words(120)), title=FIX), ([], []))
+        self.assertEqual(check.problems(self.tldr(words(121)), title=FIX), [
+            "## TL;DR is 121 words: keep it to 120 or fewer, what a player reads in a breath; the detail goes in the "
+            "sections below"])
+        self.assertEqual(check.problems(self.tldr(words(60) + "\n\n" + words(61)), title=FIX), [
+            "## TL;DR is 121 words: keep it to 120 or fewer, what a player reads in a breath; the detail goes in the "
+            "sections below"], "paragraphs add up")
+        self.assertEqual(check.problems(self.tldr(words(120) + "\n<!-- " + words(50) + " -->"), title=FIX), [],
+                         "a comment is no part of it")
+
+    def test_the_heading_may_be_spelled_tldr(self):
+        self.assertEqual(check.review(GOOD.replace("## TL;DR", "## TLDR"), title=FIX), ([], []))
+        self.assertEqual(check.review(GOOD.replace("## TL;DR", "## tl;dr"), title=FIX), ([], []))
+        body = section(GOOD.replace("## TL;DR", "## TLDR"), "TLDR", "")
+        self.assertEqual(check.problems(body, title=FIX), ["## TL;DR is empty"], "kept, it is read")
+
+    def test_the_breakdown_has_bullets(self):
+        self.assertEqual(check.problems(self.breakdown(""), title=FIX), ["## Breakdown is empty"])
+        self.assertEqual(check.problems(self.breakdown("Anyone at 4K. Nothing else changes."), title=FIX),
+                         [self.NO_BULLETS])
+        for marker in ("-", "*", "+", "1.", "2)"):
+            with self.subTest(marker=marker):
+                self.assertEqual(check.review(self.breakdown(marker + " **Who it helps:** anyone at 4K."),
+                                              title=FIX), ([], []), "bullets of any kind; the seven are the form")
+
+    def test_a_bullet_is_not_left_empty(self):
+        empty = "- **Who it helps:**\n- **What was wrong:** the font kept its 1080p size."
+        self.assertEqual(check.problems(self.breakdown(empty), title=FIX), [
+            "## Breakdown's bullet 'Who it helps' says nothing: write it, or 'nothing' when there is nothing to say"])
+        self.assertEqual(check.problems(self.breakdown("- Risk:\n- **Who it helps**:"), title=FIX), [
+            "## Breakdown's bullet 'Risk' says nothing: write it, or 'nothing' when there is nothing to say",
+            "## Breakdown's bullet 'Who it helps' says nothing: write it, or 'nothing' when there is nothing to say"])
+        self.assertEqual(check.problems(self.breakdown("- **Who it helps:**\n  anyone at 4K."), title=FIX), [],
+                         "the text may wrap to the next line")
+        self.assertEqual(check.problems(self.breakdown("- **How it was checked:**\n  - the new test\n  - the suite"),
+                                        title=FIX), [], "or be a list under the label")
+        self.assertEqual(check.problems(self.breakdown("- **What does not change:** nothing."), title=FIX), [])
+
+    def test_the_breakdown_is_filled_in(self):
+        stand_ins = self.stand_ins("Breakdown")
+        self.assertEqual(len(stand_ins), 7)
+        self.assertEqual(check.problems(self.breakdown("- **Who it helps:** " + stand_ins[0]), title=FIX),
+                         ["## Breakdown still holds the template's placeholders: " + stand_ins[0]])
+        template = check.without_comments(check.sections(TEMPLATE)["Breakdown"]).strip()
+        self.assertEqual(check.problems(self.breakdown(template), title=FIX), [
+            "## Breakdown still holds the template's placeholders: %s and %d more" % (
+                ", ".join(sorted(stand_ins)[:3]), 4)])
+
+    def test_the_status_line_still_comes_first(self):
+        line = GOOD.splitlines()[2]
+        self.assertTrue(line.startswith("**Type:**"), line)
+        moved = GOOD.replace(line + "\n", "", 1).replace("## Why\n", line + "\n\n## Why\n", 1)
+        self.assertEqual(check.problems(moved, title=FIX), check.status_problems(None), "after the TL;DR is too late")
+        self.assertEqual(check.problems(GOOD.replace(line + "\n", "", 1), title=FIX), check.status_problems(None))
+
+
 class Template(unittest.TestCase):
     def test_the_sections_follow_the_order(self):
         names = list(check.sections(TEMPLATE))
-        self.assertEqual(names, ["Why", "How to reproduce", "What changed", "Measurements", "Testing", "Risks",
-                                 "Issues", "Checklist"])
+        self.assertEqual(names, ["TL;DR", "Breakdown", "Why", "How to reproduce", "What changed", "Measurements",
+                                 "Testing", "Risks", "Issues", "Checklist"])
         for name in names[:-1]:   # (a line of guidance under each, as a comment)
             self.assertTrue(check.sections(TEMPLATE)[name].strip().startswith("<!--"), name)
         self.assertEqual(list(check.sections(check.sections(TEMPLATE)["Measurements"], "###")), ["Flags and settings"])
@@ -186,7 +334,7 @@ class Template(unittest.TestCase):
 
 class Status(unittest.TestCase):
     def test_refusals(self):
-        line = GOOD.split("\n## Why")[0].splitlines()[-1]
+        line = next(ln for ln in GOOD.splitlines() if ln.startswith("**Type:**"))
         def problems(new):
             return check.problems(GOOD.replace(line, new), title=FIX)
         self.assertEqual(problems(""), [
@@ -394,6 +542,19 @@ class Testing(unittest.TestCase):
         self.assertEqual(check.problems(empty, title=FIX), ["## Testing's 'Tested:' is empty"])
         self.assertEqual(check.problems(self.must(""), title=FIX),
                          ["## Testing's 'Must be tested:' is empty: write None when Tested covers everything"])
+        # (Not testable by hand: optional; kept, filled in, and never read as a Must be tested item)
+        untestable = GOOD.replace("**Not tested:** the title screen's menu",
+                                  "**Not testable by hand:** a 4K TV: none here; the font test stands in.\n\n"
+                                  "**Not tested:** the title screen's menu")
+        self.assertEqual(check.problems(untestable, title=FIX), [])
+        self.assertIn("4K TV", check.testing_parts(check.sections(untestable)["Testing"])[check.UNTESTABLE])
+        after_must = self.must("None\n\n**Not testable by hand:** a 4K TV: none here.").replace(
+            "**Needs:** Windows, NVIDIA; Steam Deck", "**Needs:** none")
+        self.assertEqual(check.problems(after_must, title=FIX), [], "after Must be tested, not one of its items")
+        self.assertEqual(check.problems(self.must("None\n\n**Not testable by hand:**").replace(
+            "**Needs:** Windows, NVIDIA; Steam Deck", "**Needs:** none"), title=FIX),
+                         ["## Testing's 'Not testable by hand:' is empty: say what can't be run by hand and why, "
+                          "or delete it"])
         headings = section(GOOD, "Testing", "### Tested\nRan it.\n### Not tested\nWindows.\n### Must be tested\nNone")
         self.assertEqual(check.problems(headings.replace("**Needs:** Windows, NVIDIA; Steam Deck", "**Needs:** none"),
                                         title=FIX), [], "the parts as headings")
@@ -504,7 +665,7 @@ class Checklist(unittest.TestCase):
     def test_without_reproduce(self):
         body = check.without_reproduce(TEMPLATE)
         self.assertNotIn("## How to reproduce", body)
-        self.assertEqual(list(check.sections(body))[:2], ["Why", "What changed"])
+        self.assertEqual(list(check.sections(body))[:4], ["TL;DR", "Breakdown", "Why", "What changed"])
 
 
 class Running(unittest.TestCase):

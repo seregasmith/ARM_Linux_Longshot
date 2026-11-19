@@ -39,9 +39,15 @@ void hos_hle_counted(HleCount *h, void (*fn)(Ctx *c), Ctx *c);
 #endif
 /* ENTRY_HOOK(0x0xxxxxxx) { ... }: runs at the entry of the lifted guest function at that address (8 hex digits),
    with its arguments in c; return 1 when it handled the call (the function then returns at once, x0 is the result),
-   0 to run the function as usual. build.py splices the call into the lifted code (only that file recompiles). */
+   0 to run the function as usual. (mkw-recomp's build.py spliced these in; Longshot's lift does not, so one defined here
+   would never run. ENTRY_HOOK_SYM below is spliced.) */
 #define ENTRY_HOOK(addr) int entry_##addr(Ctx *c)
+/* ENTRY_HOOK_SYM(sym) { ... }: the same at the entry of the SDK's definition of the symbol (found in the image's symbol table),
+   spliced in by the standalone lift (nx2/entry_hooks.py; a new one lifts again) */
 #define ENTRY_HOOK_SYM(sym) int entry_sym_##sym(Ctx *c)
+/* ENTRY_HOOK_SYM_FROM(sym, min) { ... }: the same, called only when x2 (the size argument) is min or more: the spliced line
+   tests it, so smaller calls stay in the lifted code without a call (the hook declines them too) */
+#define ENTRY_HOOK_SYM_FROM(sym, min) int entry_sym_##sym(Ctx *c)
 /* SPLICE_AFTER(0x0xxxxxxx, "text") { ... }: runs inside the lifted guest function at that address, right after the
    first line of its lifted C that contains the text (a game patch in the middle of a function: c holds the guest
    registers there). build.py splices the call in and stops the build if the text is not found. One per function. */
@@ -100,6 +106,25 @@ extern uint64_t hos_space_end;   /* web: the guest window ends where the host's 
 static inline void *hos_guest_range(uint64_t a, uint64_t n) {
     return a < (uint64_t)HOS_SPACE_END && n <= (uint64_t)HOS_SPACE_END - a ? GP(a) : (void *)0;
 }
+/* (longshot) Host code's bulk writes of guest memory: n bytes at guest address a filled with a value, or copied from
+   host memory. The write, then the mark of its pages (HOS_WRITTEN), in that order: the renderer's capture takes a mark
+   and then copies the page, so a mark set before the bytes could be taken with the old bytes, and nothing would say
+   the page changed again. Any thread may call them at any time: the mark is a lock-free store, as the lifted code's
+   own after each of its stores, and one made while a capture is being taken stays set for the next capture. Why they
+   exist: memory the renderer had imported was zeroed at a free with no mark, and the renderer's copies of it (mirror,
+   capture, write-back shadow) kept the old bytes. tests/test_host_guest_writes.py stops a new memset or memcpy into
+   guest memory that is neither one of these nor followed by a mark, unless it is on its list with the reason.
+   The caller has checked the range (hos_guest_range). */
+static inline void hos_guest_fill(uint64_t a, int value, uint64_t n) {
+    void *const p = GP(a);
+    memset(p, value, (size_t)n);
+    HOS_WRITTEN(p, (size_t)n);
+}
+static inline void hos_guest_copy(uint64_t a, const void *src, uint64_t n) {
+    void *const p = GP(a);
+    memcpy(p, src, (size_t)n);
+    HOS_WRITTEN(p, (size_t)n);
+}
 #define HOS_TICK_HZ 31250000ULL   /* (mkw-recomp: the Switch 2 counter; the SDK checks it at init) */
 
 /* ---- logging: HOS_TRACE=1 logs every HLE call that uses HOS_TRACE_CALL. hos_log is info; hos_log_at gives a line another level,
@@ -116,6 +141,23 @@ int hos_slow_frames_every_ms(void);
 void hos_slow_frame_present(void);
 void hos_slow_sample(int64_t sweep_ns, const char *text);
 void hos_slow_sweep_done(void);
+/* (longshot) an A/B within one run (host/hos_ab.c, HOS_AB=<switch>=<value>[,<seconds>[,<warm-up seconds>]]): the side now,
+   -1 when no A/B runs or in its warm-up, else 0 (the switch's normal value) or 1 (the A/B's value): one relaxed load, cheap
+   enough for a per-call path. A switch's reader takes the A/B as v = hos_ab_value(<its name, a literal>, v_normal): v_normal
+   unless the A/B names that switch and side 1 runs. Both sides pay the same for the call (a load, then a look at a small
+   table of the names seen, by address), so the measured difference is the switch's. hos_ab_frame: the side of a frame from
+   from_ns to to_ns (hos_now_ns), + 2 in a transition (a flip in the frame, or less than 0.3 s before its end), -1 outside */
+extern int hos_ab_side_now;
+static inline int hos_ab_side(void) { return __atomic_load_n(&hos_ab_side_now, __ATOMIC_RELAXED); }
+int hos_ab_value_at(const char *name, int normal, int side);
+static inline int hos_ab_value(const char *name, int normal) {
+    const int side = hos_ab_side();
+    return side < 0 ? normal : hos_ab_value_at(name, normal, side);
+}
+int hos_ab_frame(int64_t from_ns, int64_t to_ns);
+void hos_ab_start(void);     /* (hos_main.c, before the game's threads) */
+void hos_ab_present(void);   /* (rx_nvn_present: the host's per-side sums) */
+void hos_ab_end(void);       /* (hos_close_finish: their line in the log) */
 /* (longshot) the profiling mode (host/profiling.c, HOS_PROFILE=1): its folder (NULL: off), its switches set (after
    longshot_env.txt), its threads started (hos_prof_start), a timed event into its events.txt, and a sampler's line written
    (packed with HOS_SAMPLE_PACKED) */

@@ -98,7 +98,8 @@ problem with a log outranks an NVIDIA one of the same severity.
 5. **Pull request.** Open it as work in progress (`forge.py pr create`, a `WIP:` title) and fill in
    [the template](../.forgejo/pull_request_template.md) as
    [CONTRIBUTING.md](../CONTRIBUTING.md#commits-and-pull-requests) says. Mark it ready (`pr ready`) only once it is
-   measured and every *For everyone* box is ticked. Link the issue and the tracking issue. Post the link in #dev-work.
+   [ready for review](../CONTRIBUTING.md#ready-for-review-out-of-wip): tested on your own PC, measured, and every
+   *Everyone* box true. Link the issue and the tracking issue. Post the link in #dev-work.
 6. **Review.** Reviewers take PRs marked ready, not WIP ones; one that needs more work goes back to WIP (with the label
    `needs measurements` when that is what it lacks). Answer every comment in the PR. For each new commit, measurement
    or test run, update the description and comment what changed (`pr update`). Rebase onto `main` before asking for

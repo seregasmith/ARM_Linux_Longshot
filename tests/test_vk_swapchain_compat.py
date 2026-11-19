@@ -45,7 +45,9 @@ def check_swapchain(source):
 
 def check_linux_start(source):
     body = function(source, "int start(void* hwnd)")
-    linux = body[body.index("#else"):body.index("#endif")]
+    # (the window's #ifdef _WIN32 ... #else ... #endif: the one after the headless return, not the switch report's before it)
+    window = body.index("#ifdef _WIN32", body.index("if (!hwnd) {"))
+    linux = body[body.index("#else", window):body.index("#endif", window)]
     factory = function(source, "bool open_window_surface(bool log_failure) {")
     for item in ("w->create_surface", "queue-family present support failed"):
         if item not in factory:

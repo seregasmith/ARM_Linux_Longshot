@@ -1,0 +1,45 @@
+# Run by hand, like the other full checks; pushes and pull requests run only light checks.
+# The runner image needs Bash, Git, Python 3, Node.js 24 and passwordless sudo.
+# Software Vulkan only: no hardware GPU, window, swapchain or game data.
+name: Authored Vulkan fixtures
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: vulkan-fixtures-${{ forgejo.ref }}
+  cancel-in-progress: false
+
+jobs:
+  vulkan-fixtures:
+    name: Vulkan fixtures (lavapipe, validation)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: https://github.com/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install software Vulkan and validation
+        shell: bash
+        run: |
+          start=$SECONDS
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++ mesa-vulkan-drivers vulkan-validationlayers libvulkan-dev vulkan-tools
+          dpkg-query -W -f '${Package}=${Version}\n' g++ mesa-vulkan-drivers vulkan-validationlayers libvulkan-dev libvulkan1 vulkan-tools
+          g++ --version
+          python3 --version
+          echo "Vulkan package setup: $((SECONDS - start)) seconds"
+      - name: Run every authored Vulkan fixture
+        shell: bash
+        run: |
+          # Ubuntu's older Mesa uses lvp_icd.x86_64.json; newer packages use lvp_icd.json.
+          # Refuse missing/ambiguous manifests rather than silently enumerating other drivers.
+          shopt -s nullglob
+          icds=(/usr/share/vulkan/icd.d/lvp_icd*.json)
+          if [ "${#icds[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one lavapipe ICD, found ${#icds[@]}"
+            exit 1
+          fi
+          export VK_DRIVER_FILES="${icds[0]}" VK_ICD_FILENAMES="${icds[0]}"
+          env -u FORGEJO_TOKEN -u GITHUB_TOKEN python3 -I -B tests/run_vulkan_fixtures.py --cxx g++ --headers /usr/include --device llvmpipe

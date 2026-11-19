@@ -15,6 +15,7 @@
 #endif
 #include <io.h>
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <stdexcept>
@@ -58,6 +59,7 @@
 #include "vk_draw.h"
 #include "vk_progcache.h"
 #include "vk_menu.h"
+#include "switches.h"   // (find_gone: a removed switch is none of the stamp's)
 
 // (EvilOOT, RX_VK_PTR_DIAG) the pointer pass's counts for this thread's translations
 // (global_memory_to_storage_buffer_pass.cpp, declared by hand so no Eden header changes)
@@ -159,32 +161,75 @@ bool control_end(const uint8_t* ctl, uint32_t* end_out) {
 uint64_t code_key(const uint8_t* ctl, const uint8_t* area, uint32_t end) {
     return hash_bytes(area, end, hash_bytes(ctl, kControlSize));
 }
-Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area);
+Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area, uint64_t key);
+
+struct StageBytes {
+    std::array<uint8_t, kControlSize> control;
+    std::vector<uint8_t> area;
+    uint64_t key = 0;
+};
+
+bool read_stage_bytes(const nvn_stage_data& sd, StageBytes& bytes) {
+    uint32_t end = 0;
+    if (!sd.control || !sd.data || !host->gpu_read(sd.control, bytes.control.data(), kControlSize) ||
+        !control_end(bytes.control.data(), &end)) return false;
+    bytes.area.resize(end);
+    if (!host->gpu_read(sd.data, bytes.area.data(), end)) return false;
+    bytes.key = code_key(bytes.control.data(), bytes.area.data(), end);
+    if (const char* dir = getenv("RX_VK_DUMP_STAGES")) {
+        char path[512];
+        snprintf(path, sizeof path, "%s/%016llx.bin", dir, (unsigned long long)bytes.key);
+        if (FILE* f = fopen(path, "wb")) {
+            fwrite(bytes.control.data(), 1, kControlSize, f);
+            fwrite(bytes.area.data(), 1, end, f);
+            fclose(f);
+        }
+    }
+    return true;
+}
 
 Code read_code(const nvn_stage_data& sd) {
-    uint8_t ctl[kControlSize];
-    uint32_t end = 0;
-    if (!sd.control || !sd.data || !host->gpu_read(sd.control, ctl, sizeof ctl) || !control_end(ctl, &end)) return Code{};
-    std::vector<uint8_t> area(end);
-    if (!host->gpu_read(sd.data, area.data(), end)) return Code{};
-    if (const char* dir = getenv("RX_VK_DUMP_STAGES")) {   // (longshot, RX_VK_DUMP_STAGES=<folder>: control and code as the game has them)
-        char path[512];
-        snprintf(path, sizeof path, "%s/%016llx.bin", dir, (unsigned long long)code_key(ctl, area.data(), end));
-        if (FILE* f = fopen(path, "wb")) fwrite(ctl, 1, sizeof ctl, f), fwrite(area.data(), 1, end, f), fclose(f);
+    StageBytes bytes;
+    if (!read_stage_bytes(sd, bytes)) return {};
+    return parse_code(bytes.control.data(), bytes.area, bytes.key);
+}
+
+using SharedCode = std::shared_ptr<const Code>;
+
+// The serial owns its lowered stages. This lookup keeps up to 2 MiB of code bytes to
+// recognize recent duplicates, and a weak reference so it cannot retain the lowered code.
+SharedCode read_live_code(const nvn_stage_data& sd) {
+    StageBytes bytes;
+    if (!read_stage_bytes(sd, bytes)) return {};
+    struct Slot {
+        StageBytes bytes;
+        bool native_mma = false;
+        std::weak_ptr<const Code> lowered;
+    };
+    static std::array<Slot, 32> recent;
+    auto& slot = recent[bytes.key % recent.size()];
+    static const bool dump_native = getenv("RX_VK_DUMP_NATIVE") != nullptr;
+    const bool reuse = !dump_native && bytes.area.size() <= (64u << 10);
+    if (reuse && slot.bytes.key == bytes.key && slot.native_mma == dev.native_mma) {
+        if (auto lowered = slot.lowered.lock(); lowered && slot.bytes.control == bytes.control && slot.bytes.area == bytes.area)
+            return lowered;
     }
-    return parse_code(ctl, area);
+    Code code = parse_code(bytes.control.data(), bytes.area, bytes.key);
+    if (!code.ok) return {};
+    auto lowered = std::make_shared<const Code>(std::move(code));
+    if (reuse) slot = {std::move(bytes), dev.native_mma, lowered};
+    return lowered;
 }
 
 /// A control section and its code, from the game's memory or the archives (the seed)
-Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area) {
+Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area, uint64_t key) {
     Code c;
     uint32_t len, c1o;
-    const uint32_t end = (uint32_t)area.size();
     uint16_t st;
     std::memcpy(&len, ctl + 0x38, 4);
     std::memcpy(&c1o, ctl + 0x40, 4);
     std::memcpy(&st, ctl + 0x56, 2);
-    c.key = code_key(ctl, area.data(), end);
+    c.key = key;
     c.stage = st;
     if (st == 1) {
         static constexpr float kFit[] = {2.51f, 0.03f, 2.43f, 0.59f, 0.14f};
@@ -256,25 +301,9 @@ Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area) {
         if (reject) return c.why = "left out by RX_VK_REJECT_STAGES or RX_VK_REJECT_KEYS", c;
     }
     // (compute only: the host's cooperative matrices are, vk_coopmat.cpp)
-    // (longshot) and only for the programs in RX_VK_NATIVE_MMA_KEYS (key prefixes, default the gameplay TAAU network,
-    // whose output vk_draw.cpp's stand-in replaces; "all": every one). The others take the exact expansion: with the
-    // cooperative matrices the movie upscaler lost its blue (the title's clip yellow) though the device's fragment
-    // layout passes vk_coopmat.cpp's multiply; exact, its colours are right at the same frame rate
-    // (default "all": a program left off it is expanded only with EDEN_NX2_TENSOR set, and is otherwise not lowered
-    // at all; the per-key default dropped OoT's other gameplay networks, e409733c and others)
-    static const std::string native_keys = getenv("RX_VK_NATIVE_MMA_KEYS") ? getenv("RX_VK_NATIVE_MMA_KEYS") : "all";
-    bool native_key = native_keys == "all";
-    {
-        char hex[24];
-        snprintf(hex, sizeof hex, "%016llx", (unsigned long long)c.key);
-        for (size_t at = 0; !native_key && at < native_keys.size();) {
-            const size_t e = native_keys.find(',', at);
-            const std::string t = native_keys.substr(at, e == std::string::npos ? std::string::npos : e - at);
-            native_key = !t.empty() && !strncmp(hex, t.c_str(), t.size());
-            at = e == std::string::npos ? native_keys.size() : e + 1;
-        }
-    }
-    Shader::Ampere::native_matrix_multiply = dev.native_mma && !graphics && native_key;
+    // (longshot) and for every compute program: one left without them is expanded only with EDEN_NX2_TENSOR set, and is
+    // otherwise not lowered at all (a list of programs by key dropped OoT's other gameplay networks, e409733c and others)
+    Shader::Ampere::native_matrix_multiply = dev.native_mma && !graphics;
     {   // (super build) RX_VK_LOWER_SKIP=<key prefix,...>: those programs left unlowered, as if they did not lower (a bisection)
         static const std::string skip = getenv("RX_VK_LOWER_SKIP") ? getenv("RX_VK_LOWER_SKIP") : "";
         if (!skip.empty()) {
@@ -377,6 +406,10 @@ Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area) {
     }
     c.ok = true;
     return c;
+}
+
+Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area) {
+    return parse_code(ctl, area, code_key(ctl, area.data(), (uint32_t)area.size()));
 }
 
 Shader::TextureType texture_type(int target) {
@@ -522,9 +555,8 @@ public:
     }
     u32 SharedMemorySize() const override {
         // (what the program declares, from the control section: 48 KB for every one was past an RX 9070 XT's 32 KB, and its
-        // pipelines were invalid. klimovich008, Longshot PR 91. RX_VK_SHARED_48K=1: as before)
-        static const bool old = env_on("RX_VK_SHARED_48K");
-        return old ? 48u << 10 : nvn.shared_memory;
+        // pipelines were invalid. klimovich008, Longshot PR 91)
+        return nvn.shared_memory;
     }
     std::array<u32, 3> WorkgroupSize() const override {
         return {std::max(1u, nvn.local[0]), std::max(1u, nvn.local[1]), std::max(1u, nvn.local[2])};
@@ -535,10 +567,8 @@ public:
     // DrawIndex, right for indirect draws too. The bank had zeros there: MKW's terrain patches, which pass log2 of
     // their template grid as the base instance (4: 16 x 16, 3: 8 x 8), took a 1 x 1 grid, every vertex on a corner:
     // each patch two triangles, one of them often degenerate (the triangular holes in the far terrain).
-    // (RX_VK_NO_DRAW_PARAMS=1: as before)
     bool HasHLEMacroState() const override {
-        static const bool off = env_on("RX_VK_NO_DRAW_PARAMS");
-        return !off && (stage == Shader::Stage::VertexA || stage == Shader::Stage::VertexB);
+        return stage == Shader::Stage::VertexA || stage == Shader::Stage::VertexB;
     }
     bool HasNativeInstructions() const override { return true; }   // (lowered NVN2 programs: Lichii's passes ask)
     bool IsNativeProgram() const override { return true; }   // (Fritchii's storage buffer pass asks: EDEN_NX2_GM_NATIVE=0 off)
@@ -651,22 +681,23 @@ Shader::Profile make_profile() {
     p.support_storage_texel_buffer_array_nonuniform_indexing = dev.vk12.shaderStorageTexelBufferArrayNonUniformIndexing;
     // Unpinned SPIR-V 1.6 stages can use any supported subgroup size, even when the default is 32.
     // The stage-specific profiles below keep the short path only where pin_subgroup actually pins 32 lanes.
-    p.warp_size_potentially_larger_than_guest = dev.subgroup_max > 32;
+    // (device_policy.h warp64: a subgroup can have more than 32 lanes)
+    p.warp_size_potentially_larger_than_guest = dev.policy.warp64;
     // (RX_VK_WARP64=0 or 1, a test: the graphics stages' long warp path off or on, whatever the GPU; in the cache's stamp)
     if (const char* e = getenv("RX_VK_WARP64")) p.warp_size_potentially_larger_than_guest = e[0] == '1';
     p.lower_left_origin_mode = false;
     p.need_declared_frag_colors = false;
     // (the lanes the broadcast fallbacks walk: all of the host's when a warp may be larger than the guest's)
     p.max_subgroup_size = p.warp_size_potentially_larger_than_guest ? dev.subgroup_max : 32;
-    // (Lichii #273) AMD's Windows compiler gets fragment-stage subgroup shuffles wrong (a basket in Link's house drew as a white
-    // blob): broadcasts and selects there instead
-    p.has_broken_spirv_fragment_shuffle = dev.driver_id == VK_DRIVER_ID_AMD_PROPRIETARY;
+    // (Lichii #273; device_policy.h frag_shuffle_fallback: AMD's Windows driver) fragment-stage subgroup shuffles through
+    // broadcasts and selects
+    p.has_broken_spirv_fragment_shuffle = dev.policy.frag_shuffle_fallback;
     // (RX_VK_FRAG_SHUFFLE_FALLBACK=0 or 1, a test: the fragment stages' shuffles native or through broadcasts, whatever the
     // driver; in the cache's stamp)
     if (const char* e = getenv("RX_VK_FRAG_SHUFFLE_FALLBACK")) p.has_broken_spirv_fragment_shuffle = e[0] == '1';
-    // (longshot) gathers nudged by 1/512 of a texel on AMD's and Intel's drivers, as Eden and Lichii have it (vk_vendor.h; in the
-    // cache's stamp)
-    p.need_gather_subpixel_offset = dev.fixes.gather_offset;
+    // (longshot) gathers nudged by 1/512 of a texel on AMD's and Intel's drivers, as Eden and Lichii have it (device_policy.h
+    // gather_offset, RX_VK_GATHER_OFFSET read there; in the cache's stamp)
+    p.need_gather_subpixel_offset = dev.policy.gather_offset;
     p.min_ssbo_alignment = storage_binding_align();   // (at least 16: vk_internal.h)
     return p;
 }
@@ -779,14 +810,9 @@ uint32_t stage_cbuf_word(const NvnState& s, const Stage& st, uint32_t index, uin
         const nvn_p_bind_buf& u = s.ubo[st.nvn_stage][index - 3];
         uint32_t v = 0;
         // (as the stream's place sees it, not the game's memory now: that may be its next frames' already, and a
-        // handle read from it sampled their textures, for one frame: MKW's shadows in bands. RX_VK_HANDLES_LIVE=1:
-        // as before)
-        static const bool live = env_on("RX_VK_HANDLES_LIVE");
+        // handle read from it sampled their textures, for one frame: MKW's shadows in bands)
         // (EvilOOT: and a binding of no recorded size read as far as asked, as the storage buffer descriptors had it before)
-        if (u.addr && (!u.size || (uint64_t)offset + 4 <= (uint64_t)u.size)) {
-            if (live) host->gpu_read(u.addr + offset, &v, 4);
-            else ub_read(u.addr + offset, &v, 4);
-        }
+        if (u.addr && (!u.size || (uint64_t)offset + 4 <= (uint64_t)u.size)) ub_read(u.addr + offset, &v, 4);
         return v;
     }
     return 0;
@@ -802,11 +828,7 @@ uint64_t stage_storage_base(const NvnState& s, const Stage& st, uint32_t binding
 }
 uint32_t stage_storage_word(uint64_t base, uint32_t offset) {
     uint32_t v = 0;
-    static const bool live = env_on("RX_VK_HANDLES_LIVE");
-    if (base) {
-        if (live) host->gpu_read(base + offset, &v, 4);
-        else ub_read(base + offset, &v, 4);
-    }
+    if (base) ub_read(base + offset, &v, 4);   // (as the stream's place sees it: stage_cbuf_word)
     return v;
 }
 } // namespace
@@ -913,8 +935,7 @@ uint8_t answer_of(uint32_t handle, bool image) {
 uint8_t canonical_answer(const Program& p, const Program::Answer& a, uint8_t type) {
     static const bool strict = [] {
         const char* capture = getenv("RX_VK_CAPTURE");
-        return env_on("RX_VK_HANDLES_LIVE") || env_on("RX_VK_REGISTER_AT_ONCE") ||
-               (capture && atoi(capture) == 0);
+        return capture && atoi(capture) == 0;
     }();
     if (strict) return type;
     const auto& info = p.stages[a.stage].info;
@@ -1036,7 +1057,7 @@ bool still_valid(const NvnState& s, const Program& p) {
 std::mutex shader_mu;
 std::unordered_map<uint64_t, std::vector<std::unique_ptr<Program>>> programs;   // by the stages' code keys
 namespace {
-std::unordered_map<uint64_t, std::vector<Code>> codes;                          // by program serial
+std::unordered_map<uint64_t, std::vector<SharedCode>> codes;                          // by program serial
 const Shader::Profile& profile() {
     static const Shader::Profile p = make_profile();
     return p;
@@ -1045,13 +1066,14 @@ const Shader::Profile& profile() {
 /// The profile of a stage pinned to 32 lanes (compute, and the mesh fallback's compute stages, pin_subgroup): the guest's warp
 /// is the host's there, so the short path for warp ops, as before. The long one in every compute program made their SPIR-V new
 /// and longer: the driver's cache had none of it, and AMD compiled the shaders for hours
-const Shader::Profile& profile_pinned() {
+const Shader::Profile& profile_pinned(uint64_t invocations = 64) {
     static const Shader::Profile p = [] {
         Shader::Profile q = profile();
-        if (dev.sg32_stages & VK_SHADER_STAGE_COMPUTE_BIT) q.warp_size_potentially_larger_than_guest = false, q.max_subgroup_size = 32;
+        q.warp_size_potentially_larger_than_guest = false, q.max_subgroup_size = 32;
         return q;
     }();
-    return p;
+    // (a workgroup 32-lane subgroups cannot cover is not pinned, pins_32: its program takes the long path)
+    return pins_32(VK_SHADER_STAGE_COMPUTE_BIT, invocations) ? p : profile();
 }
 
 /// The profile of a graphics stage: one the GPU pins to 32 lanes as well (pin_subgroup: RDNA2's and RDNA3's fragment, task
@@ -1065,15 +1087,14 @@ const Shader::Profile& profile_graphics(VkShaderStageFlags stage) {
         return q;
     }();
     static const bool forced = getenv("RX_VK_WARP64") != nullptr;
-    return !forced && (dev.sg32_stages & stage) ? pinned : profile();
+    return !forced && pins_32(stage) ? pinned : profile();
 }
 
-const std::vector<Code>& codes_of(const NvnState& s) {
+const std::vector<SharedCode>& codes_of(const NvnState& s) {
     auto& v = codes[s.prog.serial];
     if (v.empty())
         for (uint32_t i = 0; i < s.prog.nstage && i < 6; i++) {
-            Code c = read_code(s.prog.sd[i]);
-            if (c.ok) v.push_back(std::move(c));
+            if (auto code = read_live_code(s.prog.sd[i])) v.push_back(std::move(code));
         }
     return v;
 }
@@ -1295,11 +1316,13 @@ uint64_t translator_stamp() {
     const uint32_t depth = host->depth_minus_w() != 0;   // (d3zessete's PR 54: programs made in either depth mode are kept apart)
     add(&depth, sizeof depth);
     // (and a GPU's mesh shaders: a file of native task and mesh programs is no use to the compute fallback, nor its to one)
-    const uint32_t mesh = (dev.mesh_shader ? 1u : 0u) | (dev.mesh_fallback ? 2u : 0u) | (dev.task_mesh_fallback ? 4u : 0u);
+    const uint32_t mesh = (dev.mesh_shader ? 1u : 0u) | (dev.mesh_fallback ? 2u : 0u) |
+                          (dev.task_mesh_fallback ? 4u : 0u) | (dev.mesh_only_fallback ? 8u : 0u);
     add(&mesh, sizeof mesh);
     // (and what of the GPU the translator is told (make_profile): its warps' lanes and the driver's shuffle workaround, and
     // which stages it pins to 32 lanes, which keep the short path: profile_graphics. An explicit warp override bypasses
-    // the pinned graphics profile even if the base profile already has the requested width)
+    // the pinned graphics profile even if the base profile already has the requested width. The first three are the device
+    // policy's (device_policy.h warp64, frag_shuffle_fallback) with their switches over them, as the profile has them)
     const uint32_t lanes[] = {profile().warp_size_potentially_larger_than_guest ? 1u : 0u, profile().max_subgroup_size,
                               profile().has_broken_spirv_fragment_shuffle ? 1u : 0u, (uint32_t)dev.sg32_stages,
                               getenv("RX_VK_WARP64") ? 1u : 0u,
@@ -1307,6 +1330,9 @@ uint64_t translator_stamp() {
                               // made on a 16-aligned GPU is no use on a 64-aligned one in the same folder, a laptop's two GPUs)
                               (uint32_t)storage_binding_align()};
     add(lanes, sizeof lanes);
+    // (and a GPU whose 32-lane subgroups cannot cover the largest guest workgroup, 1024 invocations: its larger compute programs
+    // are not pinned, pins_32, and take the long path. Only then, so other GPUs keep their caches)
+    if (dev.sg32_stages && 32ull * dev.max_workgroup_subgroups < 1024) add(&dev.max_workgroup_subgroups, sizeof dev.max_workgroup_subgroups);
     // (k10) f16 lowered to f32 on a GPU without f16 shaders (host_info): only then, so other GPUs keep their caches
     if (!dev.vk12.shaderFloat16) {
         const uint32_t no_f16 = 0x6e663136u;   // ("nf16")
@@ -1333,16 +1359,24 @@ uint64_t translator_stamp() {
         // NaN guard, the matrix layout measured on this device. Without them a cache made on one GPU was used on another (a laptop's
         // integrated and dedicated GPUs), and RX_VK_NO_INVARIANT / RX_VK_NAN_GUARD did nothing for programs already cached)
         using namespace Shader::Backend::SPIRV;
-        // (and the vendor fixes of the translation, vk_vendor.h: out-of-bounds fetches, NaN tests, the gather offset)
+        // (and the vendor fixes of the translation, device_policy.h: out-of-bounds fetches, NaN tests, the gather offset)
         const uint32_t flags = (position_invariant ? 1u : 0u) | (frag_nan_guard ? 2u : 0u) | (mma_software ? 4u : 0u) |
                                (global_table_loop ? 8u : 0u) | (fetch_bounds ? 16u : 0u) | (nan_bits ? 32u : 0u) |
                                (profile().need_gather_subpixel_offset ? 64u : 0u) | (fetch_bounds_buffers ? 128u : 0u) |
                                // (and the software multiplies' form, vk_coopmat.cpp choose_software_form: 0 for the loop, as before)
-                               (mma_software ? mma_software_form << 8 | (mma_software_form && mma_software_quad ? 1024u : 0u) : 0u);
+                               (mma_software ? mma_software_form << 8 | (mma_software_form && mma_software_quad ? 1024u : 0u) : 0u) |
+                               (mesh_fallback_pages ? 2048u : 0u) | (mesh_fallback_global_attributes ? 4096u : 0u) |
+                               (mesh_fallback_shared_warp ? 8192u : 0u) | (mesh_fallback_shared_warp_check ? 16384u : 0u);
         add(&flags, sizeof flags);
         add(mma_order_a.data(), sizeof(uint32_t) * mma_order_a.size());
         add(mma_order_b.data(), sizeof(uint32_t) * mma_order_b.size());
         add(mma_order_c.data(), sizeof(uint32_t) * mma_order_c.size());
+    }
+    {   // (and the two rules translate_into reads from the device policy by themselves: the Deku Tree web's inlined loads and
+        // the networks left out. Their rule was this file's text, so LONGSHOT_SHADER_STAMP held it; device_policy.h is no
+        // file of that stamp, so the values are held here, or a rule changed there would leave the programs made by the old one)
+        const uint32_t policy[] = {dev.policy.inline_deku_web_loads ? 1u : 0u, dev.policy.networks_left_out ? 1u : 0u};
+        add(policy, sizeof policy);
     }
     // (and whether a float add is the GPU's own atomic (make_profile): a program made with OpAtomicFAddEXT is no use to a GPU
     // without it, nor one made with RX_VK_NATIVE_FADD=0's loop wanted back once it is native again)
@@ -1359,14 +1393,18 @@ uint64_t translator_stamp() {
     }
     // (RX_VK_GP_, not RX_VK_GP: that took RX_VK_GPL with it, which changes no translation, and switching the stage libraries on
     // threw the whole program cache away. What the libraries are good for is the prepare's second stamp, vk_draw.cpp warmed_stamp)
-    // (and every other switch the translation reads: the storage buffer pass's (RX_VK_NO_CBUF_LOAD_RULE, RX_VK_PTR_SPLIT_FALLBACK,
-    // RX_VK_ALL_GLOBAL_PROGS), the lowering's extended registers (RX_VK_NO_EXTREGS), the draw parameters (RX_VK_NO_DRAW_PARAMS)
-    // and the miss log's buffer and block counters (RX_VK_MISS_LOG, RX_VK_BLOCK_PROBE): without them a switch did nothing for
-    // the programs already cached. tests/test_program_stamp_knobs.py checks the translator's switches against this list)
-    for (char** e = _environ; e && *e; e++)
-        for (const char* pre : {"RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP_", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "RX_VK_SHARED", "RX_VK_MESH", "RX_VK_NO_INVARIANT", "RX_VK_MARKERS",
-                                "RX_VK_NO_CBUF_LOAD_RULE", "RX_VK_PTR_SPLIT_FALLBACK", "RX_VK_ALL_GLOBAL_PROGS", "RX_VK_NO_EXTREGS", "RX_VK_NO_DRAW_PARAMS", "RX_VK_MISS_LOG", "RX_VK_BLOCK_PROBE", "EDEN_"})
+    // (and every other switch the translation reads: the storage buffer pass's (RX_VK_ALL_GLOBAL_PROGS) and the miss log's
+    // buffer and block counters (RX_VK_MISS_LOG, RX_VK_BLOCK_PROBE): without them a switch did nothing for the programs
+    // already cached. tests/test_program_stamp_knobs.py checks the translator's switches against this list)
+    // (not a name that is no longer a switch (switches.def's GONE rows: nothing reads it), though it begins as a family
+    // here does: a run that still sets one keeps the cache of a run that does not)
+    for (char** e = _environ; e && *e; e++) {
+        const char* const eq = strchr(*e, '=');
+        if (eq && switches::find_gone(std::string(*e, (size_t)(eq - *e)).c_str())) continue;
+        for (const char* pre : {"RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP_", "RX_VK_FOLLOW", "RX_VK_NO_F16", "RX_VK_MESH", "RX_VK_NO_INVARIANT", "RX_VK_MARKERS",
+                                "RX_VK_ALL_GLOBAL_PROGS", "RX_VK_MISS_LOG", "RX_VK_BLOCK_PROBE", "EDEN_"})
             if (!strncmp(*e, pre, strlen(pre))) add(*e, strlen(*e));
+    }
     return h;
 }
 namespace {
@@ -1446,10 +1484,13 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
                     kept_one = !k.empty() && !strncmp(hex, k.c_str(), k.size());
                     at = e == std::string::npos ? keep.size() : e + 1;
                 }
-                if ((!kept_one && (Shader::Backend::SPIRV::mma_software || dev.props.vendorID != 0x10DE)) || env_on("RX_VK_NO_F16") || !dev.vk12.shaderFloat16)
+                // (device_policy.h networks_left_out: every vendor but NVIDIA; and where the multiplies run in software, whoever made the GPU)
+                if ((!kept_one && (Shader::Backend::SPIRV::mma_software || dev.policy.networks_left_out)) || env_on("RX_VK_NO_F16") || !dev.vk12.shaderFloat16)
                     throw std::runtime_error(network_left_out);
             }
-            const std::vector<uint32_t> spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_pinned(), rt, t->program, bindings);
+            // (pinned to 32 lanes only where 32-lane subgroups cover its workgroup, as its pipeline is: pin_subgroup, pins_32)
+            const auto& wg = t->program.workgroup_size;
+            const std::vector<uint32_t> spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_pinned(uint64_t(wg[0]) * wg[1] * wg[2]), rt, t->program, bindings);
             // (EvilOOT) RX_VK_DUMP_SPV=<folder>: the SPIR-V of the programs RX_VK_MISS_LOG_PROG names (all: unset), for spirv-val
             if (const char* dir = getenv("RX_VK_DUMP_SPV"); dir && Shader::Optimization::g_nvn2_miss_log_this) {
                 char path[512];
@@ -1493,8 +1534,9 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
             vrt.convert_depth_mode = host->depth_minus_w() != 0;
             // Deku Tree web (#455): with DontInline, NVIDIA's compiled vertex shader substitutes the grid-origin
             // load result for the grid dimensions in the coordinate clamps. The SPIR-V names the right result.
+            // (device_policy.h inline_deku_web_loads: NVIDIA)
             constexpr uint64_t kDekuWebVertexCode = 0xb449bcdb69b36a8aull;
-            vrt.inline_global_128_loads = dev.props.vendorID == 0x10DE && vsc->key == kDekuWebVertexCode;
+            vrt.inline_global_128_loads = dev.policy.inline_deku_web_loads && vsc->key == kDekuWebVertexCode;
             // (OoT's Royal Family Tomb water writes clip.xy/clip.w as a noperspective varying. Clipping a
             // vertex with w close to zero then makes AMD interpolate the wrong depth, whose exp2 overflows
             // into the red dotted line. Write it times Position.w and interpolate perspective-correct in
@@ -1817,19 +1859,19 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
 /// there are two) and mesh programs; a header-only stage, its per-primitive outputs (shader_lock held)
 const Program* mesh_program_locked(const NvnState& s, const uint8_t color_types[8]) {
     if (!dev.mesh_shader && !dev.mesh_fallback) return nullptr;
-    const std::vector<Code>& cs = codes_of(s);
-    const Code *fsc = nullptr, *prim = nullptr, *task = nullptr, *mesh = nullptr;
-    for (const Code& c : cs) {
-        if (c.header_only) prim = &c;
-        else if (c.stage == 6) task = &c;
-        else if (c.stage == 7) mesh = &c;
-        else if (c.stage == 1) fsc = &c;
+    const auto& cs = codes_of(s);
+    SharedCode fsc, prim, task, mesh;
+    for (const auto& c : cs) {
+        if (c->header_only) prim = c;
+        else if (c->stage == 6) task = c;
+        else if (c->stage == 7) mesh = c;
+        else if (c->stage == 1) fsc = c;
     }
     static int logged;
     if (logged++ < 6) log_program_stages(s, "mesh draw");
     if (!mesh) return nullptr;
     const bool fallback = dev.uses_mesh_fallback(task != nullptr);
-    const uint64_t key = mesh_key(task, *mesh, fsc, prim, color_types);
+    const uint64_t key = mesh_key(task.get(), *mesh, fsc.get(), prim.get(), color_types);
     auto& variants = programs[key];
     program_cache_load(key, variants);
     const uint64_t codes[4] = {mesh->key, fsc ? fsc->key : 0, task ? task->key : 0, prim ? prim->key : 0};
@@ -1852,21 +1894,19 @@ const Program* mesh_program_locked(const NvnState& s, const uint8_t color_types[
     struct Job {
         Program* p;
         NvnState s;
-        Code task, mesh, prim, fs;
-        bool has_task, has_prim, has_fs;
+        SharedCode task, mesh, prim, fs;
         uint8_t ct[8];
     };
     auto job = std::make_shared<Job>();
     job->p = raw, job->s = s;
-    job->has_task = task != nullptr, job->has_prim = prim != nullptr, job->has_fs = fsc != nullptr;
-    if (task) job->task = *task;
-    job->mesh = *mesh;
-    if (prim) job->prim = *prim;
-    if (fsc) job->fs = *fsc;
+    job->task = std::move(task);
+    job->mesh = std::move(mesh);
+    job->prim = std::move(prim);
+    job->fs = std::move(fsc);
     std::memcpy(job->ct, color_types, 8);
     jobs_push([job] {
-        translate_mesh_into(*job->p, job->s, job->has_task ? &job->task : nullptr, job->mesh,
-                            job->has_prim ? &job->prim : nullptr, job->has_fs ? &job->fs : nullptr, job->ct);
+        translate_mesh_into(*job->p, job->s, job->task.get(), *job->mesh,
+                            job->prim.get(), job->fs.get(), job->ct);
     }, false, &raw->ready, [job]() noexcept {
         job->p->failed = true;
         job->p->ready.store(true, std::memory_order_release);
@@ -1933,9 +1973,10 @@ std::string program_textures(const NvnState& s, const Program& p) {
 std::string program_code_keys(const NvnState& s) {
     std::string out;
     if (!s.has_prog) return out;
-    for (const Code& c : codes_of(s)) {
+    std::lock_guard lk(shader_mu);
+    for (const auto& c : codes_of(s)) {
         char b[40];
-        snprintf(b, sizeof b, " %u:%016llx", c.stage, (unsigned long long)c.key);
+        snprintf(b, sizeof b, " %u:%016llx", c->stage, (unsigned long long)c->key);
         out += b;
     }
     return out;
@@ -1944,8 +1985,9 @@ std::string program_code_keys(const NvnState& s) {
 /// (longshot) the bound compute program's code key (0: none): what "does not lower" names, for a rejected dispatch
 uint64_t compute_code_key(const NvnState& s) {
     if (!s.has_prog) return 0;
-    for (const Code& c : codes_of(s))
-        if (c.stage == 5 && !c.header_only) return c.key;
+    std::lock_guard lk(shader_mu);
+    for (const auto& c : codes_of(s))
+        if (c->stage == 5 && !c->header_only) return c->key;
     return 0;
 }
 
@@ -2022,13 +2064,12 @@ const Program* program_for(const NvnState& s, ProgramKind kind, const uint8_t co
     const uint64_t bind = s.bind_gen, reg = registrations_generation(), ub = ub_generation();
     // (longshot) the pair of the last picks stood only while nothing at all was bound anew, and OoT binds a uniform buffer for nearly every
     // draw: a draw of the same program with the same textures found its program through the full pick (the key, the answers' handles, a
-    // compare). It stands now while the textures its answers are read from do (answer_stage_mask). RX_VK_PICK_BIND_GEN=1: as before
-    static const bool by_bind = env_on("RX_VK_PICK_BIND_GEN");
+    // compare). It stands now while the textures its answers are read from do (answer_stage_mask)
     for (const ProgFast& f : prog_fast) {   // (the draw before this one, and the one that took turns with it)
         if (!(f.on && f.p && f.p->ready.load(std::memory_order_acquire) && !f.p->failed)) continue;
         uint64_t fbind = f.bind;
         bool by_tex = false;
-        if (fbind != bind && !by_bind && !compute && f.amask != ~0u) {
+        if (fbind != bind && !compute && f.amask != ~0u) {
             by_tex = true;
             for (int k = 0; k < kNvnStages; k++)
                 if ((f.amask >> k & 1) && f.tex_gen[k] != s.tex_gen[k]) by_tex = false;
@@ -2085,18 +2126,18 @@ const Program* program_pick(const NvnState& s, ProgramKind kind, const uint8_t c
     PROF_EXACT();   // (the picks' slow path: a translation, a cache read; PROF_PROGRAM samples the rest)
     const bool compute = kind == ProgramKind::Compute;
     std::lock_guard lk(shader_mu);
-    const std::vector<Code>& cs = codes_of(s);
-    const Code* stage_code[8]{};
-    for (const Code& c : cs)
-        if (!c.header_only) stage_code[c.stage] = &c;
+    const auto& cs = codes_of(s);
+    SharedCode stage_code[8];
+    for (const auto& c : cs)
+        if (!c->header_only) stage_code[c->stage] = c;
     if (compute ? !stage_code[5] : !stage_code[0]) return nullptr;
     if (!compute && (stage_code[2] || stage_code[3] || stage_code[4])) {   // (geometry/tessellation: not translated)
         static int logged;
         if (logged++ < 40) log_program_stages(s, "dropped stages");
     }
     // the variants of these stages, for these vertex input types and colour output types
-    const bool tonemap = !compute && scene_tonemap_for(stage_code[1]);
-    const uint64_t key = compute ? stage_code[5]->key : graphics_key(*stage_code[0], stage_code[1], s.vattr, color_types, tonemap);
+    const bool tonemap = !compute && scene_tonemap_for(stage_code[1].get());
+    const uint64_t key = compute ? stage_code[5]->key : graphics_key(*stage_code[0], stage_code[1].get(), s.vattr, color_types, tonemap);
     auto& variants = programs[key];
     program_cache_load(key, variants);
     const uint64_t codes[4] = {stage_code[compute ? 5 : 0]->key, !compute && stage_code[1] ? stage_code[1]->key : 0, 0, 0};
@@ -2119,22 +2160,22 @@ const Program* program_pick(const NvnState& s, ProgramKind kind, const uint8_t c
     static const bool sync = env_on("RX_VK_SYNC_SHADERS");
     if (compute || sync) {   // (compute: dispatches are never left out, so they are translated where they are)
         const auto t0 = std::chrono::steady_clock::now();
-        translate_into(*raw, s, stage_code[0], stage_code[1], compute ? stage_code[5] : nullptr, color_types);
+        translate_into(*raw, s, stage_code[0].get(), stage_code[1].get(), compute ? stage_code[5].get() : nullptr, color_types);
         st_translate_wait_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
         return raw->failed ? nullptr : raw;
     }
     struct Job {
         Program* p;
         NvnState s;
-        Code vs, fs;
-        bool has_fs;
+        SharedCode vs, fs;
         uint8_t ct[8];
     };
     auto job = std::make_shared<Job>();
-    job->p = raw, job->s = s, job->vs = *stage_code[0], job->has_fs = stage_code[1] != nullptr;
-    if (job->has_fs) job->fs = *stage_code[1];
+    job->p = raw, job->s = s;
+    job->vs = std::move(stage_code[0]);
+    job->fs = std::move(stage_code[1]);
     std::memcpy(job->ct, color_types, 8);
-    jobs_push([job] { translate_into(*job->p, job->s, &job->vs, job->has_fs ? &job->fs : nullptr, nullptr, job->ct); }, false,
+    jobs_push([job] { translate_into(*job->p, job->s, job->vs.get(), job->fs.get(), nullptr, job->ct); }, false,
               &raw->ready, [job]() noexcept {
                   job->p->failed = true;
                   job->p->ready.store(true, std::memory_order_release);

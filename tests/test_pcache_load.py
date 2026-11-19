@@ -105,7 +105,15 @@ ADAPTER = r'''
 #include <cstring>
 #include <string>
 #ifndef _WIN32
+#include "compute_gate.h"
 #include <unistd.h>
+// Redirect only the kernel paths. Exercise the production membership and ancestor traversal.
+namespace fixture {
+compute_gate::CgroupMemory cgroup_memory() {
+    return compute_gate::cgroup_memory("membership", "cgroups");
+}
+}
+#define compute_gate fixture
 static long fake_sysconf(int name) {
     const char* m = getenv("FAKE_RAM_MB");
     const long mb = m ? atol(m) : 0;
@@ -198,6 +206,16 @@ def cases():
         ("no-folder", dict(small), {}, [], 11, ["is off"], []),
         ("nvk", dict(small, HOME="h", FAKE_DRIVER="nvk"), {"h/" + nv: MB600}, [], 11, ["NVIDIA's own driver"], ["MB in"]),
         ("ram", dict(HOME="h", FAKE_RAM_MB="32000"), {"h/" + nv: MB600}, [], 11, ["32000 MB of RAM"], ["MB in"]),
+        ("limited-parent", dict(HOME="h", FAKE_RAM_MB="32000", FAKE_CGROUP_MB="9216"),
+         {"h/" + nv: MB600}, [], 10, ["not read", "9216 MB", "600 MB in"], []),
+        ("limited-cold", dict(HOME="h", FAKE_RAM_MB="32000", FAKE_CGROUP_MB="9216"),
+         {}, [], 11, ["nearly empty", "9216 MB"], []),
+        ("larger-parent", dict(HOME="h", FAKE_RAM_MB="15757", FAKE_CGROUP_MB="32768"),
+         {"h/" + nv: MB600}, [], 10, ["not read", "15757 MB"], []),
+        ("plenty-of-capacity", dict(HOME="h", FAKE_RAM_MB="32000", FAKE_CGROUP_MB="30000"),
+         {"h/" + nv: MB600}, [], 11, ["30000 MB", "more than 20 GB"], ["MB in"]),
+        ("limited-forced", dict(HOME="h", FAKE_RAM_MB="32000", FAKE_CGROUP_MB="9216", RX_VK_PCACHE_LOAD="1"),
+         {"h/" + nv: MB600}, [], 11, ["RX_VK_PCACHE_LOAD=1"], ["MB in"]),
         ("start", dict(small, HOME="h", FAKE_AT_CREATE="0"), {"h/" + nv: MB600}, [], 11, ["before the title"], ["MB in"]),
         ("prepare", dict(small, HOME="h", LONGSHOT_PREPARE_ONLY="1"), {"h/" + nv: MB600}, [], 11, ["--prepare-shaders"], ["MB in"]),
         ("switch-on", dict(small, HOME="h", RX_VK_PCACHE_LOAD="1"), {"h/" + nv: MB600}, [], 11, ["RX_VK_PCACHE_LOAD=1"],
@@ -236,10 +254,20 @@ def run_adapter(exe, root):
             sparse(base / rel, size)
         for rel in dirs:
             (base / rel).mkdir(parents=True, exist_ok=True)
+        if "FAKE_CGROUP_MB" in env:
+            group = base / "cgroups/group"
+            leaf = group / "game"
+            leaf.mkdir(parents=True)
+            (base / "membership").write_text("0::/group/game\n")
+            (leaf / "memory.max").write_text("max\n")
+            limit = int(env["FAKE_CGROUP_MB"])
+            (group / "memory.max").write_text(str(limit << 20))
+            # The compile gate sees 1 MiB left. The file choice needs the hard capacity.
+            (group / "memory.current").write_text(str((limit - 1) << 20))
         e = dict(keep)
         for k, v in env.items():
             e[k] = str(base / v) if k in ("HOME", "XDG_CACHE_HOME", "__GL_SHADER_DISK_CACHE_PATH", "MESA_SHADER_CACHE_DIR") else v
-        r = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30, env=e)
+        r = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30, env=e, cwd=base)
         line = r.stdout.strip()
         ok = r.returncode == want and line.count("\n") == 0 and all(w in line for w in has) and not any(w in line for w in lacks)
         print(("ok   " if ok else "FAIL ") + name + ": " + line)

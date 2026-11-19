@@ -2,6 +2,23 @@
      The PR and its numbers are made up; the shape is the one .forgejo/pull_request_template.md asks for. -->
 **Type:** fix · **Risk:** low · **Tested on:** Linux, RX 6700 XT · **Needs:** Windows, NVIDIA; Steam Deck
 
+## TL;DR
+
+At 4K the pause menu's text ran off the right edge, so the last option of each row could not be read. This PR makes the
+menu's text grow with the screen's height. At 4K the widest row is now 302 px narrower and fits, and the menu's frame
+time is the same; a new test fails on main and passes here, and I read every row in the game.
+
+## Breakdown
+
+- **Who it helps:** anyone who plays at 4K or on any screen taller than 1080p.
+- **What was wrong:** the menu's font kept its 1080p size, so wide rows ran past the screen's edge.
+- **What changes:** the font's size follows the output height, and a testing switch can set it by hand.
+- **What does not change:** the menu at 1080p, its layout, the saves and `longshot_options.ini`.
+- **How it was checked:** a new test (fails on main, passes here), the whole suite, and the pause, Insert and save
+  menus read to their ends at 4K and 1080p.
+- **What is still open:** Windows, NVIDIA and the Steam Deck; the title screen's menu at 4K.
+- **Risk:** low. On a small screen the menu could come out too large if the height were read wrong.
+
 ## Why
 
 At 4K the pause menu's text runs off the right edge of the screen, so the last option of each row can't be read.
@@ -90,7 +107,11 @@ Fixes #42
 - [x] One topic.
 - [x] The title is a Conventional Commit (`type(scope): description`) of the status line's type.
 - [x] Why gives the reason plainly and links the issues that fit (the tracker searched).
+- [x] Tested on my own PC where it runs (in the game, for a change the game runs), as Testing's Tested says; what
+  can't be run by hand is in Testing's Not testable by hand, with why.
 - [x] Measurements has a verdict, or one line saying why there is nothing to measure.
+- [x] Nothing gets worse that I know of: any cost (speed, latency, memory, a setup that worked before) is measured and
+  in Risks.
 - [x] Testing names what was tested, what wasn't, and what must still be tested, where and how.
 - [x] Rebased on current `main`.
 - [x] `python -I -B tests/run_all.py` passes (any failure that also fails on `main` is named).

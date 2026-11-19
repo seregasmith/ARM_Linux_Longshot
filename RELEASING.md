@@ -231,7 +231,7 @@ for Linux. A bump is a pull request that changes its line:
   The AppImage itself carries Python with `requirements.txt`'s packages (`deps.sh` without `tools`); a change to
   those is an ordinary pull request.
 
-Uploads over 100 MB (llvm-mingw, both emsdk) go to the address without Cloudflare: `FORGEJO_UPLOAD_API=<it>/api/v1` (One-time
+Uploads over 100 MB (llvm-mingw, emsdk) go to the address without Cloudflare: `FORGEJO_UPLOAD_API=<it>/api/v1` (One-time
 setup, the upload address), from a machine that reaches it. The next release uses the new line; installed versions keep
 theirs. Packages are never pruned, so older versions' tools stay downloadable.
 

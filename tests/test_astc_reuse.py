@@ -3,7 +3,11 @@ check that vk_texture.cpp still lists finalized textures, copies from them and r
 import argparse
 import subprocess
 import tempfile
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from srccut import block
 
 RUN_ALL_ARGS = ["--cxx", "g++"]
 
@@ -13,8 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def check_source():
     src = (ROOT / "gpu/vk/vk_texture.cpp").read_text(encoding="utf-8")
     for needle in ('#include "astc_reuse.h"',
-                   'getenv("RX_VK_ASTC_REUSE")',
-                   "if (!dirty && !tex.uploaded && reuse_on() && reuse_upload(tex, total)) return up_route = UP_ASTC, true;",
+                   "if (!dirty && !tex.uploaded && reuse_upload(tex, total)) return up_route = UP_ASTC, true;",
                    "freed.list(x->blocks_hash, x);",
                    "if (tex->freed_listed || tex->reuse_retire) reuse_drop(*tex);",
                    "if (tex->freed_listed || tex->reuse_retire) return false;",
@@ -23,8 +26,8 @@ def check_source():
                    "went.swap(reuse_gone);"):
         if needle not in src:
             raise SystemExit("vk_texture.cpp no longer has: " + needle)
-    forget = src[src.index("void forget_gpu(Texture* tex) {"):]
-    if "reuse_drop(*tex);" not in forget[:200]:
+    forget = block(src, "void forget_gpu(Texture* tex) {")
+    if "reuse_drop(*tex);" not in forget:
         raise SystemExit("forget_gpu no longer takes a destroyed texture out of the reuse list")
 
 

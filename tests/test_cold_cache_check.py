@@ -21,7 +21,6 @@ DRAW = (Path(__file__).resolve().parents[1] / "gpu" / "vk" / "vk_draw.cpp").read
 class ColdCacheCheckTests(unittest.TestCase):
     def test_the_sample_is_asked_of_the_driver_alone_without_a_compile(self):
         check = block(DRAW, "bool notes_lost_by_driver()")
-        self.assertIn('getenv("RX_VK_COLD_CHECK")', check)
         self.assertIn("pipelineCreationCacheControl", check)
         # (an empty scratch cache, and build_graphics asked with its cold flag: it compiles nothing)
         self.assertIn("driver_cache_only = true, driver_ask_cache = scratch;", check)
@@ -41,7 +40,8 @@ class ColdCacheCheckTests(unittest.TestCase):
         run = block(DRAW, "void precompile_run(void (*progress)(size_t done, size_t total))")
         guard = run.index("notes_lost_by_driver()")
         self.assertIn('!env_on("LONGSHOT_PREPARE_ONLY")', run[run.rindex("if (", 0, guard):guard])
-        self.assertLess(guard, run.index("if (!precompile_covers_notes()) precompile_warm(progress);"))
+        self.assertLess(guard, run.index("const bool warms = !precompile_covers_notes();"))
+        self.assertIn("if (warms) precompile_warm(", run)
         self.assertIn("remove(precompile_built_path().c_str());", run[guard:guard + 120])
 
 

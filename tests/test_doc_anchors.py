@@ -19,6 +19,7 @@ ANCHOR = re.compile(r"(?://|#)\s*doc: (\S+?)(?:#([^\s)]+))?(?=[\s)]|$)")
 # (the functions behind design.md's rules, each with the anchor kept just above it: file, the line the function's comment
 # or definition starts with, the anchor's target)
 RULES = "docs/design.md#4-the-lessons-from-mkw-as-rules-here"
+FG_RULES = "docs/design.md#13-frame-generations-presents-as-rules"
 REQUIRED = [
     ("gpu/vk/vk_replay.cpp", "/// A submit on the replay thread: replayed as far", RULES),
     ("gpu/vk/vk_memory.cpp", "// (and the game's pools up to RX_VK_CAPTURE_POOL_MB", RULES),
@@ -27,6 +28,12 @@ REQUIRED = [
     ("gpu/vk/vk_draw.cpp", "/// A clear after draws of the open pass", RULES),
     ("gpu/vk/vk_draw.cpp", "/// A draw that samples a target this pass already wrote", RULES),
     ("nx2/build.py", "def rss_mb(proc):", "docs/compiler-memory-accounting.md"),
+    ("gpu/vk/vk_framegen.cpp", "/// (longshot) Whether display_main shows a fixed multiplier's set at its times", FG_RULES),
+    ("gpu/vk/vk_framegen.cpp", "/// (longshot) The GPU's delay that a fixed multiplier's sets are shown at", FG_RULES),
+    ("gpu/vk/vk_framegen.cpp", "/// Present ahead (display_main): a set's copies go to the GPU together", FG_RULES),
+    ("gpu/vk/vk_replay.cpp", "/// (longshot) The frame slots present_image uses while frame generation runs", FG_RULES),
+    ("gpu/vk/vk_main.cpp", "// (longshot) A fixed frame generation multiplier's set is presented ahead", FG_RULES),
+    ("gpu/vk/vk_imgui.cpp", "// (in a window, what a present's copy used is let go this many presents later", FG_RULES),
 ]
 
 

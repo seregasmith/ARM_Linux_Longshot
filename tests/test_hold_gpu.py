@@ -59,14 +59,14 @@ def check_source():
     watch = block(replay, "void sync_watch() {")
     need("gpu_waiters.load(" in watch and "if (gpu_wait) gpu_wait_seen = now;" in watch, "sync_watch no longer notes a wait for the GPU")
     need("std::max(blocked_since, gpu_wait_seen)" in watch, "the hold after a wait starts at the later of the stop and the wait")
-    need("hold_gpu::choose(hold_gpu_on, gpu_wait," in watch, "sync_watch no longer asks the rule")
+    need("hold_gpu::choose(gpu_wait," in watch, "sync_watch no longer asks the rule")
     force = watch[watch.index("case hold_gpu::Choice::Force:"):]
     need("drain(3);" in force and watch.count("drain(3);") == 1, "the stopped queues are made to go only where the rule says so")
     need(watch.index("schedule();") < watch.index("hold_gpu::choose("), "the look at the queues comes before the hold's question")
-    need('getenv("RX_VK_HOLD_GPU_WAIT")' in watch and 'getenv("RX_VK_HOLD_GPU_MS")' in watch, "the switches are read in sync_watch")
+    need('getenv("RX_VK_HOLD_GPU_MS")' in watch, "the bound's switch is read in sync_watch")
     need("(double)hold_ms()" in watch, "the bound is never under hold_ms")
 
-    need("`RX_VK_HOLD_GPU_WAIT=0`" in docs and "`RX_VK_HOLD_GPU_MS=<ms>`" in docs, "docs/development.md has no rows for the hold's switches")
+    need("`RX_VK_HOLD_GPU_MS=<ms>`" in docs, "docs/development.md has no row for the hold's switch")
 
 
 def main():

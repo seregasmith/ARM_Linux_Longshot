@@ -335,8 +335,7 @@ static void parse_script(void) {
     npresses = 0;
     script_t0 = hos_now_ns();
     {
-        const char *e = getenv("HOS_INPUT_FRAME_CLOCK");
-        script_frame_clock = e && atoi(e) != 0;
+        script_frame_clock = env_on("HOS_INPUT_FRAME_CLOCK");
         if (script_frame_clock) {
             script_frame0 = InterlockedCompareExchange64(&hos_present_count, 0, 0);
             hos_log("hid: input frame clock origin=%lld native presents; rate=60", (long long)script_frame0);
@@ -518,7 +517,7 @@ static void stick_max(int32_t stick[4], const int32_t v[4]) {
    first use; what the file leaves out keeps its default. Keys only, after the Switch's buttons (HOS_KEY_*): the left
    stick's and the camera's directions, and Walk; the ocarina's five note controls take a gamepad input too.
    A key can be a mouse button (1 2 4 5 6: left, right, middle, 4, 5), which counts
-   only while the mouse is captured ---- */
+   only while the mouse is captured; 4 and 5 also while one of the game's menus has it (mouse_buttons_arm) ---- */
 static const char *const bind_names[HOS_KEY_N] = {"a", "b", "x", "y", "ls", "rs", "l", "r", "zl", "zr", "plus",
                                                   "minus", "left", "up", "right", "down", "move_up", "move_down",
                                                   "move_left", "move_right", "cam_up", "cam_down", "cam_left",
@@ -831,7 +830,7 @@ static void pads_read(uint64_t *buttons, int32_t stick[4]) {
 /* Whether the controllers count while another window is in front: HOS_INPUT_BACKGROUND=1 or 0 decides when it is set,
    otherwise the Insert menu's "Controller in background" row */
 static int pads_in_background(const char *env, int menu) {
-    return env ? atoi(env) != 0 : menu != 0;
+    return env ? !env_value_off(env) : menu != 0;
 }
 
 /* (longshot) Whether a pad's motion counts: when its buttons do, with the game's window in front, or behind another
@@ -846,17 +845,20 @@ static int motion_counts(int front, const char *env, int menu) {
 #define VK_XBUTTON2 0x06
 #endif
 /* A mouse button counts only while the mouse is captured, and one held when the capture began only after it was let go
-   (the click that captures never reaches the game) */
+   (the click that captures never reaches the game). menu: one of the game's menus has the mouse (host/display.c
+   hos_mouse_in_game_menu; Windows). Its left, right and middle buttons are that menu's clicks there; the side buttons
+   are no menu's, so they stay their controls' as a key does: Mouse 4 on A confirmed nothing in the text box's choices
+   (Longshot #1306) */
 static int mouse_vk_slot(int vk) {
     return vk == VK_LBUTTON ? 0 : vk == VK_RBUTTON ? 1 : vk == VK_MBUTTON ? 2 : vk == VK_XBUTTON1 ? 3 : vk == VK_XBUTTON2 ? 4 : -1;
 }
 static int mouse_armed[5];
-static void mouse_buttons_arm(int captured) {   /* (once a read) */
+static void mouse_buttons_arm(int captured, int menu) {   /* (once a read) */
     static const int vks[5] = {VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2};
-    for (int i = 0; i < 5; i++) mouse_armed[i] = captured && (mouse_armed[i] || !key(vks[i]));
+    for (int i = 0; i < 5; i++) mouse_armed[i] = (captured || (menu && i >= 3)) && (mouse_armed[i] || !key(vks[i]));
 }
-/* whether a control's key is down: a key always (kmap_down: not Enter with Alt), a mouse button only with mouse (captured
-   and armed) */
+/* whether a control's key is down: a key always (kmap_down: not Enter with Alt), a mouse button only with mouse (the
+   mouse captured or a game menu's, and the button armed) */
 static int bound_down(int i, int mouse) {
     for (int k = 0; k < 2; k++) {
         const int vk = (int)key_bind[i][k];
@@ -1093,7 +1095,7 @@ static void read_input(uint64_t *buttons, uint64_t *taps, int32_t stick[4]) {
     static const char *native_env;
     static int native_looked;
     if (!native_looked) native_looked = 1, native_env = getenv("HOS_MOUSE_NATIVE");
-    const int mode = native_env ? atoi(native_env) != 0 : rx_option(6, 0);   /* (2: Off, the mouse never captured) */
+    const int mode = native_env ? !env_value_off(native_env) : rx_option(6, 0);   /* (2: Off, the mouse never captured) */
     const int native = mode == 1;
     int hos_mouse_native(void);
     void hos_mouse_native_free(int free);
@@ -1110,7 +1112,11 @@ static void read_input(uint64_t *buttons, uint64_t *taps, int32_t stick[4]) {
         captured = mouse_stick(&mouse[2], &mouse[3], (int)((*buttons | *taps | toggles.latched) >> B_L & 1));
         if (captured) stick_max(stick, mouse);
     }
-    mouse_buttons_arm(captured);
+    /* (the side buttons in the game's menus; not with Mouse camera Off, where no button of the mouse is a control) */
+    int hos_mouse_in_game_menu(void);   /* display.c */
+    const int menu_mouse = mode != 2 && hos_mouse_in_game_menu();
+    mouse_buttons_arm(captured, menu_mouse);
+    captured |= menu_mouse;   /* (from here on: whether a mouse button can be a control; the armed ones are) */
     if (captured)
         for (int i = 0; i < HOS_SW_N; i++)
             if (bound_down(i, 1)) *buttons |= 1ULL << i;
@@ -1134,10 +1140,30 @@ static void read_input(uint64_t *buttons, uint64_t *taps, int32_t stick[4]) {
 static void vibration_send(uint64_t handle, uint64_t value);
 volatile int64_t hos_hid_last_read;
 
+/* (longshot) The sticks' direction pseudo-buttons, HidNpadButton_StickLLeft, Up, Right, Down (bits 16-19) and the
+   right stick's (20-23), which real hid sets from the axes (y up): past half their travel, as yuzu's TransformToStick
+   does (input_converter.cpp, the threshold's default 0.5 in input_poller.cpp). The bits are libnx's hid.h
+   HidNpadButton_StickLLeft = BITL(16) .. HidNpadButton_StickRDown = BITL(23); the game reads none of them, a mod may */
+static uint64_t stick_buttons(const int32_t stick[4]) {
+    uint64_t b = 0;
+    for (int i = 0; i < 2; i++) {
+        const int32_t x = stick[2 * i], y = stick[2 * i + 1], half = 16383;
+        b |= (uint64_t)(x < -half) << (16 + 4 * i) | (uint64_t)(y > half) << (17 + 4 * i) |
+             (uint64_t)(x > half) << (18 + 4 * i) | (uint64_t)(y < -half) << (19 + 4 * i);
+    }
+    return b;
+}
+
 /* GetNpadStates(State* out, int count, unsigned int const& npadId): the latest state first */
 static void npad_states(Ctx *c) {
     uint64_t out = ARG(0);
-    int count = (int)ARG(1);
+    /* (longshot) at most the 16 states a console keeps, all in guest memory: a count from the game's arguments wrote
+       0x28 bytes a state past any buffer, and past the guest window */
+    int count = (int)ARG(1) < 0 ? 0 : (int)ARG(1) > 16 ? 16 : (int)ARG(1);
+    if (!hos_guest_range(out, (uint64_t)count * STATE_SIZE) || !hos_guest_range(ARG(2), 4)) {
+        RET(0);
+        return;
+    }
     uint32_t id = G32(ARG(2));
     uint64_t buttons = 0, taps = 0;
     int32_t stick[4] = {0};
@@ -1198,6 +1224,7 @@ static void npad_states(Ctx *c) {
     if (connected) buttons = hos_title_input(buttons);
     uint64_t hos_frame_step_buttons(uint64_t buttons);   /* nn_vi.c: the frame step of the wheel and quick menus */
     if (connected) buttons = hos_frame_step_buttons(buttons);
+    buttons |= stick_buttons(stick);
     int64_t s = ++sampling;
     for (int i = 0; i < count; i++) {
         uint64_t e = out + (uint64_t)i * STATE_SIZE;
@@ -1257,7 +1284,8 @@ HLE(_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxi
     static int64_t six_sampling, six_base;
     static int was_live;
     const uint64_t out = ARG(0);
-    const int count = (int)ARG(1) < 1 ? 0 : (int)ARG(1) > HOS_MOTION_HISTORY ? HOS_MOTION_HISTORY : (int)ARG(1);
+    int count = (int)ARG(1) < 1 ? 0 : (int)ARG(1) > HOS_MOTION_HISTORY ? HOS_MOTION_HISTORY : (int)ARG(1);
+    if (!hos_guest_range(out, (uint64_t)count * 0x60)) count = 0;   /* (longshot: the states in guest memory, or none) */
     static const float at_rest[18] = {0, 0, -1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1};
     int hos_sdl_motion_history(HosMotionSample *out, int max);   /* pad_sdl.c */
     HosMotionSample h[HOS_MOTION_HISTORY];

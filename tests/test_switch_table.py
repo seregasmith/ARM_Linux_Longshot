@@ -1,10 +1,10 @@
-"""The renderer's switch table (gpu/vk/switches.def, switches.h) against the source, and its report of what a run set.
+"""The switch table (gpu/vk/switches.def, switches.h) against the source, and its report of what a run set.
 
-Every RX_ name the source reads from the environment has a row, every row is read somewhere, and a removed name (GONE)
+Every RX_, HOS_ and LONGSHOT_ name the source reads from the environment has a row, every row is read somewhere, and a removed name (GONE)
 is read nowhere: a switch added without a row, a row left behind by a deleted read and a removal that left a read all
-fail here. A read is a whole string literal "RX_..." in code under gpu/, host/ or nx2/ (not in a comment, not part of a
+fail here. A read is a whole string literal "RX_...", "HOS_..." or "LONGSHOT_..." in code under gpu/, host/ or nx2/ (not in a comment, not part of a
 longer string): the reads go through getenv, env_on and helpers that are handed the name, so the literal is what they
-share. PREFIXES are the literals that are no switch themselves: the start of a family, matched against the names the
+share. A name nx2/build.py hands a C file as a macro (-DNAME="RX_...") is a read too. PREFIXES are the literals that are no switch themselves: the start of a family, matched against the names the
 environment holds.
 
 Then switches.h itself, compiled alone: find() on the sorted table, and report() on made-up environments (a switch set,
@@ -29,13 +29,13 @@ TYPES = ("bool", "int", "float", "string", "enum")
 #  the program cache's stamp in gpu/vk/vk_shader.cpp hashes every set switch that begins with one)
 PREFIXES = {
     "RX_VK_FOLLOW", "RX_VK_GP_", "RX_VK_MARKERS", "RX_VK_MESH", "RX_VK_MMA", "RX_VK_NAN", "RX_VK_NATIVE", "RX_VK_NETWORK",
-    "RX_VK_SHARED",
 }
 SKIP_DIRS = {"third_party", "tests", "build-linux", "build-windows"}
 
-ROW = re.compile(r'^SW\((RX_[A-Z0-9_]+), (\w+), (\w+), "((?:[^"\\]|\\.)*)", "((?:[^"\\]|\\.)*)"\)$')
-GONE = re.compile(r'^GONE\((RX_[A-Z0-9_]+), "(\d{4}-\d{2}-\d{2})", "((?:[^"\\]|\\.)*)"\)$')
-LITERAL = re.compile(r'"(RX_[A-Z0-9_]+)"')
+ROW = re.compile(r'^SW\(((?:RX|HOS|LONGSHOT)_[A-Z0-9_]+), (\w+), (\w+), "((?:[^"\\]|\\.)*)", "((?:[^"\\]|\\.)*)"\)$')
+GONE = re.compile(r'^GONE\(((?:RX|HOS|LONGSHOT)_[A-Z0-9_]+), "(\d{4}-\d{2}-\d{2})", "((?:[^"\\]|\\.)*)"\)$')
+LITERAL = re.compile(r'"((?:RX|HOS|LONGSHOT)_[A-Z0-9_]+)"')
+BUILD_DEFINE = re.compile(r'-D[A-Z0-9_]+="((?:RX|HOS|LONGSHOT)_[A-Z0-9_]+)"')
 
 
 def code_of(line):
@@ -70,19 +70,24 @@ def table():
 
 
 def literals():
-    """{name: ["file:line", ...]} of the whole "RX_..." literals in code"""
+    """{name: ["file:line", ...]} of the whole "RX_...", "HOS_..." and "LONGSHOT_..." literals in code"""
     found = {}
     for base in ("gpu", "host", "nx2"):
         for path in sorted((ROOT / base).rglob("*")):
             if path.suffix not in (".c", ".cpp", ".h", ".inc") or SKIP_DIRS & set(path.relative_to(ROOT).parts):
                 continue
             for n, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
-                if '"RX_' not in line:
+                if '"RX_' not in line and '"HOS_' not in line and '"LONGSHOT_' not in line:
                     continue
                 if line.lstrip().startswith(("//", "*", "/*")):
                     continue
                 for m in LITERAL.finditer(code_of(line)):
                     found.setdefault(m.group(1), []).append("%s:%d" % (path.relative_to(ROOT).as_posix(), n))
+    # (a name the build hands a C file as a macro is read there: -DPGO_ENV="RX_VK_PGO_FILE" for the renderer's copy of
+    #  host/pgo_rt.c, whose getenv(PGO_ENV) holds no literal of its own)
+    for n, line in enumerate((ROOT / "nx2" / "build.py").read_text(encoding="utf-8").splitlines(), 1):
+        for m in BUILD_DEFINE.finditer(line.split("#")[0]):
+            found.setdefault(m.group(1), []).append("nx2/build.py:%d" % n)
     return found
 
 
@@ -103,9 +108,10 @@ static std::vector<std::string> run(std::vector<const char*> env, int* strangers
 int main() {
     for (size_t i = 0; i < row_count; i++) need(find(rows[i].name) == &rows[i], rows[i].name);
     need(!find("RX_VK_NO_SUCH_SWITCH") && !find("") && !find("RX_"), "a name the table lacks is found");
-    need(ours("RX_VK_X", 7) && !ours("RX_", 3) && !ours("HOS_X", 5) && !ours("PATH", 4), "ours()");
+    need(ours("RX_VK_X", 7) && !ours("RX_", 3) && ours("HOS_X", 5) && !ours("HOS_", 4) && !ours("LONGSHOT_X", 10) && !ours("PATH", 4), "ours()");
+    need(listed_family("LONGSHOT_X", 10) && listed_family("HOS_X", 5) && !listed_family("PATH", 4), "listed_family()");
     int strangers = -1;
-    auto lines = run({"PATH=/usr/bin", "HOS_FPS_MAX=240", "RXVK=1"}, &strangers);
+    auto lines = run({"PATH=/usr/bin", "LONGSHOT_NOT_THE_GAMES=1", "RXVK=1", "HOSTNAME=pc"}, &strangers);
     need(lines.size() == 1 && lines[0] == "vk: switches set: none" && strangers == 0, "nothing set");
     const std::string first = rows[0].name, kind = kind_name(rows[0].kind);
     const std::string a = first + "=1", b = "RX_VK_NO_SUCH_SWITCH=1", c = first + "=" + std::string(60, 'x');

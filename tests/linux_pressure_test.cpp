@@ -66,6 +66,7 @@ struct Info {
 
 namespace fallback_size {
 inline uint32_t spirv_phis(const uint32_t* words, size_t n) { return n ? words[0] : 0; }
+inline uint32_t spirv_calls(const uint32_t*, size_t) { return 0; }
 }
 
 namespace mkwvk {
@@ -123,6 +124,7 @@ std::unordered_map<uint64_t, std::vector<std::unique_ptr<Program>>> programs;
 void disk_init() {}
 void programs_load_wait(uint64_t) {}
 void module_id_learned(uint64_t, uint64_t, VkShaderModule) {}
+void descriptor_arrays_note(const Program&) {}   // (the census of indexed descriptor arrays, vk_programs.cpp: none here)
 bool env_on(const char*) { return false; }
 #define PROF_EXACT() ((void)0)
 

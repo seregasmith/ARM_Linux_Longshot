@@ -112,6 +112,31 @@ def main():
         raise SystemExit("a mesh workgroup does not take its records and add them to the draw's count")
     if "MESH_FALLBACK_CAPACITY" not in epilogue:
         raise SystemExit("a mesh workgroup past the slots is not left out")
+    # (the records are written by one loop over their words, the threads side by side: unrolled, a primitive's corners and every
+    # line of each, 348 stores a thread of 6fcc901fbc8b73c7 took Mesa's Intel compiler 207 s and 3.8 GB. The loop's index is a
+    # function variable, declared in the entry block by the prologue)
+    if "Strided(" in epilogue or "OpLoopMerge(done, next, spv::LoopControlMask::DontUnroll)" not in epilogue:
+        raise SystemExit("the fallback epilogue writes its records unrolled, not in one loop over their words")
+    if "ctx.mesh_fallback_epilogue_word" not in epilogue or \
+            "ctx.mesh_fallback_epilogue_word = ctx.AddLocalVariable(" not in block(mesh, "void EmitMeshPrologue(EmitContext& ctx)"):
+        raise SystemExit("the epilogue's loop index is not declared in the entry block")
+    if "AddLocalVariable" in epilogue:
+        raise SystemExit("the epilogue declares a function variable mid-function (spirv-val rejects it)")
+    loop_head = epilogue[epilogue.index("ctx.OpLoopMerge(done, next"):]
+    if "ctx.OpBranchConditional(more, body, done);" not in loop_head.split("\n")[1]:
+        raise SystemExit("the epilogue loop's merge is not followed at once by its branch (spirv-val rejects anything between)")
+    # (the Soa layout's records, the default, the same: two loops, records then lines, not Strided's unrolled rounds)
+    lines = block(mesh, "void WriteFallbackLines(")
+    if "WriteFallbackLines(ctx, base, taken);" not in epilogue or "Strided(" in lines or \
+            "Loop(ctx, ctx.mesh_fallback_epilogue_word, LocalInvocation(ctx), taken" not in lines or \
+            "Loop(ctx, ctx.mesh_fallback_epilogue_line, ctx.u32_zero_value, ctx.Const(words), 1" not in lines:
+        raise SystemExit("the fallback's Soa records are written unrolled, not in a loop over records and one over their lines")
+    loop = block(mesh, "void Loop(")
+    if "spv::LoopControlMask::DontUnroll" not in loop or "AddLocalVariable" in loop or "AddLocalVariable" in lines or \
+            "ctx.mesh_fallback_epilogue_line = ctx.AddLocalVariable(" not in block(mesh, "void EmitMeshPrologue(EmitContext& ctx)"):
+        raise SystemExit("the Soa records' loops unroll, or their index is not declared in the entry block")
+    if "ctx.OpBranchConditional(more, block, done);" not in loop[loop.index("ctx.OpLoopMerge(done, next"):].split("\n")[1]:
+        raise SystemExit("the Soa loop's merge is not followed at once by its branch (spirv-val rejects anything between)")
     isbe = block(mesh, "Id EmitIsbeRead(")
     if "mesh_fallback_task_threads" not in isbe or "ctx.OpUMod" not in isbe:
         raise SystemExit("a fallback mesh workgroup takes its slot, not its meshlet within the task workgroup, as its index")
@@ -197,7 +222,7 @@ def main():
     if "if (p.fallback && (st.vk_stage & (VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_TASK_BIT_EXT |" \
             not in graphics:
         raise SystemExit("build_graphics leaves out the task and mesh stages of native mesh programs too")
-    if "dynamic_state(cmd, s, at, topo, d.mesh && !p.fallback);" not in draw:
+    if "dynamic_state(cmd, s, at, topo, d.mesh && !p.fallback, p);" not in draw:
         raise SystemExit("a fallback draw does not use the mesh program's topology")
     if "return p.fallback ? p.fallback_topology : drawn;" not in draw or "topo = pipeline_topology(p, topo);" not in draw:
         raise SystemExit("the fallback's points, lines or triangles are not used")

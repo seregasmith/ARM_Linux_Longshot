@@ -52,8 +52,8 @@ class TargetImagePoolTests(unittest.TestCase):
         image = block(vma, "bool create_image(const VkImageCreateInfo& ci")
         self.assertIn("target && target_images_pool() ? target_images_pool() : images_pool()", image)
         pool = block(vma, "VmaPool target_images_pool()")
-        self.assertIn('getenv("RX_VK_TARGET_BLOCKS")', pool)
-        self.assertIn("pi.blockSize = kImageBlock;", pool)
+        self.assertIn("pi.blockSize = block_size;", pool)
+        self.assertIn("std::min<uint64_t>(kImageBlock, 16ull << 20)", pool)
         self.assertIn("void vma_log_image_blocks()", vma)
 
     def test_the_dead_targets_are_swept_every_present_after_one_unused(self):
@@ -61,7 +61,7 @@ class TargetImagePoolTests(unittest.TestCase):
         every = block(self.tex, "uint64_t dead_every_presents()")
         self.assertIn('getenv("RX_VK_DEAD_EVERY")', every)
         self.assertIn(": 1;", every[every.index('getenv("RX_VK_DEAD_EVERY")'):])
-        self.assertIn("frame_no % (dead_targets ? dead_every : 600)", frame)
+        self.assertIn("(sweep && frame_no % dead_every)", frame)
         unused = block(self.tex, "uint64_t dead_min_unused_presents()")
         self.assertIn(": 1;", unused[unused.index('getenv("RX_VK_DEAD_MIN_UNUSED")'):])
         # (and the pass that reads them is not the only one that looks: it runs at every tenth present, and on the presents
@@ -78,7 +78,7 @@ class TargetImagePoolTests(unittest.TestCase):
         self.assertIn("vkCmdClearDepthStencilImage", after)
 
     def test_a_gone_render_targets_views_go_to_the_pool_with_its_image(self):
-        later = block(self.tex, "void destroy_later(Texture& tex)")
+        later = block(self.tex, "void destroy_later(Texture& tex, uint64_t completed)")
         self.assertRegex(later, r"if \(tex\.pool_key && tex\.allocation && tex\.sparse_chunks\.empty\(\) && pool_cap\(\)\)")
         self.assertIn("d.view_map = std::move(tex.views)", later)
         self.assertIn("d.views.push_back(kv.second)", later)   # (the others' views destroyed, as before)
@@ -90,15 +90,18 @@ class TargetImagePoolTests(unittest.TestCase):
         self.assertIn("pool_put(*it);", loop[:loop.index("destroy_image(")])
         trim = frame.index("pool_trim();")
         self.assertLess(trim, frame.index("if (!dead_targets::pass_due(frame_no)) {"))   # (every present, not every tenth)
-        self.assertIn("pool_pressed = known && pressure > allowed / 10 * 9;", frame)
+        # (the pool's pressure is the arbiter's level, from the lines this read before: pressure past 90% of the allowance, 1,
+        # and the count past 97% of it, 2 (mem_account.h, tests/test_mem_account.py). #637 made the one "pressed" these two)
+        self.assertIn("const mem_account::Ask asked = arbiter.look(pressure, used, known ? allowed : 0);", frame)
+        self.assertIn("pool_pressure = (uint8_t)asked.level;", frame)
 
     def test_the_trim_is_bounded_a_present_and_gives_back_idle_and_excess_images(self):
         trim = block(self.tex, "size_t pool_trim()")
-        self.assertIn("pool_pressed ? 0 : pool_cap()", trim)
-        self.assertIn("pool_pressed ? 64 : 16", trim)
-        self.assertIn("!target_pool::idle_out(frame_no, v[i].since, idle)", trim)   # (RX_VK_POOL_IDLE, 8 presents: target_pool.h)
+        self.assertIn("(pool_pressure >= 2) ? 0 : (pool_pressure == 1) ? (full_cap / 2) : full_cap", trim)
+        self.assertIn("(pool_pressure > 0) ? 64 : 16", trim)
+        self.assertIn("!target_pool::idle_out(frame_no, oldest.since, idle)", trim)   # (RX_VK_POOL_IDLE, 8 presents: target_pool.h)
         self.assertIn("pool_bytes <= cap", trim)
-        self.assertIn("pool_destroy(v[i]);", trim)
+        self.assertIn("pool_destroy(oldest);", trim)
         destroy = block(self.tex, "void pool_destroy(Pooled& p)")
         self.assertIn("vkDestroyImageView", destroy)
         self.assertIn("destroy_image(p.image, p.allocation);", destroy)

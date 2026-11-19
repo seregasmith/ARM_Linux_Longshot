@@ -138,7 +138,7 @@ def main():
     args = parser.parse_args()
     chain = (args.source / "gpu/vk/vk_temporal.cpp").read_text(encoding="utf-8")
     dlss = (args.source / "gpu/vk/vk_dlss.cpp").read_text(encoding="utf-8")
-    chain = chain[chain.index('if (!dview) return fail("no view of the scene depth");'):]
+    chain = chain[chain.index('if (!dview) return no("no view of the scene depth");'):]
     dispatch = chain[chain.index("\n"):chain.index("    if (ready < 0)")]
     reuse_start = dlss.index("    if (s.feature && s.feature_ow == ow")
     reuse = dlss[reuse_start:dlss.index("    // (why it is made:", reuse_start)]

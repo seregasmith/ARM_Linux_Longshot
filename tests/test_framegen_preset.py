@@ -3,8 +3,11 @@
 Compile the menu's actual preset and row handlers with small stand-ins.
 Check that the game FPS cap keeps its saved key when its label changes. Preset
 and frame-generation changes do not reset temporal failures; the three scaling
-rows do, using their real row definitions and scaling helpers. No game or GPU
-is needed.
+rows do, using their real row definitions and scaling helpers. While NVIDIA DLSS
+FG makes the frames, the Frame generation row's arrows step from the value shown
+and end at its runtime's most + 1 (the real framegen_capped): 6x on an RTX 50's,
+2x on an RTX 40's, round to Off past it as past 8x; a value set as it is (the
+control bridge's) is kept. No game or GPU is needed.
 """
 import argparse
 import os
@@ -86,6 +89,10 @@ int step_output_choice(int id, int dir) { return id + dir; }
 int output_for_aspect(int) { return opts.output_res; }
 const char* tx_framegen(int) { return ""; }
 const char* hn_framegen(int, int) { return ""; }
+bool framegen_by_dlss_offered() { return true; }   // (the Frame generation by row offers DLSS FG here)
+int fg_most = 0;   // (DLSS FG's runtime's most made frames while it makes the frames, vk_dlss.cpp; 0: no cap)
+int dlss_fg_most() { return fg_most; }
+/* CAPPED */
 const char* tx_preset(int) { return ""; }
 const char* hn_preset(int, int) { return ""; }
 const char* tx_fps_cap(int) { return ""; }
@@ -126,6 +133,26 @@ int main() {
         set_row(framegen, 0, -1);
         CHECK(opts.framegen == 0 && opts.preset == preset);
     }
+    // (Frame generation while NVIDIA DLSS FG makes the frames: the arrows step from the value shown, end at its runtime's
+    // most + 1 and go round to Off past it, as past 8x; down from Off comes to that top)
+    struct Step { int most, from, dir, to; } steps[] = {
+        {5, 8, 1, 0}, {5, 8, -1, 5}, {5, 7, -1, 5}, {5, 5, 1, 6}, {5, 6, 1, 0}, {5, 0, -1, 6}, {5, 1, 1, 2},   // (6x)
+        {1, 3, 1, 0}, {1, 3, -1, 1}, {1, 1, 1, 2}, {1, 2, 1, 0}, {1, 0, -1, 2},                                // (2x)
+        {0, 7, 1, 8}, {0, 8, 1, 0}, {0, 0, -1, 8}, {0, 2, -1, 1},   // (no cap: as before)
+    };
+    for (const Step& s : steps) {
+        opts = Options{};
+        fg_most = s.most, opts.framegen = s.from;
+        set_row(framegen, s.from + s.dir * framegen.step, s.dir);
+        if (opts.framegen != s.to)
+            return std::fprintf(stderr, "FAIL: Frame generation %d, DLSS FG's runtime making %d, arrow %d: %d, wanted %d\n",
+                                s.from, s.most, s.dir, opts.framegen, s.to), 1;
+    }
+    opts = Options{};
+    fg_most = 5, opts.framegen = 2;
+    set_row(framegen, 7, 0);   // (set as it is, the control bridge's: kept as asked, run as the top)
+    CHECK(opts.framegen == 7);
+    fg_most = 0;
     CHECK(std::strstr(quality.help, "Frame generation") != nullptr);
     CHECK(std::strstr(quality.help, "stay yours") != nullptr);
     CHECK(saves > 0);
@@ -149,6 +176,7 @@ int main() {
 def fixture(source):
     menu = (source / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
     header = (source / "gpu" / "vk" / "vk_menu.h").read_text(encoding="utf-8")
+    framegen = (source / "gpu" / "vk" / "vk_framegen.cpp").read_text(encoding="utf-8")
     options = re.search(r"struct Options \{.*?\n\};", header, re.S)
     tabs = re.search(r"enum MenuTab \{.*?\};", menu, re.S)
     row = re.search(r"struct Row \{.*?\n\};", menu, re.S)
@@ -166,6 +194,7 @@ def fixture(source):
         "/* FPS_CAP_ROW */": block(menu, fps_cap.start()),
         "/* PRESET */": definition(menu, "void apply_preset"),
         "/* SET_ROW */": definition(menu, "void set_row"),
+        "/* CAPPED */": block(framegen, framegen.index("int framegen_capped(")),
         "/* FRAMEGEN_ROW */": block(menu, menu.index('{TAB_GRAPHICS, "Frame generation"')),
         "/* QUALITY_ROW */": block(menu, menu.index('{TAB_GRAPHICS, "Quality preset"')),
         "/* UPSCALER_ROW */": block(menu, menu.index('{TAB_GRAPHICS, "Upscaler"')),

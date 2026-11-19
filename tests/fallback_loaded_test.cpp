@@ -29,10 +29,6 @@ static void add(Programs& programs, uint64_t key, uint64_t variant, bool fallbac
 }
 
 int main() {
-    // the switch: on unless it says 0
-    CHECK(fallback_loaded::on(nullptr) && fallback_loaded::on("1") && fallback_loaded::on(""));
-    CHECK(!fallback_loaded::on("0"));
-
     Programs programs;
     add(programs, 1, 0, true);            // a state list's fallback program, read in before: no record left to find it by
     add(programs, 1, 7, true);            // (its other variant)

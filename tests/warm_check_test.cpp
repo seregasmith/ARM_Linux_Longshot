@@ -13,6 +13,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -90,18 +91,36 @@ static bool precompile_covers_notes() {
     if (f) fclose(f);
     return f != nullptr;
 }
-static void precompile_built_write(size_t) {
+static void precompile_built_write(size_t, uint64_t) {
     if (env_on("LONGSHOT_PREPARE_ONLY")) return;
     if (FILE* f = fopen(precompile_built_path().c_str(), "wb")) fclose(f);
+}
+// (the compute programs the warm builds: every kept one here, compute_warm_plan's "all")
+struct ComputePlan {
+    std::set<uint64_t> keys;
+    bool all = true, none = false;
+    uint64_t coverage() const { return 1; }
+};
+static const ComputePlan& compute_warm_plan() { static const ComputePlan plan; return plan; }
+// (the start's own steps around the pass: the pipeline cache opened, the texture pipelines, the bar's count)
+struct ParLock { ParLock() {} ~ParLock() {} };   // (a lock: not here)
+static void texture_pipelines_warm() {}
+static bool pcache_file_rejected = false;
+static size_t program_cache_fallback_steps() { return 0; }
+namespace start_steps {
+static void begin(void (*)(size_t, size_t), bool, size_t) {}
+static void warm(size_t, size_t) {}
+static void create(size_t, size_t) {}
+static void end() {}
 }
 static bool programs_load_at_create() { return true; }
 static bool pcache_drop_stale() { return false; }
 static bool notes_lost_by_driver() { return false; }
 static void precompile_warm(void (*)(size_t, size_t)) {
     warmed++;
-    precompile_built_write(refs_.size());   // (a warm that got to its end, in a process that plays: warm_bounded.h leaves_marker)
+    precompile_built_write(refs_.size(), 1);   // (a warm that got to its end, in a process that plays: warm_bounded.h leaves_marker)
 }
-static void precompile_at_create() { at_create++; }
+static void precompile_at_create(void (*)(size_t, size_t)) { at_create++; }
 
 #include "notes_answered.inc"
 #include "precompile_run_start.inc"
@@ -172,7 +191,7 @@ int main(int argc, char** argv) {
                "a --prepare-shaders run asks the caches, leaves the marker or goes on after its warm");
     } else if (s == "marker") {   // (the marker there: nothing asked, no warm)
         world(3000, 400);
-        precompile_built_write(0);
+        precompile_built_write(0, 1);
         precompile_run(nullptr);
         expect(warmed == 0 && asked == 0 && at_create == 1, "a start with the marker asks the caches or warms");
     } else if (s == "no_cache_control") {   // (no asking without a compile on this driver: warmed as before)

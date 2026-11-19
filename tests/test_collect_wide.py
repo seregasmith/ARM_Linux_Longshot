@@ -27,6 +27,7 @@ static uint8_t a64_dirty[A64_DIRTY_PAGES];
 static uint64_t guest_size = A64_DIRTY_PAGES << 12;
 static uint64_t hos_guest_size(void) { return guest_size; }
 static int clear_calls;
+static int hos_ab_value(const char *name, int normal) { (void)name; return normal; }   /* (host/hos_ab.c: no A/B here) */
 #define memcpy(d, s, n) (clear_calls += (n) == 256, memcpy(d, s, n))
 
 @MARKS_CLEAR@

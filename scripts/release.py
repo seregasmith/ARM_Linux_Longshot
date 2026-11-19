@@ -61,6 +61,7 @@ import argparse
 import base64
 import datetime
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -93,7 +94,7 @@ STABLE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 VERSION = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?$")
 NIGHTLY = re.compile(r"^nightly-([0-9]{1,9})-([0-9a-f]{8})$")
 # (names that look like the game's files, a dump's, or NVIDIA's runtime: never uploaded, CONTRIBUTING.md)
-NOT_A_RELEASE_FILE = re.compile(r"(\.(nso|nca|nsp|xci|nsz|xcz|nup|keys|bin)$|romfs|exefs|nvngx|dlss|streamline|^sl\..*\.dll$)",
+NOT_A_RELEASE_FILE = re.compile(r"(\.(nso|nca|nsp|xci|nsz|xcz|nup|nx|keys|bin)$|romfs|exefs|nvngx|dlss|streamline|^sl\..*\.dll$)",
                                 re.IGNORECASE)
 # (a Conventional Commit title: type(scope)!: description; scripts/forge.py checks pull request titles with the same types)
 TITLE = re.compile(r"^(feat|fix|perf|refactor|docs|test|ci|build|chore|revert)(\([^)]*\))?(!)?: ")
@@ -279,9 +280,8 @@ def previous_nightly(tag, root=ROOT):
 
 def nightly_news(product, root=ROOT):
     """Whether HEAD brings anything a nightly's notes list as new since the newest nightly on its history: git-cliff's
-    notes over those commits (cliff.toml) have an entry. Only ci: or chore: commits since (nightly-322-5bc54c6c, one
-    ci(release) commit): no, and no nightly is made (they are in no notes); the next one comes with what follows. The
-    first nightly: yes"""
+    notes over those commits (cliff.toml) have an entry. Only ci: or chore: commits since: no, and no nightly is made
+    (they are in no notes); the next one comes with what follows. The first nightly: yes"""
     previous = previous_nightly(nightly_name(product, root), root)
     if previous is None:
         return True
@@ -544,12 +544,31 @@ UPLOAD_TRIES = 4      # (an upload the server answers with a 5xx, or that the co
 UPLOAD_PAUSE = 20.0   # (seconds before the second try; twice that before the third, and so on)
 
 
+READ_TRIES = 4        # (a GET the server answers with a 5xx, or whose answer never comes whole, is made again: this many times in all)
+READ_PAUSE = 5.0      # (seconds before the second try; twice that before the third, and so on)
+
+
 class ServerTrouble(Exception):
     """A request the server answered with a 5xx, or that never got its answer: worth making again"""
 
 
 def api(method, path, body=None, data=None, content_type=None, upload=False, missing_ok=False, again=False):
-    """again: a 5xx answer or a lost connection raises ServerTrouble instead of ending the run, for a caller that retries"""
+    """again: a 5xx answer or a lost connection raises ServerTrouble instead of ending the run, for a caller that retries.
+    A GET changes nothing, so it is made again here, READ_TRIES times in all: git.magicbean.dev has cut off the list of
+    releases mid-answer (IncompleteRead), which ended v1.0.0-rc.11's publish with every file built and signed"""
+    tries = 1 if again or method != "GET" else READ_TRIES
+    for attempt in range(1, tries + 1):
+        try:
+            return api_once(method, path, body, data, content_type, upload, missing_ok, again or attempt < tries)
+        except ServerTrouble as e:
+            if again:
+                raise
+            pause = READ_PAUSE * attempt
+            print("::warning::%s: try %d of %d failed: again in %d s" % (e, attempt, tries, pause), flush=True)
+            time.sleep(pause)
+
+
+def api_once(method, path, body, data, content_type, upload, missing_ok, again):
     base = (os.environ.get("FORGEJO_UPLOAD_API") if upload else None) or os.environ.get("FORGEJO_API") or SERVER + "/api/v1"
     headers = {"User-Agent": "longshot-release", "Accept": "application/json"}
     token = os.environ.get("RELEASE_TOKEN")
@@ -570,7 +589,7 @@ def api(method, path, body=None, data=None, content_type=None, upload=False, mis
         if again and e.code >= 500:
             raise ServerTrouble(said)
         fail(said)
-    except (urllib.error.URLError, OSError) as e:   # (no answer: refused, reset, timed out)
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as e:   # (no answer, or not all of it: refused, reset, timed out, cut off)
         if again:
             raise ServerTrouble("%s %s: %s" % (method, path, e))
         fail("%s %s: %s" % (method, path, e))

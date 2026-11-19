@@ -11,12 +11,8 @@
 // draws out and compiled 42 pipelines in play. Those in memory are given to the same step now.
 #pragma once
 #include <cstddef>
-#include <cstring>
 
 namespace fallback_loaded {
-
-/// RX_VK_FALLBACK_LOADED=0: as before, only the programs read in now
-inline bool on(const char* env) { return !env || std::strcmp(env, "0") != 0; }
 
 /// fn(program) for every translated mesh fallback program in `programs` (key -> its variants) whose key is not in `given`
 /// (the keys read in now: all of their variants went to the caller already). Returns how many

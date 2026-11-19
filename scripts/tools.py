@@ -54,7 +54,7 @@ SYSTEMS = ("windows-x64", "linux-x64")
 # (the tools each builder needs: the release workflow refuses a lock without one of them. The Linux builder's AppImage carries
 # its Python; the rest is here, builder/linux/linux_tools.py). No play profile is a tool: play profiles are committed in
 # assets/profiles/
-REQUIRED = {"windows-x64": ("llvm-mingw", "python", "emsdk", "cpm", "third-party"),
+REQUIRED = {"windows-x64": ("llvm-mingw", "python", "cpm", "third-party"),
             "linux-x64": ("emsdk", "cpm", "ffmpeg", "sdl2", "sysroot")}
 NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$")
@@ -431,7 +431,7 @@ def assemble_third_party(source, prefix, out, tracked):
 # Packages tab): the package <name>-<system>, its version the tool's version, the file <sha256>-<name>.zip. A package
 # version's files never change (Forgejo refuses a second upload of a name, HTTP 409), and nothing prunes them: an older
 # version's tools stay downloadable. Anyone downloads them, with no account (the organization is public). Each system has its
-# own package because a tool's Windows and Linux builds have versions of their own (emsdk: Hookshot v2.1.0's, LLVM 23.1.5).
+# own package because a tool's Windows and Linux builds have versions of their own (cpm: Hookshot v2.1.0's with dav1d, deps.sh's).
 
 def file_name(tool):
     return "%s-%s.zip" % (tool.sha256, tool.name)

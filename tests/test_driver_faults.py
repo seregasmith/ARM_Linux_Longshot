@@ -179,8 +179,12 @@ def main():
     assert note.index("fseek(f, 0, SEEK_END);") < note.index("if (ftell(f) == 0)"), "the comment is written with every fault"
     # (a folder the game cannot write to is said once in the log, not passed over in silence)
     assert re.search(r"if \(!f\) \{[^}]*logf\(", note), "a file that cannot be written is not logged"
-    # (one at a time on AMD, where the hang was seen, or with RX_VK_DRIVER_FAULTS=2; other drivers build side by side)
-    assert "q.set_serial(driver_faults_mode() == 2 || dev.props.vendorID == 0x1002);" in draw
+    # (one at a time with AMD's Windows driver, where the hang was seen, or with RX_VK_DRIVER_FAULTS=2; other drivers build
+    # side by side. The driver is device_policy.h's fault_gate_serial, which asked the vendor before and so held RADV's
+    # builds too: tests/test_device_policy.py has it on each driver)
+    assert "q.set_serial(driver_faults_mode() == 2 || dev.policy.fault_gate_serial);" in draw
+    policy = (ROOT / "gpu" / "vk" / "device_policy.h").read_text(encoding="utf-8")
+    assert "p.fault_gate_serial = f.driver_id == VK_DRIVER_ID_AMD_PROPRIETARY;" in policy, "the serial gate is not AMD's Windows driver's"
     assert 'std::clamp(atoi(getenv("RX_VK_DRIVER_FAULTS")), 0, 2)' in draw, "RX_VK_DRIVER_FAULTS is not read as 0, 1 or 2"
 
     with tempfile.TemporaryDirectory(prefix="driver-faults-") as tmp:

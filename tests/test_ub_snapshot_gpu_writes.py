@@ -268,7 +268,8 @@ def main():
             "gpu_writes.resize(" not in code_only(block(memory, "void memory_gpu_writes_begin() {")):
         raise SystemExit("FAIL: the guard's notes are let go elsewhere than memory_gpu_writes_begin")
     # (what the GPU has done, as the guard sees it: given at each recording's start, the parts' too)
-    if "memory_recording_value(value, completed());" not in code_only(block(replay, "Recording& begin_recording(uint64_t value) {")):
+    start = code_only(block(replay, "Recording& begin_recording(uint64_t value) {"))
+    if "const uint64_t done = completed();" not in start or "memory_recording_value(value, done);" not in start:
         raise SystemExit("FAIL: begin_recording does not give the guard the recording's timeline value and the GPU's progress "
                          "(memory_recording_value)")
     print("source: the notes are begun at run_submit's new recording, the present and bench_replay only, kept through "

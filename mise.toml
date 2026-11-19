@@ -1,14 +1,16 @@
 min_version = "2026.11.3"
 
 [tasks.setup]
-description = "Install git hooks (pre-commit and commit-msg)"
+description = "Install git hooks (pre-commit and commit-msg) and the Python build requirements"
 shell = "bash -c"
+depends = ["build-deps"]
 run = "pre-commit install"
 
 [tools]
 python = "3.12.15"
 node = "22.12.0"
-"aqua:pre-commit/pre-commit" = "4.0.1"
+# The Aqua provider has no Windows build; PyPI gives every platform the same pinned pre-commit.
+"pypi:pre-commit" = "4.0.1"
 "github:rhysd/actionlint" = "1.7.12"
 "github:open-policy-agent/conftest" = "0.71.1"
 "github:CircleCI-Public/circleci-cli" = "1.14.0"
@@ -39,6 +41,41 @@ fi
 python3 -m pip install --disable-pip-version-check --no-deps \
   zstandard==0.25.0 pillow==13.0.0 numpy==2.5.4
 """
+
+[tasks.build-deps]
+description = "Install requirements.txt into mise's Python before a game build"
+hide = true
+shell = "bash -c"
+run = "python3 -m pip install --disable-pip-version-check -r requirements.txt"
+
+[tasks.build]
+description = "Build a game folder from your own dump (same arguments as nx2/make_game.py)"
+shell = "bash -c"
+depends = ["build-deps"]
+run = 'python3 -I nx2/make_game.py "$@"'
+
+[tasks.build-dev]
+description = "Compile the standalone development build in work/sa (default: 4 jobs)"
+shell = "bash -c"
+depends = ["build-deps"]
+run = 'python3 -I nx2/build.py --standalone --jobs 4 "$@"'
+
+[tasks.build-fast]
+description = "Faster standalone development build (-O1, default: 8 jobs); never for measurements or releases"
+shell = "bash -c"
+depends = ["build-deps"]
+run = 'RX_HOT_OPT=O1 python3 -I nx2/build.py --standalone --jobs 8 "$@"'
+
+[tasks.packs]
+description = "Development bases, changed packs and runtimes (mise run packs <base|pack|rt|warm|ls> ...)"
+shell = "bash -c"
+depends = ["build-deps"]
+run = 'python3 -I scripts/dev_packs.py "$@"'
+
+[tasks.run-win]
+description = "Windows-only standalone Vulkan smoke run with screenshots and a graceful close"
+shell = "bash -c"
+run = 'powershell -NoProfile -ExecutionPolicy RemoteSigned -File scripts/run-vk.ps1 -Window -Graceful "$@"'
 
 [tasks.lint]
 description = "pre-commit on what this branch changed (as CI does) + actionlint"

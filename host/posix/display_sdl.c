@@ -50,6 +50,9 @@ int hos_mouse_take(int32_t *dx, int32_t *dy) {
     return mouse_captured;
 }
 
+/* (nn_hid.c) the game's menus do not take the mouse here: its capture, and with it its buttons, stay the game's */
+int hos_mouse_in_game_menu(void) { return 0; }
+
 /* (mouse_native.c) motion taken and not used, put back for the next taker (the player camera's) */
 void hos_mouse_give_back(int32_t dx, int32_t dy) {
     InterlockedExchangeAdd(&mouse_dx, dx);
@@ -216,7 +219,7 @@ static DWORD WINAPI renderer_main(void *p) {
 /* (longshot) host/display.c's: the game's first work for the GPU waits for the renderer (nvn_native.c), so nothing it submits while
    the shaders are prepared is lost. Without a window the renderer starts on the game's own thread, before this is asked */
 void hos_renderer_wait(void) {
-    { const char *e = getenv("HOS_NO_RENDERER_WAIT"); if (e && atoi(e) != 0) return; }
+    if (env_on("HOS_NO_RENDERER_WAIT")) return;
     if (renderer_up) WaitForSingleObject(renderer_up, INFINITE);
 }
 

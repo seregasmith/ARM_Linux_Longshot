@@ -109,6 +109,9 @@ int main(int argc, char **argv) {
                hos_crash_stage(&f), hos_crash_start_failed(&f));
         printf("version=%s\ngpu=%s\ndriver=%s\ndevices=%s\ndlss=%s\nfsr4=%s\n", f.version, f.gpu, f.driver, f.devices, f.dlss, f.fsr4);
         printf("os=%s\ncpu=%s\nrenderer=%s\nplace=%s\ncrash=%s\n", f.os, f.cpu, f.renderer, f.place, f.crash);
+        char sent[sizeof f.gpu_report];
+        hos_crash_gpu(sent, sizeof sent, &f);
+        printf("gpu_sent=%s\n", sent);
     } else if (!strcmp(cmd, "setting")) {   /* a line */
         char key[64], value[32];
         if (hos_crash_setting(argv[2], key, sizeof key, value, sizeof value)) printf("%s|%s\n", key, value);
@@ -383,6 +386,11 @@ def source_checks():
     main = (ROOT / "host/hos_main.c").read_text(encoding="utf-8")
     dialog = (ROOT / "host/hos_crash_dialog.c").read_text(encoding="utf-8")
     backend = (ROOT / "host/rx_backend.c").read_text(encoding="utf-8")
+    # (the crash report's renderer is logged before the back end's start(), which prepares the shaders: a crash in there has one)
+    start = backend[backend.index("int rx_start(void *hwnd) {"):]
+    start = start[:start.index("\n}\n")]
+    assert start.index('hos_log("report: renderer Vulkan")') < start.index("r->start(hwnd)"), \
+        "report: renderer is logged before the Vulkan back end starts, so a crash while it prepares the shaders names it"
     first = "const int helper = hos_crash_helper_main(argc, argv);\n        if (helper >= 0) return helper;"
     assert main.count(first) == 2, "both main()s hand a helper's command line over"
     win = main[main.index("int main(int argc, char **argv) {\n#else"):]
@@ -721,6 +729,16 @@ def logic_checks(exe, menu, tmp, form):
               "[hos host] vk: driver: NVIDIA 580.95.05", "[hos host] vk: NVIDIA DLSS: not available: no nvngx_dlss.dll in ~/x",
               "[hos host] [warn] vk: AMD FSR 4: no upscaler on this GPU")
     assert f["gpu"] == "NVIDIA GeForce RTX 3090" and f["driver"] == "NVIDIA 580.95.05"
+    # (what Report automatically sends as the card: the renderer's `report: gpu` line, else the device and its driver
+    # joined the same way, else the name alone: one value for a card, with its driver)
+    assert f["gpu_sent"] == "NVIDIA GeForce RTX 3090, NVIDIA 580.95.05", "no report: gpu line: the device and vk: driver:"
+    chosen = "[hos host] vk: NVIDIA GeForce RTX 3090, Vulkan 1.4, driver 0x9b118180; mesh shaders yes, host memory import yes"
+    g = facts(*head, chosen, "[hos host] vk: driver: NVIDIA 580.95.05", "[hos host] report: gpu AMD Radeon RX 7800 XT, radv Mesa 26.0")
+    assert g["gpu_sent"] == "AMD Radeon RX 7800 XT, radv Mesa 26.0" and g["gpu"] == "NVIDIA GeForce RTX 3090", "report: gpu first"
+    g = facts(*head, "[hos host] report: gpu NVIDIA GeForce RTX 3090, NVIDIA 580.95.05", "[hos host] report: gpu ")
+    assert g["gpu_sent"] == "", "the last report: gpu line, as the other report: lines; none when the renderer names no device"
+    assert facts(*head, chosen)["gpu_sent"] == "NVIDIA GeForce RTX 3090", "no driver line: the name alone"
+    assert facts(*head, "[hos host] vk: driver: NVIDIA 580.95.05")["gpu_sent"] == "", "no device in use: nothing"
     assert f["devices"] == "NVIDIA GeForce RTX 3090; llvmpipe (LLVM 23.1.4, 256 bits)", f["devices"]
     assert f["dlss"].startswith("NVIDIA DLSS: not available") and f["fsr4"].startswith("AMD FSR 4: no upscaler")
     starts = {
@@ -881,7 +899,8 @@ def behaviour(cc, tmp):
     exe = tmp / "driver"
     (tmp / "driver.c").write_text(DRIVER, encoding="utf-8")
     # (-x c before each file: g++ takes a single -x c for the first file only, and compiles the rest as C++)
-    sources = [tmp / "driver.c", ROOT / "host/hos_crash_dialog.c", ROOT / "host/hos_crash_record.c", ROOT / "host/hos_report_run.c"]
+    sources = [tmp / "driver.c", ROOT / "host/hos_crash_dialog.c", ROOT / "host/hos_crash_record.c", ROOT / "host/hos_report_run.c",
+               ROOT / "host/log_redact.c"]
     subprocess.run([cc, "-std=gnu11", "-O1", "-Wall", "-Wextra", "-DHOS_CRASH_DIALOG_TEST", "-I", str(ROOT / "host"),
                     *(x for f in sources for x in ("-x", "c", str(f))), "-o", str(exe), "-pthread", "-ldl"], check=True, timeout=180)
     home = tmp / "home" / "private-user"
@@ -987,6 +1006,8 @@ esac
     curl.chmod(0o755)
     stamp = "version=vtest-1\ncrash_reports=https://d.example/telemetry/crash\ncrash_issue=https://g.example/o/r/issues/81\n"
     log = ("[hos host] report: os Arch Linux", "[hos host] report: cpu Ryzen 7 7700 (16 threads), 32 GB",
+           "[hos host] vk: NVIDIA GeForce RTX 3090, Vulkan 1.4, driver 0x9b118180; mesh shaders yes, host memory import yes",
+           "[hos host] vk: driver: NVIDIA 580.95.05", "[hos host] report: gpu NVIDIA GeForce RTX 3090, NVIDIA 580.95.05",
            "[hos Main] map: Kokiri Forest", "[hos Main] reading %s/secret.txt" % home,
            "[hos host] CRASH: exception 0xc0000005 (read 0x8, guest 0x8) at %s/Games/longshot+0x1a2b" % home,
            "[hos host] CRASH:   x0 0000000000000001", "[hos host] CRASH: host backtrace: longshot+0x1a2b libc.so.6+0x10")
@@ -1000,14 +1021,17 @@ esac
         calls = (folder / "curl-calls.txt").read_text(encoding="utf-8").splitlines()
         assert calls == ["https://d.example/telemetry/crash"], "posted once, to the stamp's address: %s" % calls
         report = json.loads((folder / "sent.json").read_text(encoding="utf-8"))
-        assert sorted(report) == ["cpu", "crash", "gpu", "log_tail", "map", "options", "os", "release", "renderer", "version"]
+        assert sorted(report) == ["client", "cpu", "crash", "gpu", "log_tail", "map", "options", "os", "release", "renderer", "version"]
+        assert report["client"] == "Longshot"
         assert (report["version"], report["release"], report["os"], report["map"]) == ("vtest-1", False, "Arch Linux", "Kokiri Forest")
+        assert report["gpu"] == "NVIDIA GeForce RTX 3090, NVIDIA 580.95.05", "the card with its driver: %r" % report["gpu"]
         assert report["crash"] == ["CRASH: exception 0xc0000005 (read 0x8, guest 0x8) at longshot+0x1a2b",
                                    "CRASH: host backtrace: longshot+0x1a2b libc.so.6+0x10"], report["crash"]
         assert "[hos Main] reading ~/secret.txt" in report["log_tail"] and "private-user" not in json.dumps(report), report
         assert report["options"] == "ultrawide=1", "the settings, a value only as the menu's rules allow: %r" % report["options"]
         assert got[0][1].split("\n")[-1].startswith("Report automatically|Report manually|Open the log folder|Close"), got[0]
-        assert got[1][1].startswith("Longshot: send to the team\n") and "Version: vtest-1" in got[1][1] and \
+        assert got[1][1].startswith("Longshot: send to the team\n") and "Client: Longshot" in got[1][1] and \
+            "Version: vtest-1" in got[1][1] and "Graphics card: NVIDIA GeForce RTX 3090, NVIDIA 580.95.05\n" in got[1][1] and \
             "CRASH: exception 0xc0000005" in got[1][1], got[1]
         assert got[1][1].split("\n")[-1] == "Send|Show all of it|Cancel|", got[1]
         if answer == "sent":

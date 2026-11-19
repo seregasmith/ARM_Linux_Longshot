@@ -52,6 +52,7 @@ jobs:
       - uses: https://github.com/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          filter: blob:none   # (history without file contents: the server sends commits and trees only; files come when read)
           persist-credentials: false
       - name: The tools
         run: |
@@ -154,6 +155,7 @@ jobs:
         with:
           ref: ${{ needs.version.outputs.ref }}
           fetch-depth: 0
+          filter: blob:none   # (history without file contents: the server sends commits and trees only; files come when read)
           persist-credentials: false
       # (the builders from Forgejo's own address, RELEASE_UPLOAD_API on this runner's network, where the artifacts are on its
       # disk: through its public address behind Cloudflare, as download-artifact fetches them, they came at about 1 MB/s,

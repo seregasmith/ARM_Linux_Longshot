@@ -89,7 +89,7 @@ TRIANGLE_LIST = 3   # (VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST: what a mesh draw is 
 # target can be, ASTC and BC (no GPU renders into them) left out. tests/test_pipeline_states.py checks it against vk_formats.cpp,
 # gpu/render/nvn_api.h and the Vulkan headers
 V1_NVN = {
-    4: 0x95, 5: 0x3c, 7: 0x3a, 8: 0x3b, 9: 0x01, 10: 0x02, 13: 0x03, 14: 0x04, 16: 0x0d, 17: 0x0e, 20: 0x0f, 21: 0x10,
+    4: 0x95, 5: 0x3c, 6: 0x98, 8: 0x3b, 9: 0x01, 10: 0x02, 13: 0x03, 14: 0x04, 16: 0x0d, 17: 0x0e, 20: 0x0f, 21: 0x10,
     23: 0x19, 24: 0x1a, 27: 0x1b, 28: 0x1c, 37: 0x6d, 38: 0x6e, 41: 0x6f, 42: 0x70, 43: 0x37, 44: 0x99, 50: 0x9b,
     64: 0x3d, 68: 0x3e, 70: 0x06, 71: 0x07, 74: 0x08, 75: 0x09, 76: 0x05, 77: 0x12, 78: 0x13, 81: 0x14, 82: 0x15,
     83: 0x11, 91: 0x72, 92: 0x73, 95: 0x74, 96: 0x75, 97: 0x29, 98: 0x0b, 99: 0x0c, 100: 0x0a, 101: 0x17, 102: 0x18,
@@ -112,8 +112,11 @@ COMPUTE = 1           # (StateRec2::kCompute)
 # 2026-11-14: scripts/pipeline_tour.py's tour (every map, actor and cutscene) meets 2,104 programs with the shipped list's 233,
 # half of the game's, and its list is shipped whole: raised from 1024 (four times play) to 2560. By the measurement above
 # (0.6 to 1 MB a program) those 2,104 cost 1.2 to 2.1 GB more than none kept and some 6.5 s of precompile at each start; not
-# measured again yet. Past 2560, measure again and raise this, or prune the list
-COMPUTE_MOST = 2560
+# measured again yet.
+# 2026-11-18: the 38 lists players sent to issue #14 add 1,110 programs their play dispatched (3,309 with the tour's and the
+# earlier lists'; 80 % of the game's 4,127): raised to 3584. By the same measurement those cost some 1.1 GB and 2 to 3 s of
+# precompile more at each start than at 2560; not measured again yet. Past 3584, measure again and raise this, or prune the list
+COMPUTE_MOST = 3584
 # One list someone sent: more than the game has programs (twice 4,127, rounded up) was not written by the game. The merge's bound
 # above is the one that counts what a release costs; this one only keeps a made-up file small
 SENT_COMPUTE_MOST = 8192

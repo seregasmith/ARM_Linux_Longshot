@@ -43,7 +43,7 @@ def main():
     fixture = fixture.replace('/* BANK_BRANCH */', block(block(draw, 'VkDescriptorBufferInfo uniform_range('), 'if (index == 0 || index == 2)'))
     cases = ['healthy', 'no-recording', 'initial-buffer', 'initial-map', 'initial-commit', 'pool-retry', 'parallel',
              'growth-buffer', 'growth-map', 'growth-commit', 'overflow', 'rounding', 'alignment-zero',
-             'alignment-three', 'grow-off', 'reuse', 'retention', 'descriptor-pool', 'descriptor-set', 'descriptor-commit', 'descriptor-retained', 'bank-retry', 'bank-same']
+             'alignment-three', 'reuse', 'retention', 'descriptor-pool', 'descriptor-set', 'descriptor-commit', 'descriptor-retained', 'bank-retry', 'bank-same']
     if a.case != 'all':
         assert a.case in cases
         cases = [a.case]

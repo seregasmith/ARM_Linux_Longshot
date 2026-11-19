@@ -18,8 +18,8 @@
 /* (longshot, #1468) A game folder whose deepest file passes 260 characters (MAX_PATH: "E:\Games\...\romfs\Event\EventSetting\
    Ev..." at 262) is read too. The host paths here are up to HOS_FS_PATH bytes, and on Windows each file call goes through
    its wide function: the path converted from the game's UTF-8 strings and, when it is
-   long and absolute, given the extended-length prefix \\?\ (with its / made \), which Windows takes without its long-paths
-   setting. Short paths are as they were. */
+   long and absolute, given the extended-length prefix \\?\ (with its / made \ and a doubled separator made one), which
+   Windows takes without its long-paths setting. Short paths are as they were. */
 #define HOS_FS_PATH 1024
 #ifdef _WIN32
 static const wchar_t *fs_wide(const char *p, wchar_t *w, size_t cap) {
@@ -35,9 +35,19 @@ static const wchar_t *fs_wide(const char *p, wchar_t *w, size_t cap) {
         if (unc) p++;   /* (\\server\share -> \\?\UNC\server\share) */
     }
     if (MultiByteToWideChar(CP_UTF8, 0, p, -1, w + at, (int)(cap - at)) <= 0) w[0] = 0;
-    if (extended)
-        for (wchar_t *q = w; *q; q++)
-            if (*q == L'/') *q = L'\\';
+    if (extended) {
+        /* (under the prefix Windows takes a path as it is: a / is no separator, and a doubled one is an invalid name
+           (ERROR_INVALID_NAME), where a short path has both tidied. The game doubles one itself, in its streamed
+           voices' "Voice/Resource//Stream/...": in a game folder long enough their files were "not found" and the
+           cutscenes silent, Longshot #1298. So here every / is a \, and a run of them one) */
+        wchar_t *d = w + at;
+        for (const wchar_t *q = w + at; *q; q++) {
+            const wchar_t c = *q == L'/' ? L'\\' : *q;
+            if (c == L'\\' && d > w + at && d[-1] == L'\\') continue;
+            *d++ = c;
+        }
+        *d = 0;
+    }
     return w;
 }
 #define FS_W(p) fs_wide((p), (wchar_t[HOS_FS_PATH + 8]){0}, HOS_FS_PATH + 8)
@@ -234,6 +244,24 @@ static void free_handle(uint64_t id) {
     ReleaseSRWLockExclusive(&handle_lock);
 }
 
+/* (longshot, ported from Hookshot 7d22d4fb, pixl27) Whether the game is writing a file now: one is open for writing and
+   was written in the last second. Commit is nothing here, so a save goes straight into its files; every close
+   (hos_relaunch.c hos_close_finish) waits up to 3 s for such a write to end before the process exits. The game's threads
+   go on meanwhile */
+static int writes_open;
+static int64_t last_write_ns;
+static void wrote_now(void) { __atomic_store_n(&last_write_ns, hos_now_ns(), __ATOMIC_RELAXED); }
+static int fs_writing(void) {
+    return __atomic_load_n(&writes_open, __ATOMIC_RELAXED) > 0 &&
+           hos_now_ns() - __atomic_load_n(&last_write_ns, __ATOMIC_RELAXED) < 1000000000LL;
+}
+void hos_fs_wait_writes(void) {
+    const int64_t t0 = hos_now_ns();
+    int waited = 0;
+    while (fs_writing() && hos_now_ns() - t0 < 3000000000LL) waited = 1, hos_sleep_ns(10000000);
+    if (waited) hos_log("stop: the game was writing a file: waited %.0f ms for it", (double)(hos_now_ns() - t0) / 1e6);
+}
+
 /* ---- mounts --------------------------------------------------------------------------------------------------- */
 HLE(_ZN2nn2fs22QueryMountRomCacheSizeEPm) { G64(ARG(0)) = 0x10000; RET(0); }
 HLE(_ZN2nn2fs8MountRomEPKcPvm) {
@@ -408,6 +436,7 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
     Handle *fh = (Handle *)calloc(1, sizeof *fh);
     fh->h = h;
     fh->writable = want_write;
+    if (want_write) __atomic_add_fetch(&writes_open, 1, __ATOMIC_RELAXED);
     snprintf(fh->path, sizeof fh->path, "%s", g);
     G64(ARG(0)) = new_handle(fh);
     if (hos_trace || fs_trace()) hos_log("fs: OpenFile(%s)", g);
@@ -498,7 +527,9 @@ HLE(_ZN2nn2fs9WriteFileENS0_10FileHandleElPKvmRKNS0_11WriteOptionE) {
             RET(R_OUT_OF_MEMORY);
             return;
         }
+        wrote_now();
         WriteFile(fh->h, GP(ARG(2)), (DWORD)ARG(3), &put, &ov);
+        wrote_now();
     }
     RET(put == ARG(3) ? 0 : 0x2EE202);
 }
@@ -506,6 +537,7 @@ HLE(_ZN2nn2fs11SetFileSizeENS0_10FileHandleEl) {
     Handle *fh = get_handle(c, ARG(0));
     LARGE_INTEGER sz;
     sz.QuadPart = (LONGLONG)ARG(1);
+    wrote_now();
     SetFilePointerEx(fh->h, sz, NULL, FILE_BEGIN);
     SetEndOfFile(fh->h);
     RET(0);
@@ -514,6 +546,7 @@ HLE(_ZN2nn2fs9FlushFileENS0_10FileHandleE) { FlushFileBuffers(get_handle(c, ARG(
 HLE(_ZN2nn2fs9CloseFileENS0_10FileHandleE) {
     Handle *fh = get_handle(c, ARG(0));
     CloseHandle(fh->h);
+    if (fh->writable) __atomic_sub_fetch(&writes_open, 1, __ATOMIC_RELAXED);
     free_handle(ARG(0));
     free(fh);
 }

@@ -110,6 +110,11 @@ void menu_debug_rows(bool, bool) {}
 int step_output_choice(int id, int dir) { return id + dir; }
 // (the Aspect ratio row moves the Output resolution to one of its shape's sizes, output_for_aspect: not what this checks)
 int output_for_aspect(int) { return opts.output_res; }
+// (the Frame generation rows in set_row: DLSS FG offered (framegen_by_dlss_offered); no DLSS FG top here (vk_dlss.cpp
+// dlss_fg_most, vk_framegen.cpp framegen_capped))
+bool framegen_by_dlss_offered() { return true; }
+int dlss_fg_most() { return 0; }
+int framegen_capped(int framegen, int) { return framegen; }
 %(set_row)s
 /* (menu_tick's arrows: Left, Right, and Enter as Right; a click on the value's left or right half presses them) */
 void arrow(Row& r, bool right) { %(arrow)s }

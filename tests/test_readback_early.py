@@ -60,6 +60,8 @@ MEMORY = r"""
 #include <vector>
 constexpr uint64_t kPageShift = 12, kChunkPages = 16, kPages = 1024;
 #include "readback_early.h"   // (and its rule; with compat/longshot_env.h's env_on)
+#include "page_marks.h"   // (wb_ever, which wb_pages_note marks: invalidate_quick)
+using mkwvk::PageMarks;
 static void logf(const char*, ...) {}
 static struct { struct { char deviceName[256]; } props; } dev = {{""}};   // (the device's name: not asked; the pools' mirror is)
 static bool replay_render_thread_on() { return false; }
@@ -230,7 +232,7 @@ static Host host_v;
 static Host* host = &host_v;
 static std::atomic<int64_t> st_early_waits{0}, st_early_ns{0}, st_early_whole{0};
 static std::atomic<int64_t> st_early_rec{0}, st_early_rec_ns{0}, st_early_rec_late{0};
-static const bool unforced = true, by_part = true;
+static const bool unforced = true;
 static int failures;
 static void check(bool ok, const char* what) {
     std::printf("%s  %s\n", ok ? "ok  " : "FAIL", what);
@@ -306,13 +308,8 @@ static void check(bool ok, const char* what) {
     std::printf("%s  %s\n", ok ? "ok  " : "FAIL", what);
     failures += !ok;
 }
-int main(int argc, char** argv) {
+int main() {
     double ms = -1;
-    if (argc > 1 && !std::strcmp(argv[1], "off")) {   // (RX_VK_READBACK_EARLY_RECORDED=0)
-        rec_open(5);
-        check(early_recorded_wait(5, &ms) && ms == 0, "RX_VK_READBACK_EARLY_RECORDED=0: no wait for its own recording");
-        return failures ? 1 : 0;
-    }
     check(early_recorded_wait(7, &ms) && ms == 0, "no recording open: no wait");
     rec_open(7);
     check(early_recorded_wait(8, &ms) && ms == 0, "another submission's recording open: no wait");
@@ -532,14 +529,14 @@ def main():
     a = p.parse_args()
     memory = (ROOT / "gpu/vk/vk_memory.cpp").read_text(encoding="utf-8")
     replay = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
-    pages = between(memory, "std::mutex wb_pages_mu;", "} // namespace\n/// The newest write-back value")
+    pages = between(memory, "std::mutex wb_pages_mu;", "} // namespace\n/// (longshot) Whether any page of")
     writers = between(memory, "namespace {\nthread_local uint32_t wr_what = 0;", "/// (RX_VK_LOG_RB_WRITERS) the writers of a range's pages")
     inv = block(replay, "void invalidate(uint64_t gpu, uint64_t size) {")
     if inv.index("rb_diag_finish(rbd, v);") > inv.index("rb_diag_done(gpu, size, rbd, d / 1e6, line);"):
         raise SystemExit("FAIL: diagnostic snapshot precedes the whole-submission wait")
     diag = block(replay, "void rb_diag_wait(")
     if "rb_diag_early_part(early, part, early_allowed)" not in diag or \
-            "rb_diag_wait(gpu, size, rbd, whole, part, unforced && by_part && whole > completed())" not in inv:
+            "rb_diag_wait(gpu, size, rbd, whole, part, unforced && whole > completed())" not in inv:
         raise SystemExit("FAIL: diagnostic does not use the actual early-wait target and eligibility")
     early = between(inv, "bool early_done = false;", "if (early_done) {")
     # (the writer's part is chosen only once its submission is recorded to its end: a read let go while the rest was recorded took
@@ -665,13 +662,7 @@ def main():
         rec_src.write_text(RECORDED.replace("/* OPEN */", between(replay, "std::atomic<uint64_t> rec_open_tag{0};", "void rec_close();"))
                            .replace("/* CLOSE */", between(replay, "void rb_release_close(uint64_t value);   // (RX_VK_LOG_RB_WRITERS",
                                                              "static void wait_rec_seq(")), encoding="utf-8")
-        env_rec = {k: v for k, v in os.environ.items() if k != "RX_VK_READBACK_EARLY_RECORDED"}
-        run(a.cxx, rec_src, rec_exe, env=env_rec)
-        r = subprocess.run([str(rec_exe), "off"], capture_output=True, text=True, timeout=60,
-                           env=dict(env_rec, RX_VK_READBACK_EARLY_RECORDED="0"))
-        print(r.stdout, end="")
-        if r.returncode:
-            raise SystemExit("FAIL: RX_VK_READBACK_EARLY_RECORDED=0\n" + r.stderr)
+        run(a.cxx, rec_src, rec_exe)
         probe_src, probe_exe = tmp / "probe.cpp", tmp / ("probe.exe" if os.name == "nt" else "probe")
         probe_src.write_text(PROBE.replace("/* PROBE */", between(replay, "struct RbRelease {",
                                                                   "/// (longshot) invalidate's wait for a write-back's value")),

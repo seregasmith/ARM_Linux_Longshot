@@ -2,8 +2,7 @@
 
 vk_jobs.cpp is compiled beside stand-ins for vk_internal.h and vk_draw.h (logging, the thread calls, ub_thread_off) and
 run with every worker held in a job: the draw's pipeline job, queued behind them, must run on the thread that waits, and
-only there (the queue keeps no copy for a worker). Free workers racing two waiters for the same job: it runs once. The
-switch follows longshot_env.h's rule: RX_VK_JOB_STEAL=true keeps the steal on, 0/off/no turn it off.
+only there (the queue keeps no copy for a worker). Free workers racing two waiters for the same job: it runs once.
 python -I -B tests/test_jobs_wait_runs_queued.py
 """
 import argparse
@@ -28,6 +27,10 @@ inline int SetThreadPriority(HANDLE, int) { return 1; }
 inline long SetThreadDescription(HANDLE, const wchar_t*) { return 0; }
 namespace mkwvk {
 inline void logf(const char*, ...) {}
+// (dev.policy.workers, which start() reads: gpu/vk/device_policy.h makes it of the PC's threads, 2 to 6, and of
+// RX_VK_WORKERS, and tests/test_device_policy.py checks both. No device here: 4, or the run's RX_VK_WORKERS)
+struct StandInDevice { struct { unsigned workers; } policy; };
+inline StandInDevice dev{{std::getenv("RX_VK_WORKERS") ? (unsigned)std::atoi(std::getenv("RX_VK_WORKERS")) : 4u}};
 }
 """
 
@@ -50,14 +53,12 @@ def check_source():
     jobs = (ROOT / "gpu/vk/vk_jobs.cpp").read_text(encoding="utf-8")
     wait = jobs[jobs.index("bool jobs_wait("):]
     wait = wait[:wait.index("\n}\n")]
-    if "it->flag == &flag" not in wait or 'getenv("RX_VK_JOB_STEAL")' not in wait:
+    if "it->flag == &flag" not in wait:
         raise SystemExit("jobs_wait no longer runs a queued job it waits for")
     if "queue.erase(it)" not in wait:
         raise SystemExit("jobs_wait runs a queued job without taking it out of the queue: a worker would run it again")
-    if "env_value_off(" not in wait:
-        raise SystemExit("RX_VK_JOB_STEAL is not read by the switches' on/off rule (longshot_env.h)")
     block = draw[draw.index("void draw(VkCommandBuffer"):]
-    block = block[:block.index("    cur_program = &p;")]
+    block = block[:block.index("    dlss_trace_draw(s, p, d, at);")]
     pipe = block[block.index("if (!pe->ready.load(std::memory_order_acquire))"):]
     if "wait_for(pe->ready)" not in pipe or "jobs_wait(ready)" not in block[block.index("auto wait_for = "):]:
         raise SystemExit("draw()'s pipeline wait no longer goes through jobs_wait, which runs the queued build there")
@@ -79,14 +80,10 @@ def main():
                         "-I", str(ROOT / "gpu/vk/compat"),
                         str(tmp / "vk_jobs.cpp"), str(ROOT / "tests/test_jobs_wait_runs_queued.cpp"), "-o", str(exe)],
                        check=True)
-        for mode, value in (("steal", None), ("steal", "true"), ("steal", " 1 "), ("race", None),
-                            ("off", "0"), ("off", "off"), ("off", "No")):
-            env = {k: v for k, v in os.environ.items() if k != "RX_VK_JOB_STEAL"}
-            if value is not None:
-                env["RX_VK_JOB_STEAL"] = value
-            subprocess.run([str(exe), mode], check=True, timeout=60, env=env)
+        for mode in ("steal", "race"):
+            subprocess.run([str(exe), mode], check=True, timeout=60)
         # (jobs_hurry, quick pipelines' brief wait: one worker, so that the order the queue runs in is the order checked)
-        env = {k: v for k, v in os.environ.items() if k != "RX_VK_JOB_STEAL"}
+        env = dict(os.environ)
         env["RX_VK_WORKERS"] = "1"
         subprocess.run([str(exe), "hurry"], check=True, timeout=60, env=env)
 

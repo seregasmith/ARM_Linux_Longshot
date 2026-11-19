@@ -138,7 +138,12 @@ bool run_shader(const std::vector<uint32_t>& code, std::vector<uint32_t>& data, 
     }
     vkBindBufferMemory(dev.device, buffer, memory, 0);
     uint32_t* words = nullptr;
-    vkMapMemory(dev.device, memory, 0, size, 0, (void**)&words);
+    if (vkMapMemory(dev.device, memory, 0, size, 0, (void**)&words) != VK_SUCCESS || !words) {
+        logf("vk: cooperative matrix test: the buffer could not be mapped");
+        vkDestroyBuffer(dev.device, buffer, nullptr);
+        vkFreeMemory(dev.device, memory, nullptr);
+        return false;
+    }
     std::memcpy(words, data.data(), size);
 
     VkDescriptorSetLayoutBinding b{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
@@ -204,15 +209,19 @@ bool run_shader(const std::vector<uint32_t>& code, std::vector<uint32_t>& data, 
         vkEndCommandBuffer(cmd);
         VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
         VkFence fence{};
-        vkCreateFence(dev.device, &fci, nullptr, &fence);
+        if (vkCreateFence(dev.device, &fci, nullptr, &fence) != VK_SUCCESS) fence = VK_NULL_HANDLE;   // (no fence: not submitted, so all is freed below)
         VkCommandBufferSubmitInfo csi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
         csi.commandBuffer = cmd;
         VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
         si.commandBufferInfoCount = 1, si.pCommandBufferInfos = &csi;
-        ok = vkQueueSubmit2(dev.queue, 1, &si, fence) == VK_SUCCESS &&
-             vkWaitForFences(dev.device, 1, &fence, VK_TRUE, 5000000000ull) == VK_SUCCESS;
+        const bool submitted = fence && vkQueueSubmit2(dev.queue, 1, &si, fence) == VK_SUCCESS;
+        ok = submitted && vkWaitForFences(dev.device, 1, &fence, VK_TRUE, 5000000000ull) == VK_SUCCESS;
         if (ok) std::memcpy(data.data(), words, size);
         else logf("vk: %s: the dispatch did not complete", what);
+        if (submitted && !ok) {
+            if (module) vkDestroyShaderModule(dev.device, module, nullptr);
+            return false;
+        }
         vkDestroyFence(dev.device, fence, nullptr);
         vkDestroyCommandPool(dev.device, cmd_pool, nullptr);
         vkDestroyDescriptorPool(dev.device, pool, nullptr);
@@ -450,9 +459,11 @@ bool software_forms_agree(Shader::Backend::SPIRV::SoftwareMmaForm form, bool qua
     return *differ == 0;
 }
 
-/// RX_VK_MMA_UNROLL=0: the loop; 1: the unrolled forms tried on any GPU; unset: on RADV, where they were measured (the Steam Deck)
-bool software_unroll_wanted(VkDriverId driver, const char* env) {
-    return env ? !env_value_off(env) : driver == VK_DRIVER_ID_MESA_RADV;
+/// RX_VK_MMA_UNROLL=0: the loop; 1: the unrolled forms tried on any GPU; unset: on RADV and on AMD RDNA 4 (RX 9 / GFX12)
+/// with AMD's Windows driver, where they were measured (the Steam Deck and an RX 9060 XT)
+bool software_unroll_wanted(VkDriverId driver, bool rdna4, const char* env) {
+    const bool def = driver == VK_DRIVER_ID_MESA_RADV || (rdna4 && driver == VK_DRIVER_ID_AMD_PROPRIETARY);
+    return env ? !env_value_off(env) : def;
 }
 
 void choose_software_form() {
@@ -460,8 +471,9 @@ void choose_software_form() {
     namespace spirv = Shader::Backend::SPIRV;
     spirv::mma_software_form = (uint32_t)SoftwareMmaForm::Loop;
     const char* env = std::getenv("RX_VK_MMA_UNROLL");
-    if (!software_unroll_wanted(dev.driver_id, env)) {
-        logf("vk: software matrix multiplies looped (%s)", env ? "RX_VK_MMA_UNROLL=0" : "not RADV, RX_VK_MMA_UNROLL=1 tries the unrolled form");
+    if (!software_unroll_wanted(dev.driver_id, is_rdna4(dev.props.vendorID, dev.props.deviceName), env)) {
+        logf("vk: software matrix multiplies looped (%s)",
+             env ? "RX_VK_MMA_UNROLL=0" : "not RADV or RDNA 4 on AMD's Windows driver, RX_VK_MMA_UNROLL=1 tries the unrolled form");
         return;
     }
     // (A through quad broadcasts where every stage has quad operations, as the translator may emit the function in any stage that
@@ -516,6 +528,12 @@ void software_multiplies(const char* why) {
 bool table_loop_wanted(VkDriverId driver, bool dynamic_indexing, const char* env) {
     return (env ? !env_value_off(env) : driver == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA) && dynamic_indexing;
 }
+/// (longshot, mma_layout.h mesh_fallback_pages, mesh_fallback_global_attributes and mesh_fallback_shared_warp) Intel's Mesa driver
+/// only, where they were measured; env is RX_VK_MESH_PAGES, RX_VK_MESH_GLOBAL_ATTRS or RX_VK_MESH_SHARED_WARP, 0 or 1 over the
+/// default (tests/test_mesh_fallback_pages.py, tests/test_mesh_fallback_global_attrs.py, tests/test_mesh_fallback_shared_warp.py)
+bool mesh_pages_wanted(VkDriverId driver, const char* env) {
+    return env ? !env_value_off(env) : driver == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA;
+}
 } // namespace
 
 void coopmat_init() {
@@ -527,16 +545,30 @@ void coopmat_init() {
         Shader::Backend::SPIRV::frag_nan_guard = !e || std::atoi(e) != 0;
     }
     if (Shader::Backend::SPIRV::frag_nan_guard) logf("vk: colour outputs NaN-guarded");
-    Shader::Backend::SPIRV::position_invariant = dev.props.vendorID != 0x10DE && !env_on("RX_VK_NO_INVARIANT");
+    // (device_policy.h position_invariant: every vendor but NVIDIA, unless RX_VK_NO_INVARIANT is on)
+    Shader::Backend::SPIRV::position_invariant = dev.policy.position_invariant;
     if (Shader::Backend::SPIRV::position_invariant) logf("vk: positions invariant (not an NVIDIA card)");
     Shader::Backend::SPIRV::global_table_loop = table_loop_wanted(dev.driver_id, dev.features.shaderStorageBufferArrayDynamicIndexing,
                                                                   std::getenv("RX_VK_GM_LOOP"));
     if (Shader::Backend::SPIRV::global_table_loop) logf("vk: storage buffer tables searched in loops (RX_VK_GM_LOOP=0: written out)");
-    // (longshot) the translation's vendor fixes (vk_vendor.h, dev.fixes): out-of-bounds texel fetches answer 0, NaN tests on bits
-    Shader::Backend::SPIRV::fetch_bounds = dev.fixes.fetch_bounds;
+    Shader::Backend::SPIRV::mesh_fallback_pages = mesh_pages_wanted(dev.driver_id, std::getenv("RX_VK_MESH_PAGES"));
+    if (Shader::Backend::SPIRV::mesh_fallback_pages)
+        logf("vk: the mesh fallback's global loads read the guest page table (RX_VK_MESH_PAGES=0: they search the storage buffers)");
+    Shader::Backend::SPIRV::mesh_fallback_global_attributes = mesh_pages_wanted(dev.driver_id, std::getenv("RX_VK_MESH_GLOBAL_ATTRS"));
+    if (Shader::Backend::SPIRV::mesh_fallback_global_attributes)
+        logf("vk: the mesh fallback's attribute regions in a pool of the records buffer (RX_VK_MESH_GLOBAL_ATTRS=0: in workgroup memory)");
+    Shader::Backend::SPIRV::mesh_fallback_shared_warp = mesh_pages_wanted(dev.driver_id, std::getenv("RX_VK_MESH_SHARED_WARP"));
+    Shader::Backend::SPIRV::mesh_fallback_shared_warp_check =
+        Shader::Backend::SPIRV::mesh_fallback_shared_warp && env_on("RX_VK_MESH_SHARED_WARP_CHECK");
+    if (Shader::Backend::SPIRV::mesh_fallback_shared_warp)
+        logf("vk: the mesh fallback's warps in workgroup memory, its stages at any lane count (RX_VK_MESH_SHARED_WARP=0: the subgroup's)%s",
+             Shader::Backend::SPIRV::mesh_fallback_shared_warp_check ? "; checked against the subgroup's (RX_VK_MESH_SHARED_WARP_CHECK)" : "");
+    // (longshot) the translation's vendor fixes (device_policy.h fetch_bounds, nan_bits): out-of-bounds texel fetches answer 0,
+    // NaN tests on bits
+    Shader::Backend::SPIRV::fetch_bounds = dev.policy.fetch_bounds;
     // (dev.features.robustBufferAccess: on exactly when robustBufferAccess2 is, vk_main.cpp create_device)
-    Shader::Backend::SPIRV::fetch_bounds_buffers = dev.fixes.fetch_bounds && !dev.features.robustBufferAccess;
-    Shader::Backend::SPIRV::nan_bits = dev.fixes.nan_bits;
+    Shader::Backend::SPIRV::fetch_bounds_buffers = dev.policy.fetch_bounds && !dev.features.robustBufferAccess;
+    Shader::Backend::SPIRV::nan_bits = dev.policy.nan_bits;
     // (longshot) RX_VK_MMA_SOFTWARE=1: HMMA_nx2 in a shader function on subgroup shuffles, no cooperative matrices
     // (emit_spirv_warp.cpp, from Lichii): the lowering still gives HMMA_nx2 (dev.native_mma)
     if (const char* sw = std::getenv("RX_VK_MMA_SOFTWARE"); sw && std::atoi(sw)) {

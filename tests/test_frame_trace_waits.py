@@ -1,6 +1,7 @@
 """The frame trace (RX_VK_FRAME_TRACE, longshot_frames.csv) names the waits it could not show (no game/GPU required):
-its header ends with late_wait_ms, readback_wait_ms and tex_frame_ms, a line has as many values as the header has names, the
-columns before keep their order (scripts read them), and the three counters are fed where the time is spent.
+its header ends with the Breakdown parts, the main thread's time, shown_ms (present-wait's presentation clock) and at_ns,
+a line has as many values as the header has names, the columns before keep their order (scripts read them), and the
+counters are fed where the time is spent.
 
 python -I -B tests/test_frame_trace_waits.py
 """
@@ -16,7 +17,10 @@ NEW = ["late_wait_ms", "readback_wait_ms", "tex_frame_ms",
        "game_ms", "render_ms", "gpu_wait_ms", "pace_ms", "wait_render_ms", "wait_gpu_ms", "wait_main_ms",
        "main_cpu_ms", "main_blocked_ms", "main_vcore_ms",
        # (the present on the host's clock: HOS_PROFILE=1's samples, presents.csv and events.txt share it)
-       "at_ns"]
+       "shown_ms", "shown_at_ns",
+       "at_ns",
+       # (longshot: the frame's side in an A/B within the run, HOS_AB, host/hos_ab.c; scripts/ab_summary.py)
+       "ab_side"]
 
 
 def block(text, marker):
@@ -46,7 +50,9 @@ def main():
     if len(fmt.split(",")) != len(names):
         raise SystemExit("vk_replay.cpp: a frame trace line has %d values for %d columns" % (len(fmt.split(",")), len(names)))
     for needle in ("memory_late_wait_ns()", "texture_readback_wait_ns()", "texture_frame_ns()", "(late - l_late) / 1e6", "(rb - l_rb) / 1e6",
-                   "(tf - l_tf) / 1e6", "l_gone = gone, l_late = late, l_rb = rb, l_tf = tf;"):
+                   "(tf - l_tf) / 1e6", "l_gone = gone, l_late = late, l_rb = rb, l_tf = tf;",
+                   "shown_wait_us.store(", "shown_wait_us.exchange(-1)", "shown_at_ns.store(", "shown_at_ns.exchange(0)",
+                   "perf_measure.load(std::memory_order_relaxed) || frame_trace_on"):
         if needle not in replay:
             raise SystemExit("vk_replay.cpp: the frame trace no longer has: " + needle)
     mem = (ROOT / "gpu/vk/vk_memory.cpp").read_text(encoding="utf-8")

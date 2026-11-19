@@ -117,6 +117,7 @@ static void driver_cache_folder() {}   // (host/hos_main.c: the folder __GL_SHAD
 static void driver_cache_shared() {}   // (host/hos_main.c: Mesa's shader cache in the game folder's cache/driver)
 static void driver_env_choose() {}   // (host/hos_main.c: RADV_FORCE_VRS_CONFIG_FILE dropped)
 static void driver_env_note() {}   // (host/hos_main.c: the driver's environment, for the log)
+void hos_relaunch_keep_env() {}   // (host/hos_relaunch.c: whether the game was given a stderr, for a restart)
 
 #include "display_startup_actual.inc"
 

@@ -1,7 +1,7 @@
 """The replay's own writes of guest memory reach it in command order, unaligned ones and ones across two game pools too.
 
-gpu_write (event signals, the stream's uniform updates) and NOP_CLEAR_BUF write guest memory on the GPU timeline, in command
-order with the draws around them. Where vkCmdUpdateBuffer or vkCmdFillBuffer could not take the bytes (not 4-byte aligned) or
+gpu_write (event signals; the stream's uniform updates go as batched copies, tests/test_ub_update_batch.py) and
+NOP_CLEAR_BUF write guest memory on the GPU timeline, in command order with the draws around them. Where vkCmdUpdateBuffer or vkCmdFillBuffer could not take the bytes (not 4-byte aligned) or
 gpu_buffer_bind found no import holding the whole range (a range across two game pools has none: pool_lookup), they were
 written on the CPU at record time instead: before the GPU ran the draws recorded ahead of them, which then read the new bytes,
 and under the earlier GPU writes of the same bytes, which then landed on top. Now an unaligned part is put in the recording's

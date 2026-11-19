@@ -16,7 +16,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-RUN_ALL_ARGS = ["--cxx", "{cxx}"]
+RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]
 
 ROOT = Path(__file__).resolve().parents[1]
 VK = ROOT / "gpu" / "vk"
@@ -39,22 +39,30 @@ VENDORS = {"intel": 0x8086, "amd": 0x1002, "nvidia": 0x10DE}
 CASES = ([(None, "intel", 0, 0), (None, "intel", 1, 1)] +
          [(None, g, m, 1) for g in ("amd", "nvidia") for m in (0, 1)] +
          [(v, g, m, 1) for v in ("1", "on", "yes") for g in VENDORS for m in (0, 1)] +
-         [(v, g, m, 0) for v in ("0", "off", "false", "no", "") for g in VENDORS for m in (0, 1)])
+         [(v, g, m, 0) for v in ("0", "off", "false", "no") for g in VENDORS for m in (0, 1)] +
+         # (an empty value is the PC's default, by device_policy.h's one rule for the switches; it was off)
+         [("", "intel", 0, 0), ("", "intel", 1, 1)] + [("", g, m, 1) for g in ("amd", "nvidia") for m in (0, 1)])
+# The decision is device_policy.h's (split_ub_flush: the rule, then the switch by device_policy_env), which split_part
+# reads: the fixture makes the policy of a GPU of that vendor, discrete (its pools have mirrors) or integrated (none), with
+# the switch's value in place of the environment, and reads what split_part reads
 FIXTURE = r"""
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-struct { struct { unsigned vendorID; } props; } dev;
-static bool the_mirrored;       // (vk_memory.cpp mirror_on: the buffer pools have VRAM mirrors)
-static bool pools_mirrored() { return the_mirrored; }
+#include "device_policy.h"
+static struct { mkwvk::DevicePolicy policy; } dev;
 static const char* the_value;   // (the switch's value, nullptr: unset; read in place of the environment)
 static const char* fake_getenv(const char* name) { return strcmp(name, "RX_VK_SPLIT_UBFLUSH") ? nullptr : the_value; }
-static bool fake_env_on(const char* name) { const char* v = fake_getenv(name); return v && !env_value_off(v); }
 static bool part_flush_for(const char* value, unsigned vendor, bool mirrored) {
     the_value = value;
-    dev.props.vendorID = vendor;
-    the_mirrored = mirrored;
-    return @@DECISION@@();
+    mkwvk::DeviceFacts f;
+    f.vendor_id = vendor;
+    f.device_type = mirrored ? VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU : VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+    dev.policy = mkwvk::device_policy(f);
+    mkwvk::device_policy_env(dev.policy, f, fake_getenv);
+    if (dev.policy.mirrors != mirrored) { printf("FAIL: the fixture's GPU has %s\n", mirrored ? "no mirrors" : "mirrors"); exit(1); }
+    @@DECISION@@
+    return part_flush;
 }
 int main(int argc, char** argv) {
     // (argv: value or -unset, the vendor, 1 with mirrors or 0, 1 written at each part's end or 0)
@@ -77,12 +85,15 @@ int main(int argc, char** argv) {
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cxx", default="g++")
+    p.add_argument("--headers", type=Path, default=None)   # (the Vulkan headers device_policy.h needs; else the compiler's own)
     args = p.parse_args()
     src = (VK / "vk_replay.cpp").read_text(encoding="utf-8")
 
     split = block(src, "void split_part(VkCommandBuffer& cmd) {")   # (the part's end: maybe_split says when)
-    if "static const bool part_flush = [] {" not in split:
-        raise SystemExit("FAIL: split_part writes the uniform updates at every part's end (no part_flush decision)")
+    decision = "const bool part_flush = dev.policy.split_ub_flush;"
+    if decision not in split:
+        raise SystemExit("FAIL: split_part writes the uniform updates at every part's end (no part_flush decision, or not "
+                         "device_policy.h's)")
     code = "\n".join(line.split("//")[0] for line in split.splitlines())
     if code.count("flush_ub_updates(") != 1 or "if (part_flush) flush_ub_updates(cmd);" not in code:
         raise SystemExit("FAIL: split_part writes the uniform updates at a part's end without asking part_flush")
@@ -100,15 +111,14 @@ def main():
     print("source: a part's end writes the updates and moves the window only under part_flush; the last part writes "
           "them all")
 
-    lam = split[split.index("static const bool part_flush = [] {") + len("static const bool part_flush = "):]
-    lam = lam[:lam.index("}();") + 1]
     with tempfile.TemporaryDirectory(prefix="split-ubflush-") as tmp:
         tmp = Path(tmp)
         cpp, exe = tmp / "t.cpp", tmp / "t.exe"
-        lam = lam.replace("getenv(", "fake_getenv(").replace("env_on(", "fake_env_on(")
-        cpp.write_text(FIXTURE.replace("@@DECISION@@", "(" + lam + ")"), encoding="utf-8")
+        cpp.write_text(FIXTURE.replace("@@DECISION@@", decision), encoding="utf-8")
+        # (-isystem: the renderer's headers are not this check's to warn about)
+        headers = ["-isystem", str(VK)] + (["-isystem", str(args.headers)] if args.headers else [])
         r = subprocess.run([args.cxx, "-std=c++20", "-include", str(VK / "compat" / "longshot_env.h"), "-Wall",
-                            "-Wextra", "-Werror", str(cpp), "-o", str(exe)], capture_output=True, text=True, timeout=120)
+                            "-Wextra", "-Werror", *headers, str(cpp), "-o", str(exe)], capture_output=True, text=True, timeout=120)
         if r.returncode:
             print(r.stdout + r.stderr)
             raise SystemExit("FAIL: the part_flush decision did not build alone")

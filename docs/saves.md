@@ -103,7 +103,7 @@ The emulator's save is backed up before it's replaced. The launcher doesn't expo
 | Windows, pictured nightly Launcher, installed | `%APPDATA%\Longshot\save\` (normally `%USERPROFILE%\AppData\Roaming\Longshot\save\`) | `%LOCALAPPDATA%\Longshot\oot-save-backups` |
 | Windows, pictured nightly Launcher, portable | `LongshotLauncher-data\user\save\` beside the launcher | `LongshotLauncher-data\save-backups\` beside the launcher |
 | Windows, Launcher v1.0.0-rc.3 or game started directly without `--user` | `<game folder>\user\save\` (the game folder is `%USERPROFILE%\Games\Longshot` unless you chose another) | `%LOCALAPPDATA%\Longshot\oot-save-backups`; a portable launcher's backups are in `LongshotLauncher-data\save-backups\` beside it |
-| Linux and Steam Deck | `~/.local/share/longshot/save/` | `~/.local/share/longshot/save-backup/` (a launcher from before [LongshotLauncher#80](https://git.magicbean.dev/MagicBeanDev/LongshotLauncher/pulls/80), and `scripts/longshot_saves.py`: `~/.local/share/oot-save-backups`) |
+| Linux and Steam Deck | `~/.local/share/longshot/save/` | `~/.local/share/longshot/save-backup/`, also `scripts/longshot_saves.py`'s (older backups, from a launcher before [LongshotLauncher#80](https://git.magicbean.dev/MagicBeanDev/LongshotLauncher/pulls/80) or the script before [LongshotLauncher#188](https://git.magicbean.dev/MagicBeanDev/LongshotLauncher/issues/188), stay in `~/.local/share/oot-save-backups`) |
 
 On Windows with the installed nightly Launcher, paste `%APPDATA%\Longshot\save\` into File Explorer's address bar
 and press **Enter**. `%APPDATA%` is your **Roaming** folder; `%LOCALAPPDATA%` is **Local**, where the launcher keeps backups.

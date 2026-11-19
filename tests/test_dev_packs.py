@@ -387,6 +387,25 @@ def fake_base(d, predict_s=0):
     return base_dir, game
 
 
+def test_renderer_build_jobs():
+    """A pack of the renderer alone compiles several files at once: nx2/build.py run by itself compiles one at a time, so the
+    command carries --jobs: LONGSHOT_JOBS when it is set, as the game's build takes it, else one for every four CPU threads"""
+    cmd = packs.renderer_build_cmd
+    check("the renderer is built alone by build.py", cmd({}, 16)[1:4] == ["-I", "nx2/build.py", "--standalone"])
+    check("LONGSHOT_JOBS is the compilers at once", cmd({"LONGSHOT_JOBS": "14"}, 16)[-2:] == ["--jobs", "14"])
+    check("unset: one for every four threads", cmd({}, 16)[-2:] == ["--jobs", "4"])
+    check("0 and empty are automatic too", cmd({"LONGSHOT_JOBS": "0"}, 24)[-2:] == ["--jobs", "6"]
+          and cmd({"LONGSHOT_JOBS": ""}, 8)[-2:] == ["--jobs", "2"])
+    check("never none", cmd({}, 1)[-2:] == ["--jobs", "1"] and cmd({}, 3)[-2:] == ["--jobs", "1"])
+    for bad in ("many", "-2", "1.5"):
+        try:
+            cmd({"LONGSHOT_JOBS": bad}, 16)
+        except SystemExit as e:
+            check("a LONGSHOT_JOBS that is no count is named", "LONGSHOT_JOBS" in str(e))
+        else:
+            check("LONGSHOT_JOBS=%s is refused" % bad, False)
+
+
 def test_predict_budget(d):
     """--predict-s reaches make_game.py's environment (and the runtime's own prepare), and 0 leaves it out"""
     check("no budget by default", packs.base_env(0) == {})
@@ -666,6 +685,7 @@ def main():
     test_stamped_objects_match_build()
     test_caches_named_in_renderer()
     test_inputs_beside_the_objects()
+    test_renderer_build_jobs()
     with tempfile.TemporaryDirectory(prefix="longshot-dev-packs-") as d:
         d = Path(d)
         for name, t in (("mc", test_module_changed), ("pf", test_pack_folders), ("rt", test_generated_and_runtime),

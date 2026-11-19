@@ -50,7 +50,8 @@ Output resolution starts at the game's own 2560x1440, or at your screen's size w
 - **Frame generation** adds frames between the game's own. Motion is smoother, but the game itself doesn't run any
   faster and input delay goes up a little. **Auto** matches your display's refresh rate. On an NVIDIA RTX 40 card or
   newer, with DLSS, DLAA or FSR as the upscaler, NVIDIA DLSS Frame Generation makes the frames; otherwise AMD FSR 3.1
-  frame generation does, on any GPU. **Frame generation by** chooses: DLSS FG, FSR 3.1 FG, or Built-in FG (Longshot's
+  frame generation does, on any GPU. With DLSS FG the row goes up to what NVIDIA's runtime makes on your card: 6x on an
+  RTX 50, 2x on an RTX 40. **Frame generation by** chooses: DLSS FG, FSR 3.1 FG, or Built-in FG (Longshot's
   own, made from the finished picture alone). **NVIDIA Reflex** and **AMD Anti-Lag 2** cut the added delay; they only appear on
   cards that support them.
 - **DLSS and DLAA look softer** than the game's own upscaler: set **Sharpness** to around 80% with them.

@@ -4,7 +4,7 @@ An idle mirror is given back after kIdleEpochs submissions (at once past kLongId
 made again from guest memory at the pool's next binding. What a shader wrote through a bare entry, the pointer table or a
 wide binding is never copied back (memory_note_gpu_write): it was in the old mirror alone, and the GPU went on from stale
 data. Paused 1-2 minutes in the background, the idle pools' mirrors all went, and the game came back with cyan for a few
-seconds (RX 5500M; gone with RX_VK_MIRROR_KEEP=1). Reads the source: memory_note_gpu_write marks the pools it reaches, the
+seconds (RX 5500M; gone with every mirror kept). Reads the source: memory_note_gpu_write marks the pools it reaches, the
 idle give-back leaves those, and a pool that takes others in keeps their mark.
 python -I -B tests/test_mirror_gpu_only.py
 """

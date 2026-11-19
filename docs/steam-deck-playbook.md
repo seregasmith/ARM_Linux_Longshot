@@ -28,9 +28,9 @@ That is expected; it happens once per build, not once per save.
 
 ## Settings: leave them on Auto
 
-Auto (this PC) on a Deck picks the Low quality preset, the game's own resolution, and
-**FSR 3.1** as the upscaler, with the 60 fps cap and frame pacing on. Measured A/B on a
-Deck LCD says this is close to right, and a few specific alternatives are worse:
+Auto (this PC) on a Deck picks the Minimum quality preset (every integrated GPU starts
+there) and the game's own upscaler, with the 60 fps cap and frame pacing on. Measured A/B
+on a Deck LCD says a few specific alternatives are worse:
 
 - **Do not switch to FSR 4.** FSR 4's upscaler is a small ML model; the Deck's GPU
   (RDNA2) has no AI accelerators, so it runs as ordinary shaders. On Deck LCD it measured
@@ -38,6 +38,11 @@ Deck LCD says this is close to right, and a few specific alternatives are worse:
 - **Do not turn Threaded rendering on.** On Deck it measured parity to worse (the menu's
   On is the `RX_VK_ASYNC=1` path; async alone washed out, and threading the recorder
   cost about 14%). It helps at high frame rates on desktop GPUs, not at 1 GHz here.
+- **Custom keeps Auto's smaller textures.** On a Deck, Auto leaves out the top mip level of
+  the largest textures (the terrain's), which roughly halved the long frames at area arrivals
+  on a Deck OLED with no difference seen on the ground. Changing rows after Auto keeps that,
+  and so does Custom from an options file older than Auto or Custom picked on the preset
+  row; applying Low or a higher preset gives full-size textures.
 - Keep the **cap at 60** and frame pacing **on**; that matches what the game's own
   scripts expect (see [graphics and controls](graphics-and-controls.md)).
 

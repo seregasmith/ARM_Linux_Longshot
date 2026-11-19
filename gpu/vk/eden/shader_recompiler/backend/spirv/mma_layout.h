@@ -31,13 +31,13 @@ inline bool frag_nan_guard = false;
 inline bool position_invariant = false;
 // (longshot) An out-of-bounds texel fetch answers zero, as NVIDIA's GPUs answer it (measured on an RTX 3090), rather than
 // whatever the host's does (EmitImageFetch). Vulkan leaves it undefined without robustImageAccess; on AMD the ground fog's
-// off-screen depth reads drew a pale box at the screen's edges. Every card but NVIDIA (gpu/vk/vk_vendor.h); RX_VK_FETCH_BOUNDS
+// off-screen depth reads drew a pale box at the screen's edges. Every card but NVIDIA (gpu/vk/device_policy.h); RX_VK_FETCH_BOUNDS
 inline bool fetch_bounds = false;
 // (longshot) and texel buffers' fetches too: only when robustBufferAccess2 is off (the Debug tab's Robust buffers Off, RX_VK_ROBUST=0,
 // or a driver without it), which otherwise answers their out-of-bounds reads with zero already (vk_coopmat.cpp)
 inline bool fetch_bounds_buffers = false;
 // (longshot) isnan tested on the value's bits (IsNan in emit_spirv_floating_point.cpp), not OpIsNan, for AMD's older Windows
-// shader compiler (RX 5000 and RX 6000: gpu/vk/vk_vendor.h); RX_VK_NAN_BITS=0 or 1
+// shader compiler (RX 5000 and RX 6000: gpu/vk/device_policy.h); RX_VK_NAN_BITS=0 or 1
 inline bool nan_bits = false;
 // (longshot) a storage buffer table's entries searched in a loop the driver is asked not to unroll (DefineGlobalMemoryFunctions),
 // not one test an entry written out sixteen times. Mesa inlines every function, DontInline or not: OoT's foliage culling
@@ -45,5 +45,32 @@ inline bool nan_bits = false;
 // compiler did not finish in minutes, and every compute pipeline queued behind it on Intel's one build thread waited:
 // mesh-drawn rocks and doors white, the forest grey. In a loop: 12 s. On for Intel's Mesa driver (vk_coopmat.cpp); RX_VK_GM_LOOP=0 or 1
 inline bool global_table_loop = false;
+// (longshot) The mesh fallback's task and mesh stages read global memory through the guest page table alone, the way the console's
+// GPU reads it, not by searching the program's storage buffers (DefineGlobalMemoryFunctions). The search is the cost there: on an
+// Iris Xe the fallback's colour mesh stages are held to 32 lanes at the register file's limit, and each of their global loads,
+// inlined with its four buffers and three table entries, filled the program with spill code: 739acd67 (Hyrule Castle's) took
+// 12.3 ms a frame, 5.7 ms with its loads through the table, its 243 million loads the same words both ways. A storage buffer in a
+// virtual pool (from 1 TB) is not in the table and reads 0. On for Intel's Mesa driver (vk_coopmat.cpp); RX_VK_MESH_PAGES=0 or 1
+inline bool mesh_fallback_pages = false;
+// (longshot) The mesh fallback's mesh workgroups keep their attribute region (the stage buffer's vertex and primitive lines, up to
+// 32 KB) in a slot of a pool in the records buffer instead of in workgroup memory (emit_spirv.h MESH_FALLBACK_POOL_*). Intel
+// gives workgroup memory in powers of two, so Hyrule Castle's colour mesh stages, 9 to 18 KB of it, took 16 or 32 KB each: few
+// workgroups fit on a subslice at once, and nothing hid the stages' spill traffic. On an Iris Xe 739acd67 took 5.3-6.9 ms a
+// dispatch with its region in workgroup memory, 7.4 ms given 8 KB more of it, and 2.6-2.8 ms with the region in a slot.
+// On for Intel's Mesa driver (vk_coopmat.cpp); RX_VK_MESH_GLOBAL_ATTRS=0 or 1
+inline bool mesh_fallback_global_attributes = false;
+// (longshot) The mesh fallback's task and mesh stages keep their warp in workgroup memory, not in the host's subgroup: a lane is the
+// invocation's place in its 32-thread workgroup, and ballots, votes and shuffles go through words of workgroup memory that every
+// lane of the block's region writes and waits for (emit_spirv_warp.cpp, the shared warp). Such a stage has no subgroup
+// instruction left, so it gives the same result at any lane count, and the renderer runs it at 8 lanes (vk_draw.cpp): on an
+// Iris Xe the colour mesh stages, held to 32 lanes for their subgroup instructions, spent most of their time spilling
+// (d8e59341: 843k cycles a workgroup at 32 lanes by Mesa's count, 4 x 70k at 8). Only stages it can be done for: 32-thread
+// workgroups, no warp operation in a loop, no read of the stage buffer's outputs (EmitContext::PlanSharedWarp). On for Intel's
+// Mesa driver (vk_coopmat.cpp); RX_VK_MESH_SHARED_WARP=0 or 1
+inline bool mesh_fallback_shared_warp = false;
+// (RX_VK_MESH_SHARED_WARP_CHECK=1, for a developer: each shared ballot, vote and shuffle beside the subgroup's own, those
+// compared and those that differ counted past the fallback's records (emit_spirv.h WARP_COUNTER_*) and logged; the stage
+// keeps its subgroup instructions, so it stays at 32 lanes)
+inline bool mesh_fallback_shared_warp_check = false;
 
 } // namespace Shader::Backend::SPIRV

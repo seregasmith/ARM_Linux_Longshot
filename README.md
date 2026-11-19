@@ -153,7 +153,9 @@ there: its data stays in `LongshotLauncher-data` beside it.
 preparation builds:
 
 - **Most** (recommended, the default): every shader and the pipelines the game is known to use (the shipped list and
-  what your own play noted).
+  what your own play noted). Compute programs on those lists have all their texture variants warmed. An unlisted
+  compute program stays translated on disk and the driver builds its pipeline on first dispatch. With no compute
+  programs listed, preparation warms them all.
 - **All**: the predicted pipelines too, about 50,000 guesses at pipelines no list names. The preparation takes about 40%
   longer (415 s against 292 s on an RTX 3090 with a 12-core CPU), and play almost never uses them.
 
@@ -290,8 +292,9 @@ everything it does on the network or with other programs:
   from `github.com/NVIDIA/DLSS`. The game itself checks for nothing when it starts.
 - **Your Discord status, through the Discord app on this PC.** While Discord runs, it shows "Playing Longshot" with the
   time played, through the Discord app's own local connection (a named pipe on Windows; the socket `discord-ipc-0` in
-  `$XDG_RUNTIME_DIR`, `$TMPDIR` or `/tmp` on Linux). It sends "Longshot", the Longshot version, the start time and
-  the icon's name. Turn it off with **Gameplay → Discord status** in the in-game menu.
+  `$XDG_RUNTIME_DIR`, `$TMPDIR` or `/tmp` on Linux). It sends where Link is and his age (Kakariko Village - Adult) with his hearts, Gold Skulltula
+  tokens and pieces of heart below it while you play, the Longshot version until he is in a map, the start time and the icon's name, or the text and
+  picture you set yourself (below). Turn it off with **Gameplay → Discord status** in the in-game menu.
 - **Files outside the game folder:** the builder's folder, the settings and the saves (above), and shortcuts if you ask
   for them. **Bug report** (Gameplay tab) writes a folder in `bug-reports` in the game folder, with your home folder and
   user name taken out of its logs, and **Save my pipeline list** saves a zip in your Downloads folder: you decide whether
@@ -309,6 +312,11 @@ anywhere else may not be ours.
 the four before it (started from a terminal, the game prints there instead). Every 600 frames it writes a `vk: status:`
 line with the video memory in use against what the driver allows, and DLSS's details while it draws;
 `vk: over the driver's video-memory allowance` says when the game went past it.
+The logs are safe to send as they are: your home folder is written `~` (`%USERPROFILE%` on Windows) and your user name
+`<user>` in their paths; the rest of each path stays, so a helper still sees where things are. The game's own lines are
+written so; what other programs print into the log (the Vulkan loader, SDL) is cleaned once the game has closed, by
+the window that watches for a crash, or else at the next start. The builder's `--log` file is written the same way.
+A game started from a terminal prints there instead, as it is.
 
 | Problem | What to do |
 |---|---|
@@ -325,6 +333,7 @@ line with the video memory in use against what the driver allows, and DLSS's det
 | Parts of the picture are missing, or a message says your card has no mesh shader support | The card or its driver has no mesh shaders, so Longshot draws through its compute fallback, which leaves some draws out. Update the driver; a card with mesh shaders draws everything ([#640](https://github.com/NotRexed/Hookshot/issues/640)). |
 | A place has a wrong texture, or a floor or wall is missing | Look for `longshot_damaged_files.txt` in the game folder. The build writes it when your dump is incomplete (about 23.3 GB instead of 23.8 GB), listing each damaged file and what was put in its place. Dump the game again and build from the new dump; the file is then removed. |
 | AMD: blocky textures, solid rectangles in the sky or unusually dark courtyard surfaces | Try the [AMD texture workaround](#amd-texture-workaround). It uses more graphics memory. |
+| Windows: HDR is on, but the game stays SDR | The **HDR** row's help in the menu, and the `vk: HDR:` line in the log, say why. "HDR is off for this display": turn on **Use HDR** in Windows' **Settings > System > Display**. "Windows has HDR on, but the graphics driver offers the game no HDR output": reinstall the graphics driver with a clean install and restart the PC ([steps](docs/common-issues.md#windows-hdr-is-on-but-the-game-stays-sdr)), then [report it](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/new) if it stays. |
 | **Performance** | |
 | Stutter the first time you see something | Normal for now: shaders are being prepared, and it is smooth the next time you pass. You can help remove it for everyone: [send your pipeline list](#send-your-pipeline-list). |
 | Windows, NVIDIA: stutter on every start, in places you have seen | The driver's shader cache is too small to keep them all (the first start builds about 2 GB of pipelines). In the NVIDIA Control Panel, under Manage 3D settings, set **Shader Cache Size** to **Unlimited** (or 10 GB). On Linux the game raises the driver's limit itself. |
@@ -442,9 +451,10 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Profile | Docked, Handheld (after a restart) | Docked; a quality preset sets it |
 | | Upscaler | Game's own, NVIDIA DLSS (only in builds with NVIDIA's DLSS SDK, below, on NVIDIA RTX GPUs), AMD FSR 3.1 (every build, on GPUs it runs on, below), AMD FSR 4 (only in builds with FSR 4, below, on GPUs AMD's files cover), Off (no upscaling), Intel XeSS (Windows, with Intel's `libxess.dll` beside the game, below). NVIDIA DLAA, AMD FSR 4 Native AA and Intel XeSS Native AA are DLSS's, FSR 4's and XeSS's Native, chosen on the Render resolution row | Game's own; Auto (this PC) chooses DLSS or FSR 4 where they run, never XeSS |
 | | DLSS model | Transformer (K) (CNN (E) in its place on cards with less than 7 GB of video memory), Transformer 2 (M), Transformer 2 (L), NVIDIA default (shown where DLSS runs; used by DLSS and DLAA) | Transformer (K); CNN (E) under 7 GB |
+| | DLAA before the bloom | Off, On: where NVIDIA DLAA smooths the picture, after the game's bloom and tone map or before them (shown with NVIDIA DLSS; changeable with Render resolution Native (DLAA) only; changes at once; `RX_VK_DLSS_PRE_BLOOM` over it for one run) | Off |
 | | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS or FSR 4: Auto, Native (DLAA or FSR 4 Native AA: the 3D at full size), 92%, 83%, 75%, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With Intel XeSS the same stops, named by the XeSS mode each runs under: Native (XeSS Native AA), Ultra Quality Plus (92%, 83%), 75%, Ultra Quality (67%), Balanced (58%, 50%), Ultra Performance (33%). With FSR 3.1: Auto, 100% (its native AA), then the same as DLSS from 92%. With Off: Auto, 100%, 75%, 67%, 50%, 33% | Auto; a quality preset sets it |
 | | Sharpness | 0 to 100%, in steps of 10 | 0%; a quality preset sets it |
-| | Frame generation | Off, Auto, 2x to 8x | Off |
+| | Frame generation | Off, Auto (it shows who makes its frames: FSR 3.1 FG or Built-in FG), 2x to 8x; with DLSS FG up to what NVIDIA's runtime makes on the GPU (6x on an RTX 50, 2x on an RTX 40) | Off |
 | | Frame generation by | Shown while Frame generation is on. DLSS FG (NVIDIA DLSS Frame Generation: RTX 40 and newer, with a temporal Upscaler), FSR 3.1 FG (AMD FSR 3.1's frame interpolation, from the scene's depth and motion: any GPU), Built-in FG. DLSS FG is offered only where it runs; elsewhere the row has FSR 3.1 FG and Built-in FG, and its line at FSR 3.1 FG says why not DLSS FG (the log has NVIDIA's answer). At DLSS FG, FSR 3.1 makes the frames DLSS FG does not (Frame generation's Auto). At DLSS FG, the game's own menus, movies and loading screens show only the game's own frames (they have no Upscaler picture to make frames from): the row's line and the FPS counter say DLSS FG paused. With an Upscaler that is not temporal, the built-in one makes the frames and the line says why. `RX_VK_DLSS_FG=1` fixes the row at DLSS FG for a run. Changes at once | DLSS FG where it runs, else FSR 3.1 FG (an options file's Auto from before is this default) |
 | | Game frame rate cap | 30, 60 (the console's), 90, 120, 144, 165, 240, Uncapped (changes at once) | 60 |
 | | NVIDIA Reflex | Off, On, On + Boost (shown only on NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
@@ -498,20 +508,25 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Camera speed | 50% to 400%, in steps of 25 | 100% |
 | | Stick dead zone | Default (24%), 5%, 10%, 15%, 20%, 30% | Default (24%) |
 | | Rumble strength | Off, 25% to 150%, in steps of 25 | 100% |
-| | Layout preset | Nintendo (Def), Xbox / PC, Swap Face; Custom once you bind a button yourself (on the Controls page) | Nintendo (Def) |
+| | Layout preset | Nintendo (Def), Xbox / PC, Swap Face, Switch 2 Pro; Custom once you bind a button yourself (on the Controls page) | Nintendo (Def) |
 | | Button prompts | Auto, Switch, Xbox, PlayStation 4, PlayStation 5, Steam Deck, Keyboard (on the Controls page; changes at once where the game allows it, else after a restart) | Auto |
 | | Motion | Opens the Motion page: Motion controls (Off, On; On), Motion sensitivity X (10% to 600%) and Y (10% to 300%, in steps of 10; 100%), Invert motion X and Y (Off, On; Off), Motion deadzone (Low, Standard, High; Standard) | |
 | | Walk mode | Hold, Toggle | Hold |
 | | Walk speed | 15% to 90%, in steps of 5 | 45% |
 | | Controls | Opens the Controls page | |
 | | Menu shortcut | Insert or F1; F1 only; Insert, F1 or Esc | Insert, F1 or Esc |
+| | Controller menu button | None, Home, Back left (GL), Back right (GR) | Home |
 | | Compact menu key | Right Shift, Right Ctrl | Right Shift |
+| NFC | NFC tag | The tag files of your NFC folder, by their names | The first |
+| | Tap tag | Holds the chosen tag to the game's reader | |
+| | Remove tag | Takes it off the reader | |
+| | Scan tag on controller | Reads a tag you own with a Switch 2 Pro Controller (USB) and saves it in your NFC folder | |
 | Debug | Debug tools | Off, On (while on, the tools below it: Heart protection, No-clip flight, Mark position, Return to mark, Set time, Inventory item, Change quantity, Free camera, Teleport, Switch age, Inventory, Movement speed) | Off |
 | | Autosave: | On or Off, available with Debug tools off. Enabling Debug tools switches Autosave to Off. Off skips supported autosaves, including the verified map transitions. You can still save manually. | On |
 | | Player: Damage taken | Half, Normal, Double, Quadruple (live, while Debug tools is on; Half rounds damage up to a quarter heart; Heart protection wins) | Normal |
 | | Developer: Save my pipeline list | Saves a zip of the pipelines your play built into Downloads ([below](#send-your-pipeline-list)) | |
 | | Developer: Frame pacing | Off, On | Off; a quality preset turns it on |
-| | Developer: Threaded rendering | Auto, On, Off (after a restart). Auto is On with 12 or more processor threads for the game | Auto |
+| | Developer: Threaded rendering | Auto, On, Off (after a restart). Auto is On with 6 or more processor cores for the game, and the render thread alone with 4 or 5 | Auto |
 | | Developer: Descriptor reuse | Off, On (changes at once) | On |
 | | Developer: Sampler cache | Off, On (changes at once) | Off |
 | | Developer: Robust buffers | Auto, Off, On (after a restart) | Auto |
@@ -547,17 +562,30 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   `RX_VK_DEVICE=<n>` chooses one for a single run and wins over the menu.
 - **Frame generation** makes extra frames between the game's own. It adds a little input delay, and fast motion can
   show artifacts. **Frame generation by** chooses who makes them: **DLSS FG**, NVIDIA DLSS Frame Generation where it
-  runs (RTX 40 and newer, at 2x to 8x; AMD FSR 3.1 makes the frames it does not, such as Frame generation's Auto), and the
-  default there; **FSR 3.1 FG**, AMD FSR 3.1's frame interpolation (any GPU it runs on, at every multiplier and at Auto,
+  runs (RTX 40 and newer, at 2x up to what NVIDIA's runtime makes on the GPU: 6x on an RTX 50, 2x on an RTX 40; the
+  Frame generation row stops there, and a higher value saved before shows and runs as that top. AMD FSR 3.1 makes the
+  frames it does not, such as Frame generation's Auto), and the default there; **FSR 3.1 FG**, AMD FSR 3.1's frame interpolation (any GPU it runs on, at every multiplier and at Auto,
   from the scene's depth and motion; below), the default everywhere else; **Built-in FG**, the renderer's own. **Frame pacing** shows frames at an even interval: less stutter, up to one frame of delay. It paces
-  the frames that frame generation shows, so it has no effect while Frame generation is Off.
+  the frames that frame generation shows, so it has no effect while Frame generation is Off. A fixed multiplier shows each
+  frame at its own time on the game's timeline whether Frame pacing is On or Off (with V-Sync On one a refresh at most;
+  where the window's swapchain holds all of a set's frames at once: up to 6x on an NVIDIA card). For the most even of those
+  frames, turn on **Present queue** on the Debug tab (or put `RX_VK_PRESENT_QUEUE=1` in `longshot_env.txt`) and restart:
+  the presents then get a queue of their own, and no made frame waits there behind the game's next frame. It is off by
+  default: on some cards it loses the GPU with frame generation on (an RTX 5080 on NVIDIA's 621.24; an RTX 4090 had a
+  black screen, Hookshot issue 1161, before the fork). If the game crashes or the screen goes black with it and you
+  cannot reach the menu, put `RX_VK_PRESENT_QUEUE=0` in `longshot_env.txt` (it overrides the row), then turn the row
+  off and take the line out.
 - **Game frame rate cap** limits the frames the game renders. With a cap of 60 and Frame generation at 2x, the output
   can reach 120 FPS. Choose **Auto** in Frame generation to target the display's refresh rate instead of a fixed multiplier.
   A cap **past 60 is experimental**: the game keeps real time, but some cutscenes and bosses still count frames and can
   misbehave (the intro's narration running ahead: #1742). 60 is the safe choice.
   Gohma's ceiling-positioning fault is fixed, tested in complete fights at about 98-99 FPS and at 60.
+  The frozen Zoras under the ice in Zora's Domain stand as still above 60 as at 60 (they twitched: #988).
   Scarecrow's Song keeps the timing of its eight-note recording and playback above 60. Saved songs are not retimed;
   re-record a song after updating if its recorded rhythm was lost.
+  Epona jumps fences above 60 as she does at 60 (she had galloped through them, more often the higher the cap).
+  The Shadow Temple's barge carries Link and the enemies on it above 60 as at 60 (above 100 FPS they slid to its back).
+  After you play a song, its notes show one at a time with its melody above 60, as at 60.
   **Uncapped** renders as fast as the PC can (the game still keeps real time). A display that waits for its refresh still
   holds the frames to its refresh rate: V-Sync on, or the driver's FIFO mode. `HOS_FPS_MAX=30` or `HOS_FPS_MAX=<61-1000>` sets a cap for one
   run.
@@ -643,7 +671,8 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   bypasses CRT and keeps the choice for SDR. **Off**, the default, adds no CRT passes or GPU images.
 - **Anisotropic filtering** keeps textures sharp on surfaces seen at a slant: the paths and floors ahead of Link. The game
   asks for 1x or 2x, which at a PC's resolutions smears the ground a few metres off; 16x costs little on most cards, and
-  Game's is the console's own. `RX_VK_ANISO=<n>` sets it for one run (0: the game's).
+  Game's is the console's own. `RX_VK_ANISO=<n>` sets it for one run (0: the game's). It is for the game's textures:
+  a picture the game drew itself and reads back (one level, no mipmaps) keeps the game's own anisotropy.
 - **Shadow resolution** sets the size of the sun's shadow maps. The game draws them 1600 pixels a side, which at a PC's
   resolutions turns the shadows of thin things near Link (the drawbridge's chains, fences, ivy) into stair steps. High
   (2200) and Highest (3072) are the game's own larger sizes, from its own table: by their size, Highest takes about
@@ -684,13 +713,18 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   for one run.
 - **Threaded rendering:** On draws the picture on threads of its own (a render thread and a recorder thread) while
   the game goes on to its next frame, for a higher frame rate on a processor with threads to spare; it is still being
-  tested and can show flashes. Off draws it on the game's own thread, as before. Auto chooses by the processor
-  (On with 12 or more threads for the game, Off with fewer, and Off wherever the mode is not safe). It applies after
-  a restart. `RX_VK_ASYNC` and `RX_VK_RECORDER`, when set, choose for
+  tested and can show flashes. Off draws it on the game's own thread, as before. Auto chooses by the processor's cores
+  for the game, each core counted once however many threads it runs: On with 6 or more, the render thread alone with 4
+  or 5 (where the recorder thread beside it was slower), Off with fewer, and Off wherever the mode is not safe. It
+  applies after a restart. `RX_VK_ASYNC` and `RX_VK_RECORDER`, when set, choose for
   one run.
 - **Robust buffers** (Debug tab, Developer): a read past a buffer's end is dropped instead of stopping the GPU. Auto is
   on, on every card; Off can be faster on some NVIDIA cards.
 - **ASTC as RGBA8** (Debug tab, Developer): the AMD texture workaround below.
+- **Present queue** (Debug tab, Developer): the presents on a GPU queue of their own. Off by default; On makes frame
+  generation's frames more even with V-Sync Off on some cards (an RTX 5090), but lost the GPU on others with frame
+  generation on (an RTX 5080). It applies after a restart; `RX_VK_PRESENT_QUEUE` in `longshot_env.txt` or the environment
+  chooses over it at every start while it is set (the row then shows it and cannot be changed).
 - **Intel shader compiles** (Debug tab, Developer; Intel graphics on Windows only): One at a time lets one thread at a
   time into Intel's shader compiler; Side by side is faster on many cores but can crash in the driver. Auto, the default,
   is side by side on the Arc B-series with driver 101.9154 or newer, where it was measured, and one at a time elsewhere. See
@@ -769,11 +803,38 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   one line in `gpu/vk/menu_i18n.h`. Place and item names stay English for now. Japanese, Chinese and Korean letters come
   from the game's own fonts for them, with Windows' (Yu Gothic, Microsoft YaHei, Microsoft JhengHei, Malgun Gothic) or
   Linux's Noto CJK where a game font lacks one.
-- **Discord status** shows "Playing Longshot" and the time played in your Discord status. It is on by default and does
-  nothing unless a Discord client is running on this PC; with the row Off nothing is sent to it.
+- **Discord status** shows "Playing Longshot" in bold, and under it where Link is and his age while you play
+  (Kakariko Village - Adult, Inside the Deku Tree - Child, Fighting Queen Gohma - Child) with his hearts, Gold Skulltula
+  tokens and the pieces of heart he has found below that (❤️ 2.75/3 · 🕷️ 12 · 💗 5), or the version (v3.0.0 RC7) until he is in a map, and the
+  time played; the version is also the picture's hover text. It is on by default and does nothing unless a Discord client is running on this PC; with the row Off nothing is sent to it. What it says is yours to change in
+  `longshot_options.ini` (the menu keeps these lines):
+
+  | Line | What it sets | Default |
+  |---|---|---|
+  | `discord_text=` | the status's two lines | `{location\|{location} - {age}{break}{hearts\|❤️ {hearts}/{max_hearts} · }{skulltulas\|🕷️ {skulltulas} · }{heart_pieces\|💗 {heart_pieces}}}{!location\|{version} {build}{!version\| {commit}}}` |
+  | `discord_image=` | the large picture: an art asset's name in the Discord application, or an `https://` link to a picture | `longshot` |
+  | `discord_image_text=` | the picture's text, shown on hover | `Longshot {version} {build}{!version\| {commit}}` |
+  | `discord_app_id=` | the Discord application: the bold name ("Playing Longshot") and its art; Discord shows no other name there | Longshot's |
+
+  In the status, `{location}` is where Link is, `{age}` Child or Adult, `{map}` the game's own name for the map,
+  `{hearts}` and `{max_hearts}` his hearts (quarters as .25 .5 .75), `{rupees}` his rupees, `{skulltulas}` his Gold Skulltula
+  tokens and `{heart_pieces}` the pieces of heart he has found (all of them, not only the 0 to 3 he holds: worked out from his hearts and the boss heart containers he has taken): all empty on the title screen. Emoji work as they are. Longshot's version comes in parts: `{version}` the release (v3.0.0), `{build}` a
+  release candidate or nightly made readable (RC7, N486; nothing on a release), `{commit}` the commits since it and
+  their hash (25-g7a029028; the defaults show it only on a nightly, N486 09a20cd6, which has no version number) and `{release}` all of it as the menu shows it (v3.0.0-rc.7-25-g7a029028). `{break}` ends the
+  first line: what follows is the smaller second line. `{location|...}` shows what is inside only when there is a
+  location (any of the names works: `{commit| [{commit}]}`), `{!location|...}` only when there is none, and these
+  nest. A part that is empty also takes its brackets
+  and extra space with it, so `Longshot {version} {build} [{commit}]` reads "Longshot v3.0.0 RC7 [25-g7a029028]" on a test
+  build and "Longshot v3.0.0" on a release. Write a brace as `{{`. For example:
+  - `discord_text={location|{location}{break}}{version} {build} {commit}`: the place without the age or the stats, and
+    the version with its commit;
+  - `discord_text={location|{location} - {age}}`: the place and the age only, nothing on the title screen;
+  - `discord_text=`: no text, the picture and the time played only.
 - **Send performance statistics** (a tick on the launcher's page, off by default): the game counts how its frames,
-  hitches and movies went on each map, and the launcher sends the counts to the team at its next start, with the GPU,
-  driver, CPU, OS and renderer but no paths, user name or ID. It costs a few nanoseconds a frame; unticking it deletes
+  hitches and movies went on each map, with one-second samples of Link's X/Y/Z position and camera yaw/pitch. The
+  launcher sends five-minute batches to the team at its next start, with the GPU, driver, CPU, OS and renderer but no
+  paths, user name or ID. The game sends positions rounded to the nearest 100 units, and angles as the middle of their
+  45-degree yaw and 30-degree pitch bin, never the exact place. It costs a few nanoseconds a frame; unticking it deletes
   what hasn't been sent. What is in a summary: [performance statistics](docs/performance-statistics.md).
 - **Controller in background:** On keeps the controller working while another window has the focus. The keyboard and
   mouse still need the game's window.
@@ -841,6 +902,25 @@ anything SDL reports as a Switch Pro Controller or Joy-Con, and that includes th
 (8BitDo, GameSir and others; SDL gives them Nintendo's ids). Some of them may turn it into weak rumble or none: set
 `HOS_HD_RUMBLE=0` to give them the plain motor rumble.
 
+**NFC tags:** where the game asks for a figure's NFC tag, the Insert menu's **NFC** tab gives it one. The tags are files
+in a folder of yours, dumps of tags you own: `.bin` (an NTAG215's 540 bytes; 532 and 572 byte ones too) or a Flipper
+Zero's `.nfc`. The folder is `%LOCALAPPDATA%\Longshot\nfc` on Windows and `~/.local/share/longshot/nfc` on Linux
+(`LONGSHOT_NFC_DIR` names another); the Longshot Launcher's NFC page adds and removes them, or copy them in yourself.
+Choose one in the **NFC tag** row and press **Tap tag** while the game waits for one (or before: it stays at the reader
+until the game reads it). With a Nintendo Switch 2 Pro Controller plugged in over USB (Windows), a real tag held on the
+controller is read too, and **Scan tag on controller** saves one into the folder. Only a tag's ID and its figure's model
+are read from a file; what a game writes to a tag is kept beside your saves instead (`user/nfc`), and no tag, real or
+file, is ever written. [docs/nfc.md](docs/nfc.md) has the details.
+
+**The Nintendo Switch 2 Pro Controller over USB (Windows):** Windows has no driver a game can use for it, so the game
+reads it itself: plugged in with its cable, it is a controller with its motion sensor and rumble like any other, with no
+bridge program. Pick **Switch 2 Pro** as the Layout preset (Controls page) for its own buttons and the Switch's icons;
+its Home button opens this menu (**Controller menu button**, which can also be GL or GR, or none). Only one program can
+have the controller: close Steam (it takes it for Steam Input) and any bridge such as Switch2Connect first, or the log
+says another program has it. A controller that stops taking rumble (it happens; the log says so) plays its own buzz and
+click instead until it is unplugged and plugged in again. Not over Bluetooth, where the controller speaks a pairing of
+Nintendo's own. `HOS_SWITCH2=0` leaves the controller alone.
+
 To change which gamepad button or key presses a Switch button, or which keys move, walk and turn the camera, open the
 Controls tab's Controls page. Choose a row and a column (Gamepad or Keyboard), press <kbd>Enter</kbd> (or the bottom
 face button), then the new button or key. <kbd>Esc</kbd> cancels, <kbd>Delete</kbd> clears it, and Reset to defaults
@@ -872,9 +952,10 @@ toggle_a=0
 16 the triggers, -1 none. `key_<button>` is one or two
 [Windows key codes](https://learn.microsoft.com/windows/win32/inputdev/virtual-key-codes) in decimal (69 is
 <kbd>E</kbd>, 13 <kbd>Enter</kbd>), 0 none; the mouse's buttons are 1 (left), 2 (right), 4 (middle), 5 and 6 (side
-buttons), and count while the mouse is captured. The buttons are `a` `b` `x` `y` `l` `r` `zl` `zr` `plus` `minus` `ls`
-`rs` `left` `up` `right` `down`, for keys only the left stick's and the camera's directions and walking: `move_up`
-`move_down` `move_left` `move_right` `cam_up` `cam_down` `cam_left` `cam_right` `walk`, and the ocarina's five notes,
+buttons), and count while the mouse is captured; the side buttons also in the game's own menus, where the other three
+click. The buttons are `a` `b` `x` `y` `l` `r` `zl` `zr` `plus` `minus` `ls` `rs` `left` `up` `right` `down`, for keys
+only the left stick's and the camera's directions and walking: `move_up` `move_down` `move_left` `move_right` `cam_up`
+`cam_down` `cam_left` `cam_right` `walk`, and the ocarina's five notes,
 which also take a `pad_` line: `note_l` `note_r` `note_a` `note_y` `note_x`. A button the file leaves out keeps
 its default. `toggle_<button>=0|1` sets that button's Toggle (0 Off, the default; 1 On). It accepts the Switch
 buttons above except `plus` and `minus`; stick directions, Walk and note rows do not accept it. Other values mean Off.
@@ -1234,7 +1315,11 @@ the settings in the in-game menu.
 On **Minimum (4GB)**, when the driver reports a nonzero VRAM budget of at most 4.5 GiB, or the GPU is integrated
 and the PC has 16 GB of RAM or less (its "VRAM" is that RAM, whatever budget the driver reports), sampled ASTC textures
 use a 1024 dimension limit and an 8 MiB decoded-size threshold for leaving out their top mip levels. This lowers texture
-detail to reduce the working set. Other presets and larger or unknown budgets keep the 2048 / 64 MiB defaults;
+detail to reduce the working set. The same holds on Auto (this PC) at Minimum, and on Custom after either; Custom with
+no preset behind it (chosen on the Quality preset row, or an options file from before `memory_budget` existed) goes by
+what Auto picks for this PC, which is Minimum on every integrated GPU and on cards of 4.5 GB or less. Applying Low or a
+higher preset, or `RX_VK_LOW_VRAM_MIPS=0`, keeps full-size textures there. Other presets and larger or unknown budgets
+keep the 2048 / 64 MiB defaults;
 uncompressed render targets, depth images and the separate `RX_VK_TEX_MAX_MB` allocation limit keep their handling.
 The driver budget is sampled at the first texture creation and kept for the session. It is a heuristic, not a physical
 VRAM measurement: other applications can lower the budget even on a larger card.

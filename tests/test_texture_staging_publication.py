@@ -30,9 +30,8 @@ def main():
     start = tex.index(marker)
     actual += "\n" + tex[start:tex.index(";", start) + 1] + "\n"
     # The actual gather, publication and command-buffer request. Decoder shaders are outside this cache fixture.
-    stop = astc.index("    const uint64_t align =", astc.index("    const uint64_t staged ="))
-    astc = astc[:stop].replace("    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, astc_pipe);", "    consume(cmd);")
-    actual += "\n" + astc + "    (void)all; return true;\n}\n"
+    stop = astc.index("    const uint64_t limit =", astc.index("    const uint64_t staged ="))
+    actual += "\n" + astc[:stop] + "    consume(cmd); return true;\n}\n"
     cpu = block(tex, "bool upload_inner(Texture& tex, const Ranges* dirty) {")
     start = cpu.index("                    if (!some) continue;")
     start = cpu.index("\n", start) + 1

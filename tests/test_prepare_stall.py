@@ -12,7 +12,11 @@ showing the last line written ("vertex format NVN 0xe -> vk 17"). In one log the
 - the --prepare-shaders run's watchdog (gpu/vk/vk_main.cpp prepare_watchdog): while nothing moves, what it waits on, even with
   the pipeline steps' own progress lines (#2186) coming every 10 s; the shader programs' count after a quiet spell, and nothing of
   its own while the pipeline steps move (their lines say it); once nothing has moved for RX_VK_PREPARE_STALL_S, the reason,
-  longshot_prepare_skipped and exit status 4.
+  longshot_prepare_skipped and exit status 4. A compile under way with a CPU at work gets three times that limit, and twelve
+  times on Mesa's Intel driver (a measured 32-lane compile there took minutes past the ordinary one); a compile that uses no
+  CPU is stuck, and stops at the ordinary limit on every driver, as before. A compile that ends between the watchdog's look at
+  the compiles and its look at the progress is not taken for a stuck run. precompile_run's separate 30 s limit leaves a
+  compile at work to the watchdog in the preparation's own process only; a game start goes on to play after 30 s as before.
   The pipeline cache's save is stopped only when workers were left in the driver or it faulted, and after twice that limit (a
   fault AMD's retry recovered from counts, so a slow save there is not stopped as early); otherwise it is reported, and its lines
   end so that make_game.py's silence limit still applies.
@@ -83,6 +87,7 @@ std::string predict_pending_path() {
 void predicted_sample_write(const std::vector<std::unique_ptr<PipeNote>>&) {}
 void predicted_keys_write(std::vector<uint64_t>) {}
 void driver_cache_log(const char*) {}
+void driver_env_note() {}
 unsigned usable_cpus() { return std::max(1u, std::thread::hardware_concurrency()); }
 inline uint64_t mix(uint64_t h, uint64_t v) { return (h ^ v) * 0x100000001b3ull; }
 struct { uintptr_t device = 1; } dev;
@@ -199,6 +204,7 @@ WATCH_HEAD = r'''
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -215,9 +221,18 @@ static void host_flush() { std::fflush(stdout); }
 static const MkwVkHost host_v{host_log, host_flush};
 const MkwVkHost* host = &host_v;
 static int faults;
-static bool left;
+static bool left, compiling, long_compiles, ends_when_asked;
 int driver_faults() { return faults; }
 bool prepare_left_workers() { return left; }
+void prepare_compiled_seen();
+static std::atomic<int> asked{0};
+// (ends_when_asked: the compile ends at the watchdog's 7th look, in the read itself, as ComputeTurn's end does: the progress's
+// time moved, then the compile gone)
+bool prepare_compiling() {
+    if (ends_when_asked && compiling && ++asked == 7) prepare_compiled_seen(), compiling = false;
+    return compiling;
+}
+bool prepare_long_compiles() { return long_compiles; }
 std::string skipped_path() { return std::getenv("FIXTURE_SKIPPED"); }
 std::string start_memory_words() { return "; memory: (a stand-in)"; }   // (vk_draw.cpp's: the progress lines' memory)
 '''
@@ -228,8 +243,11 @@ int main(int argc, char** argv) {
     const std::string c = argv[1];
     if (c == "fault") faults = 1;
     if (c == "save-left") left = true;
+    if (c == "stuck-compile" || c == "busy-compile" || c == "busy-compile-intel" || c == "ends-between-reads") compiling = true;
+    if (c == "ends-between-reads") ends_when_asked = true;
+    if (c == "busy-compile-intel") long_compiles = true;
     prepare_watchdog();
-    if (c == "stuck" || c == "fault") {
+    if (c == "stuck" || c == "fault" || c == "stuck-compile") {
         prepare_moved(1, 5, 10);
         Sleep(20000);   // (the watchdog ends the process before this does)
         return 8;
@@ -237,6 +255,33 @@ int main(int argc, char** argv) {
     if (c == "moving") {
         for (size_t i = 1; i <= 15; i++) prepare_moved(0, i, 100), Sleep(300);
         return 0;
+    }
+    if (c == "compiling") {   // (the count stands, but the driver's compiles end: a compute program's variants, one worker each)
+        prepare_moved(0, 5, 100);
+        for (int i = 0; i < 25; i++) prepare_compiled_seen(), Sleep(300);
+        return 0;
+    }
+    if (c == "ends-between-reads") {
+        // (a compile at work past the ordinary limit ends between the watchdog's reads: not a stop. 7 s in, then 3 s quiet, under
+        // the 4 s limit)
+        std::atomic<bool> done{false};
+        std::thread burn([&] { volatile uint64_t x = 0; while (!done.load(std::memory_order_relaxed)) x = x + 1; });
+        prepare_moved(0, 5, 100);
+        Sleep(10000);
+        done = true;
+        burn.join();
+        return 0;
+    }
+    if (c == "busy-compile" || c == "busy-compile-intel") {
+        // (a compile with a CPU at work: three times the limit before a stop on most drivers, past it and twelve times the limit
+        // on Mesa's Intel driver)
+        std::atomic<bool> done{false};
+        std::thread burn([&] { volatile uint64_t x = 0; while (!done.load(std::memory_order_relaxed)) x = x + 1; });
+        prepare_moved(0, 5, 100);
+        Sleep(c == "busy-compile" ? 25000 : 15000);   // (busy-compile: the watchdog ends the process before this does)
+        done = true;
+        burn.join();
+        return c == "busy-compile" ? 8 : 0;
     }
     if (c == "save") {   // (a long save, nothing left in the driver: reported, then silent, never stopped)
         prepare_moved(3, 0, 0);
@@ -316,6 +361,13 @@ def check_watchdog(cxx, tmp):
             ("fault", 4, ["faulted 1 time so far", "waiting on the GPU driver, which faulted (above)", "after it faulted (above)", "STOPPED"],
              []),
             ("moving", 0, ["still working on the shader programs"], ["STOPPED", "waiting:"]),
+            ("compiling", 0, [], ["STOPPED", "waiting:"]),
+            # (a compile under way that uses no CPU: stuck, stopped at the ordinary limit, as before, on every driver)
+            ("stuck-compile", 4, ["Stopped at 4 s", "STOPPED: nothing moved for 4 s"], ["a CPU busy", "Stopped at 12 s"]),
+            ("busy-compile", 4, ["Stopped at 12 s", "which is compiling (a CPU busy)", "STOPPED: nothing moved for 12 s"],
+             ["Stopped at 48 s"]),
+            ("busy-compile-intel", 0, ["Stopped at 48 s", "which is compiling (a CPU busy)"], ["STOPPED"]),
+            ("ends-between-reads", 0, ["which is compiling (a CPU busy)"], ["STOPPED"]),
             ("save", 0, ["still writing the pipeline cache's save", "this is the disk"], ["STOPPED", "(5 s)", "(6 s)"]),
             ("save-left", 4, ["which still has pipelines it did not finish", "(5 s)", "Stopped at 8 s",
                                "STOPPED: the pipeline cache's save waited 8 s"], []),
@@ -337,8 +389,11 @@ def check_watchdog(cxx, tmp):
                 raise SystemExit("watchdog %s: the log has %r\n%s" % (case, n, out))
         if (code == 4) != skipped.exists():
             raise SystemExit("watchdog %s: longshot_prepare_skipped %s" % (case, "missing" if code == 4 else "left by a run that went on"))
-        if code == 4 and time.time() - t0 > 15:
-            raise SystemExit("watchdog %s: took %.0f s to stop" % (case, time.time() - t0))
+        took = time.time() - t0
+        if code == 4 and took > (25 if case == "busy-compile" else 15):
+            raise SystemExit("watchdog %s: took %.0f s to stop" % (case, took))
+        if case == "busy-compile" and took < 11:
+            raise SystemExit("watchdog busy-compile: stopped after %.0f s, not three times the limit" % took)
         print("PASS watchdog:", case, flush=True)
 
 
@@ -365,8 +420,22 @@ def check_sources():
     draw = (ROOT / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
     if draw.count("note_driver_fault();") < 4:
         raise SystemExit("a fault guard does not count its faults for the watchdog")
-    if block(draw, "void precompile_run(").count("prepare_left_workers_note();") != 1:
+    precompile = block(draw, "void precompile_run(")
+    if precompile.count("prepare_left_workers_note();") != 1:
         raise SystemExit("precompile_run goes on from stuck workers without saying so to the save")
+    # (the preparation's own process leaves a compile at work to the watchdog; a game start, and a compile with no CPU at work,
+    # keep the ordinary limit on every driver)
+    limit = "prepare_only_run && next.load() >= total && prepare_compiling() && prepare_compiler_busy() ? 0 : stall_s;"
+    if (limit not in " ".join(precompile.split()) or "std::chrono::seconds(limit_s)" not in precompile
+            or 'static const bool prepare_only_run = env_on("LONGSHOT_PREPARE_ONLY");' not in precompile):
+        raise SystemExit("precompile_run abandons a compute compile at work in the preparation's own process, where the watchdog "
+                         "stops a stuck one, or waits longer than RX_VK_PRECOMPILE_STALL_S at a game start")
+    if "900" in precompile:
+        raise SystemExit("precompile_run waits 900 s at a game start: the game goes on after RX_VK_PRECOMPILE_STALL_S")
+    if "prepare_cpu_busy.store(cpu_busy" not in block(main, "void prepare_watchdog() {"):
+        raise SystemExit("the watchdog does not say what it saw of the CPU to precompile_run")
+    if "return dev.driver_id == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA;" not in block(draw, "bool prepare_long_compiles() {"):
+        raise SystemExit("the hour for a compile at work is not kept to Mesa's Intel driver")
 
 
 def check_make_game():

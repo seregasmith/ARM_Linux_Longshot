@@ -63,8 +63,10 @@ FIXTURE = r"""
 #include <mutex>
 #include <vector>
 #include "readback_late.h"
+#include "page_marks.h"   // (wb_ever, which wb_pages_note marks: invalidate_quick)
+using mkwvk::PageMarks;
 constexpr uint64_t kPageShift = 12, kChunkPages = 16, kPages = 64;
-static bool env_on(const char*) { return false; }   // (no switch set)
+[[maybe_unused]] static bool env_on(const char*) { return false; }   // (nothing the check cuts reads a switch now)
 namespace {
 /* PAGES */
 static int failures;
@@ -97,7 +99,7 @@ static int waited_whole_value;   // (readback_wait_value: the main timeline, eve
 static bool replay_behind() { return false; }
 static void wait_queue_empty() {}
 static bool readback_wait_value(uint64_t) { waited_whole_value++; return true; }
-static const bool by_part = true, unforced = true;
+static const bool unforced = true;
 static const bool behind = false;          // (RX_VK_ASYNC=1, the render thread: not here)
 static void readback_fell_back(int = 0) {}
 static uint64_t in_place_part;   // (the newest part that reads guest memory in place, as vk_memory.cpp keeps it)

@@ -6,12 +6,10 @@ barrier, and the driver's compiler may move them past each other. OoT's 4/3 game
 that at its end (8 STS, then 16 LDS): on NVIDIA's cooperative matrix path the picture got flickering bright bars, 16 px
 wide and 2 rows tall (Longshot issue 2455). As for LDSM: a subgroup barrier (MEMBAR, bit 20) before the first LDS after
 an STS, only where the LDS is not predicated (every lane of the warp reaches it); none after a BAR.SYNC.
-RX_VK_SHARED_NO_LDS_BARRIER=1: none, as before.
 
 python -I -B tests/test_lower_lds_after_sts.py [--cxx clang++]
 """
 import argparse
-import os
 import shutil
 import subprocess
 import tempfile
@@ -51,13 +49,7 @@ static std::string shape(std::vector<Instruction> code) {
     return s;
 }
 static size_t count(const std::string& s, char c) { size_t n = 0; for (char x : s) n += x == c; return n; }
-int main(int argc, char** argv) {
-    const bool off = argc > 1 && !std::strcmp(argv[1], "off");
-    if (off) {   // RX_VK_SHARED_NO_LDS_BARRIER=1: as before, no barrier
-        CHECK(count(shape({sts, lds}), 'B') == 0);
-        std::printf("PASS: RX_VK_SHARED_NO_LDS_BARRIER=1 leaves the LDS after an STS without a barrier\n");
-        return 0;
-    }
+int main() {
     const std::string one = shape({sts, lds});
     CHECK(count(one, 'B') == 1);
     CHECK(one.find('S') < one.find('B') && one.find('B') < one.find('L'));   // between the store and the load
@@ -83,9 +75,7 @@ def main():
         subprocess.run([a.cxx, "-std=c++20", "-O1", "-Wno-everything" if "clang" in a.cxx else "-w",
                         "-I" + str(ROOT / "gpu" / "vk" / "eden"), "-I" + str(ROOT / "gpu" / "vk" / "compat"),
                         str(cpp), "-o", str(exe)], check=True)
-        env = {k: v for k, v in os.environ.items() if k != "RX_VK_SHARED_NO_LDS_BARRIER"}
-        subprocess.run([str(exe)], check=True, env=env)
-        subprocess.run([str(exe), "off"], check=True, env=dict(env, RX_VK_SHARED_NO_LDS_BARRIER="1"))
+        subprocess.run([str(exe)], check=True)
 
 
 if __name__ == "__main__":

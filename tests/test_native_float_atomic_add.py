@@ -27,7 +27,7 @@ import struct
 import subprocess
 import tempfile
 
-RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"]
+RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}", "--vulkan-headers", "{vulkan_headers}"]
 # (spirv-val: SPIRV-Tools comes with the Linux runner's packages, not on Windows)
 RUN_ALL_SKIP = {"windows": "needs spirv-val: checked on Linux"}
 
@@ -193,8 +193,9 @@ def check_source():
         ('getenv("RX_VK_NATIVE_FADD")', "RX_VK_NATIVE_FADD is not read"),
         ("const bool fadd_wanted = native_fadd_wanted(fadd_env, fadd_driver.driverID, dev.props.deviceID, dev.props.driverVersion);",
          "the native add is not decided by native_fadd_wanted from the switch, the driver, the GPU and its driver's version"),
-        ("vkGetPhysicalDeviceProperties2(dev.physical, &p2);\n    }\n    const bool fadd_wanted",
-         "the driver is not asked who it is before the native add is decided"),
+        # (the driver is asked once, at the function's start, for the mesh mode too: the order is checked below)
+        ("        p2.pNext = &fadd_driver;\n        vkGetPhysicalDeviceProperties2(dev.physical, &p2);\n    }\n",
+         "the driver is not asked who it is"),
         ("if (atomic_float) *tail = &afloat, tail = &afloat.pNext;", "the atomic float features are not queried"),
         ("dev.float_atomic_add = atomic_float && afloat.shaderBufferFloat32AtomicAdd;",
          "the native add does not follow shaderBufferFloat32AtomicAdd"),
@@ -204,6 +205,8 @@ def check_source():
     ):
         if piece not in device:
             raise SystemExit("FAIL: create_device: %s" % why)
+    if not device.index("p2.pNext = &fadd_driver;") < device.index("const bool fadd_wanted = native_fadd_wanted("):
+        raise SystemExit("FAIL: create_device: the driver is not asked who it is before the native add is decided")
     query, reset = device.index("vkGetPhysicalDeviceFeatures2(dev.physical, &f);"), device.index("afloat = VkPhysicalDevice")
     if not device.index("*tail = &afloat") < query < reset < device.index("vkCreateDevice("):
         raise SystemExit("FAIL: create_device: the features are not queried, then cut to the one used, before vkCreateDevice")
@@ -254,7 +257,9 @@ SWITCH_FIXTURE = r"""
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-enum VkDriverId { @@DRIVERS@@ };
+#include "device_policy.h"   // (policy_rule::native_fadd_listed: the one list of drivers and families, which native_fadd_wanted asks)
+using namespace mkwvk;
+static_assert(@@DRIVERS@@, "DRIVERS' numbers are not the Vulkan headers'");
 @@WANTED@@
 int main(int argc, char** argv) {
     // (argv: value or -unset, the driver's number, the PCI device, the driver's version, 1 native or 0 the loop, ...)
@@ -274,14 +279,20 @@ int main(int argc, char** argv) {
 """
 
 
-def check_switch(cxx, tmp):
+def check_switch(cxx, tmp, vulkan_headers):
     main_cpp = (VK / "vk_main.cpp").read_text(encoding="utf-8")
     wanted = cut(main_cpp, "static bool native_fadd_wanted(", "vk_main.cpp")
+    # (the list itself is device_policy.h's, asked by the function cut here: the two are compiled together, with the Vulkan
+    # headers' own driver numbers, which DRIVERS must be)
+    if "policy_rule::native_fadd_listed(driver, device, version)" not in wanted:
+        raise SystemExit("FAIL: native_fadd_wanted no longer asks device_policy.h's list (a second copy of it?)")
     cpp, exe = tmp / "switch.cpp", tmp / "switch"
-    drivers = ", ".join("VK_DRIVER_ID_%s = %d" % kv for kv in DRIVERS.items())
+    drivers = " && ".join("VK_DRIVER_ID_%s == %d" % kv for kv in DRIVERS.items())
     cpp.write_text(SWITCH_FIXTURE.replace("@@DRIVERS@@", drivers).replace("@@WANTED@@", wanted), encoding="utf-8")
+    # (-isystem: the renderer's headers are not this check's to warn about)
+    headers = ["-isystem", str(VK)] + (["-isystem", str(vulkan_headers)] if vulkan_headers else [])
     r = subprocess.run([cxx, "-std=c++20", "-include", str(VK / "compat" / "longshot_env.h"), "-Wall", "-Wextra", "-Werror",
-                        str(cpp), "-o", str(exe)], capture_output=True, text=True, timeout=120)
+                        *headers, str(cpp), "-o", str(exe)], capture_output=True, text=True, timeout=120)
     if r.returncode:
         print(r.stdout + r.stderr)
         raise SystemExit("FAIL: native_fadd_wanted did not build alone")
@@ -305,9 +316,11 @@ def main():
     parser.add_argument("--headers", type=Path, required=True)
     parser.add_argument("--cxx", default="g++")
     parser.add_argument("--spirv-val", default="spirv-val")
+    # (for native_fadd_wanted, compiled with device_policy.h's list; without it, the compiler's own include path)
+    parser.add_argument("--vulkan-headers", type=Path, default=None)
     args = parser.parse_args()
     check_source()
-    context = (SPIRV / "spirv_emit_context.cpp").read_text(encoding="utf-8")
+    context =(SPIRV / "spirv_emit_context.cpp").read_text(encoding="utf-8")
     atomic = (SPIRV / "emit_spirv_atomic.cpp").read_text(encoding="utf-8")
     storage = cut(context, "void EmitContext::DefineStorageBuffers(", "spirv_emit_context.cpp")
     decide = storage[storage.index("    native_f32_add = "):storage.index("if (info.storage_buffers_descriptors.empty())")]
@@ -327,7 +340,7 @@ def main():
     sirit = VK / "sirit"
     with tempfile.TemporaryDirectory(prefix="native-float-add-") as tmp:
         tmp = Path(tmp)
-        check_switch(args.cxx, tmp)
+        check_switch(args.cxx, tmp, args.vulkan_headers)
         cpp, exe = tmp / "fixture.cpp", tmp / "fixture"
         cpp.write_text(fixture, encoding="utf-8")
         r = subprocess.run([args.cxx, "-std=c++20", "-O1", "-I" + str(sirit / "include"), "-I" + str(sirit / "src"),

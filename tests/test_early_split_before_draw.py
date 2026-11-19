@@ -38,10 +38,20 @@ enum : uint32_t { NOP_DRAW = 1, NOP_DRAW_IDX, NOP_DRAW_INDIRECT, NOP_DRAW_MESH, 
 static bool env_value_off(const char* e) {
     return !*e || !strcmp(e, "0") || !strcmp(e, "off") || !strcmp(e, "false") || !strcmp(e, "no");
 }
-static bool env_on(const char* n) { const char* e = getenv(n); return e && !env_value_off(e); }
+[[maybe_unused]] static bool env_on(const char* n) { const char* e = getenv(n); return e && !env_value_off(e); }
 static int64_t env_int(const char* n, int64_t d) { const char* e = getenv(n); return e ? atoll(e) : d; }
-static struct { struct { uint32_t vendorID; } props; } dev = {{(uint32_t)strtoul(getenv("VENDOR") ? getenv("VENDOR") : "0", nullptr, 0)}};
-static bool pools_mirrored() { return false; }
+// (dev.policy's two fields that part_ends_before_draw and split_part read. gpu/vk/device_policy.h makes them, of the GPU
+// and the switches, and tests/test_device_policy.py checks that; this fixture's command buffers are not Vulkan's, so it
+// cannot take that header and says them itself: the part ends before a plain draw on Intel (VENDOR) or as
+// RX_VK_SPLIT_BEFORE_DRAW says, and the uniform updates are written at each part's end but on Intel, whose pools have no
+// mirrors here)
+static bool policy_flag(const char* name, bool by_gpu) { const char* e = getenv(name); return e && *e ? !env_value_off(e) : by_gpu; }
+static const uint32_t the_vendor = (uint32_t)strtoul(getenv("VENDOR") ? getenv("VENDOR") : "0", nullptr, 0);
+static struct {
+    struct { uint32_t vendorID; } props;
+    struct { bool split_before_draw, split_ub_flush; } policy;
+} dev = {{the_vendor}, {policy_flag("RX_VK_SPLIT_BEFORE_DRAW", the_vendor == 0x8086), policy_flag("RX_VK_SPLIT_UBFLUSH", the_vendor != 0x8086)}};
+[[maybe_unused]] static bool pools_mirrored() { return false; }
 static bool dump_on() { return false; }
 struct Recording { VkCommandBuffer cmd = 0; uint64_t part = 0; };
 static std::vector<std::vector<uint32_t>> parts;   // (the ops each part recorded)
@@ -113,6 +123,7 @@ static void check(bool ok, const std::string& what) {
     printf("%s  %s\n", ok ? "ok  " : "FAIL", what.c_str());
     fails += !ok;
 }
+constexpr size_t kEvery = 240;   // (maybe_split's count with RX_VK_CHUNK unset: the check stops when the source says another)
 static bool begins_plain(size_t i) { return parts[i].empty() || parts[i][0] == NOP_DRAW; }
 int main(int argc, char** argv) {
     const std::string mode = argc > 1 ? argv[1] : "";
@@ -126,11 +137,11 @@ int main(int argc, char** argv) {
         replay_stream(gap + "W" + "cccmm");
         check(parts.size() == 1, "no plain draw after the writer: no part ends, the submission's end comes first");
         check(st_early_splits == 0, "and nothing is counted");
-        replay_stream(std::string(130, 'd') + "mmccd");
-        check(parts.size() == 2 && parts[0].size() == 120, "maybe_split's end by its count, before a plain draw, is as before");
+        replay_stream(std::string(kEvery + 10, 'd') + "mmccd");
+        check(parts.size() == 2 && parts[0].size() == kEvery,"maybe_split's end by its count, before a plain draw, is as before");
         check(st_early_splits == 0, "and is not counted as an early end");
-        replay_stream(std::string(118, 'd') + "W" + "mmmmmd" + "dd");   // (the count's end and the writer's at one draw)
-        check(parts.size() == 2 && parts[0].size() == 124, "the count's end and the writer's are one end, at the plain draw");
+        replay_stream(std::string(kEvery - 2, 'd') + "W" + "mmmmmd" + "dd");   // (the count's end and the writer's at one draw)
+        check(parts.size() == 2 && parts[0].size() == kEvery + 4,"the count's end and the writer's are one end, at the plain draw");
         for (size_t i = 0; i < parts.size(); i++) check(begins_plain(i), "part " + std::to_string(i) + " begins with a plain draw");
     } else if (mode == "at-once") {   // (elsewhere: right after the writer, as measured on the Steam Deck)
         int w = replay_stream(gap + "W" + "ccmmd" + "ddd");
@@ -143,8 +154,8 @@ int main(int argc, char** argv) {
         early_on = false;
         replay_stream(gap + "W" + "ccmmd" + "ddd");
         check(parts.size() == 1 && st_early_splits == 0, "no part ends after the writer");
-        replay_stream(std::string(250, 'd'));
-        check(parts.size() == 3 && parts[0].size() == 120 && parts[1].size() == 120, "maybe_split's ends, every 120 draws");
+        replay_stream(std::string(2 * kEvery + 10, 'd'));
+        check(parts.size() == 3 && parts[0].size() == kEvery && parts[1].size() == kEvery, "maybe_split's ends, every 240 draws");
     } else {
         check(false, "a mode: before-draw, at-once or off");
     }
@@ -174,6 +185,8 @@ def main():
            .replace("/* SPLIT_PART */", block(replay, "void split_part(VkCommandBuffer& cmd) {"))
            .replace("/* EARLY_SPLIT */", block(replay, "void early_split(VkCommandBuffer& cmd) {"))
            .replace("/* REPLAY_BEFORE */", before).replace("/* REPLAY_AFTER */", after))
+    if 'getenv("RX_VK_CHUNK") ? atoll(getenv("RX_VK_CHUNK")) : 240;' not in block(replay, "void maybe_split(VkCommandBuffer& cmd) {"):
+        raise SystemExit("FAIL: maybe_split's count with RX_VK_CHUNK unset is no longer 240 draws and dispatches (the fixture's kEvery)")
     base = {k: v for k, v in os.environ.items() if not k.startswith("RX_VK_")}
     runs = (("before-draw", dict(base, VENDOR="0x8086")),                               # (Intel: the rule by default)
             ("before-draw", dict(base, VENDOR="0x1002", RX_VK_SPLIT_BEFORE_DRAW="1")),   # (asked for elsewhere)

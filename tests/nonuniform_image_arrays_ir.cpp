@@ -48,7 +48,8 @@ struct {
              shaderStorageTexelBufferArrayNonUniformIndexing = false;
     } vk12;
     struct { struct { uint64_t minStorageBufferOffsetAlignment = 16; } limits; } props;
-    struct { bool gather_offset = false; } fixes;
+    // (device_policy.h's fields make_profile reads: no long warp path, no fragment shuffle fallback, no gather offset)
+    struct { bool warp64 = false, frag_shuffle_fallback = false, gather_offset = false; } policy;
 } dev;
 
 #include "nonuniform_profile.inc"   // (storage_binding_align, make_profile, profile(), stamp_section and STAMP_SECTION)
@@ -213,7 +214,7 @@ int main(int argc, char** argv) {
         {"img-atomic-3", {{Kind::ImageAtomic, 3}}},
         {"mixed", {{Kind::TextureBuffer, 2}, {Kind::ImageBuffer, 2}, {Kind::Texture, 2}, {Kind::Image, 3}}},
     }};
-    Backend::SPIRV::fetch_bounds = Backend::SPIRV::fetch_bounds_buffers = false;   // (NVIDIA's: vk_vendor.h)
+    Backend::SPIRV::fetch_bounds = Backend::SPIRV::fetch_bounds_buffers = false;   // (NVIDIA's: device_policy.h)
     for (const Device& device : devices) {
         dev.vk12.shaderStorageImageArrayNonUniformIndexing = device.storage_image;
         dev.vk12.shaderUniformTexelBufferArrayNonUniformIndexing = device.uniform_texel_buffer;

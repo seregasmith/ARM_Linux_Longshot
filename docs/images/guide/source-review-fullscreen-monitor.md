@@ -67,3 +67,49 @@ Preprocessing adds only `gpu/vk/vk_new.h` and removes no input. The changed exis
 These allocation and interface changes do not alter the illustrated menu rows, values or help.
 The reviewed-source dependency hashes advance; the original capture revision, fixture and PNG identities
 remain unchanged. No new image capture, game build, runtime check or performance measurement is claimed.
+
+## Retention after the performance sample interface (ABI 30)
+
+The only changed input is `gpu/vk/vk_api.h`: `MKWVK_API_VERSION` 30, `perf_info` gains the player pose
+outputs, and an appended `perf_tracking` callback turns the opt-in per-second sample on and off. No other
+recorded menu input or capture helper calls either. The illustrated first Graphics view, its rows, values and help
+are unchanged. The reviewed-source hash advances to the inspected content; the capture revision, fixture and PNG
+identities remain unchanged. No new image capture, game build, runtime check or performance measurement is claimed.
+
+## Retention after the perf sample follow-up
+
+The only changed input is `gpu/vk/vk_api.h`, and only in comments: `perf_info`'s comment now gives the pose's order and
+units and when `has_pose` is 0, and `perf_tracking`'s says when it is called. No declaration, value or recorded menu
+input changes. The illustrated first Graphics view, its rows, values and help are unchanged. The reviewed-source hash
+advances to the inspected content; the capture revision, fixture and PNG identities remain unchanged. No new image
+capture, game build, runtime check or performance measurement is claimed.
+
+## Retention after #1309 (2026-11-17)
+
+Retained by comparison, not by recapture. `scripts/check_guide_screenshots.py --review-sources` failed on main with seven
+changed recorded inputs of `settings-graphics.png`; the last main commit it passed on is `b50f49771` (#1383). The maintained
+helper (`scripts/screenshots/capture_menu.py`, main's copy and fixture for every render, so only the source differs)
+rendered the Graphics view from `b50f49771`, from `67efc4d3e` (#1309), from `c14641a6f` (#1362 on top of #1309) and from main
+`597c5a4e0` (#1464 on top) with the same compiler and libraries, and the pictures were looked at. From `b50f49771` to
+`597c5a4e0` the two renderings differ only in a 135 by 14 pixel box of the top banner, the build's version text (976 of
+921,600 pixels); no tab, row, value, help text, button prompt or layout differs. The comparison is between renderings, not
+against the published PNG:
+a render on the current Linux toolchain (clang 23.1.3, SDL2 as sdl2-compat 2.32.74, libpng 1.6.59; the manifest records
+clang 23.1.6, SDL2 2.32.10, libpng 1.6.57 for the PNG) differs from the PNG in 60,473 of 921,600 pixels (the version text, the
+rows' and the help's edges, the footer's prompts), also when rendered from #1277's own merge commit, so that difference is
+not from the changes reviewed here.
+
+The changed recorded inputs: `vk_internal.h` (from #1309: `#include "device_policy.h"`, `Device` gains `driver`, `facts` and
+`policy`, a comment loses a switch name; from #1362: `swap_slots`, `kPresentSlotsMax`, `present_slots_for`), `vk_reflex.h`
+(#1309: a comment only), and `vk_framegen.h`, `vk_fsr3fi.h` and `vk_texture.h` (#1464: the declarations `framegen_hud_before`,
+a `hud_mask` member and `texture_alive`, for FSR 3.1 frame generation's HUD mask), none of which draws anything; `vk_menu.cpp`
+and `menu_i18n.h` (#1362: one sentence added to the two values' hints of the Frame pacing row, and to their translations). The
+Frame pacing row is on the Debug tab, not on the Graphics tab this image shows. The illustrated first Graphics view, its rows,
+values and help are unchanged, and so are the guide's alt text and the steps beside the image.
+
+The dependency list gains the ten headers `device_policy.h` brings in through `vk_internal.h` (`astc_bc_policy.h`,
+`device_policy.h`, `fallback_size_policy.h`, `gpu_clock.h`, `mesh_mode.h`, `mirror_budget.h`, `retired_give_back.h`,
+`target_pool.h`, `texture_budget.h`, `vram_compact.h`), found by the helper's compiler pass: they were not recorded
+because `vk_internal.h` did not include `device_policy.h` before #1309. The reviewed-source hashes and the review revision (the
+SHA-256 of the sorted file/hash lines) advance to the inspected content; the capture revision, fixture and PNG identities
+remain unchanged. No new image capture, game build, runtime check, website preview or performance measurement is claimed.

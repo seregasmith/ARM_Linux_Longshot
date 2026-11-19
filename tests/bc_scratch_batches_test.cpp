@@ -64,6 +64,9 @@ void bc_encode_resized(VkCommandBuffer, uint32_t, uint32_t, uint32_t, uint32_t, 
 static std::vector<std::pair<size_t, uint32_t>> upload_runs(const std::vector<uint32_t>& layers) {
     std::vector<std::pair<size_t, uint32_t>> out;
     for (size_t k0 = 0; k0 < layers.size();) {
+        struct { bool bc = true; uint32_t layers = 0; } tex;
+        const bool all = false, repack = false;
+        const size_t max_layers = layers.size();
         /* RUN */
         out.push_back({k0, n});
         k0 = k1;

@@ -9,6 +9,9 @@ Controllers counted only while the game's window was in front, so a game streame
 and Moonlight), or left running behind another window, ignored the pad. The Insert menu's "Controller in background"
 row, or HOS_INPUT_BACKGROUND=1, lets the pads through; the keyboard and mouse stay with the window in front.
 
+menu-side-buttons: while one of the game's menus has the mouse, its side buttons stay their controls' (Mouse 4 on A
+confirms a choice, Longshot #1306); the left button stays that menu's click.
+
 python -I -B tests/test_input_background.py [--cc gcc]
 """
 import argparse
@@ -30,7 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CASES = ("foreground", "script-background", "script-background-switch", "headless", "noactivate", "live-background",
          "no-script-background", "exclusive-foreground", "exclusive-background", "pads-env", "pads-menu", "pads-off",
          "frame-hold", "live-frame", "reuse-frame", "wall", "zero", "empty", "hold-toggle", "hold-mouse", "hold-background", "walk-toggle",
-         "hold-taps")
+         "hold-taps", "menu-side-buttons")
 
 
 def main():
@@ -97,7 +100,8 @@ static void player_used(void) {}
         # (walking on the keyboard: the movement keys' tilt, read_input asks for it)
         block(hid, "static int walk_held("), block(hid, "enum { WALK_SPEED_DEFAULT") + ";",
         block(hid, "static int walk_percent("), block(hid, "static void move_keys_stick("),
-        block(hid, "static int flight_jump_shortcut("), read, block(hid, "static void npad_states(")))
+        block(hid, "static int flight_jump_shortcut("), read, block(hid, "static uint64_t stick_buttons("),
+        block(hid, "static void npad_states(")))
     glue = (ROOT / "host/mkw_glue.c").read_text(encoding="utf-8")
     actual += "\n" + "\n".join(block(glue, "uint64_t " + name + "(")
                                   for name in ("hos_title_input", "hos_frame_step_buttons"))
@@ -124,7 +128,7 @@ static void player_used(void) {}
              "-I" + str(folder), str(ROOT / "tests/input_background_test.c"), "-o", str(exe)])
         for case in ((a.case,) if a.case else CASES):
             case_env = dict(env)
-            if case not in ("live-background", "no-script-background", "live-frame", "reuse-frame", "hold-toggle", "hold-mouse", "hold-background", "walk-toggle", "hold-taps"):
+            if case not in ("live-background", "no-script-background", "live-frame", "reuse-frame", "hold-toggle", "hold-mouse", "hold-background", "walk-toggle", "hold-taps", "menu-side-buttons"):
                 case_env["HOS_INPUT_SCRIPT"] = "0:A+LUP/200"
             if case in ("frame-hold", "live-frame", "reuse-frame"):
                 case_env["HOS_INPUT_FRAME_CLOCK"] = "1"

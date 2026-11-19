@@ -47,7 +47,7 @@ The environment (`env`):
     builds) with romfs/ and .longshot_exefs/ (never read from anywhere else, never copied off the PC)
   - make_game.py lift_key hashes every A64_, OOT_ and RX_ variable but four compile-only ones: one set by hand gives the
     build its own translation (no other build's from the store). This says which it saw, and drops OOT_STATUS_* (an older
-    queue's, naming the job) and the queue's own LONGSHOT_JOB*.
+    queue's, naming the job) and the queue's own LONGSHOT_JOB and LONGSHOT_JOB_* (LONGSHOT_JOBS, the compilers at once, stays).
 """
 import argparse
 import hashlib
@@ -229,9 +229,10 @@ def builder_dir():
     return os.path.join(home(), "builder", tools_lock_key())
 
 
-# (Windows: the variables the Windows builder sets to its tools folder's tools: builder/LongshotBuilder/Runner.cs sets EMSDK and
-# RX_CPM, and nx2/make_game.py bundled_mingw finds its llvm-mingw as LONGSHOT_MINGW, which nx2/build.py run alone needs set)
-WINDOWS_TOOL_ENV = (("llvm-mingw", "LONGSHOT_MINGW"), ("emsdk", "EMSDK"), ("cpm", "RX_CPM"))
+# (Windows: the variables the Windows builder sets to its tools folder's tools: builder/LongshotBuilder/Runner.cs sets RX_CPM,
+# and nx2/make_game.py bundled_mingw finds its llvm-mingw as LONGSHOT_MINGW, which nx2/build.py run alone needs set. No EMSDK:
+# llvm-mingw has every compiler and LLVM tool the Windows build looks up, tests/test_windows_toolchain.py)
+WINDOWS_TOOL_ENV = (("llvm-mingw", "LONGSHOT_MINGW"), ("cpm", "RX_CPM"))
 
 
 def windows_tool_dirs():
@@ -356,7 +357,8 @@ def environment(quiet=False):
         py = find_python(c, dirs.get("python"))
     else:
         py = find_python(c)
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("OOT_STATUS_", "LONGSHOT_JOB"))}
+    # (the queue's own names: job_queue.py job_env; LONGSHOT_JOBS is the build's and stays)
+    env = {k: v for k, v in os.environ.items() if k != "LONGSHOT_JOB" and not k.startswith(("OOT_STATUS_", "LONGSHOT_JOB_"))}
     env.update(tc if WINDOWS else toolchain(py, c))
     ngx, ngx_lib = launcher_ngx_sdk()
     if "LONGSHOT_NGX_SDK" not in env and os.path.isfile(os.path.join(ngx, "lib", ngx_lib)):
@@ -617,7 +619,8 @@ def cmd_vk(a):
     so = os.path.join(work, "sa", "build", renderer_name())
     if os.path.exists(so):
         os.remove(so)
-    queued("vk-" + pack_name(None), "light", [py, "-I", "nx2/build.py", "--standalone"], env)
+    import dev_packs   # (same folder: the renderer's build as a pack builds it, with its compilers at once)
+    queued("vk-" + pack_name(None), "light", dev_packs.renderer_build_cmd(env, os.cpu_count() or 1, py), env)
     if not os.path.isfile(so):
         die("no %s after the build" % so)
     if WINDOWS:

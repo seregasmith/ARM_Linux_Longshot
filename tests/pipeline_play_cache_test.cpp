@@ -19,6 +19,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "compute_gate.h"   // the scoped Linux memory budget in the extracted pcache_load_off
 #ifdef _WIN32
 #define NOMINMAX   // (the extracted code calls std::max: no min/max macros from windows.h)
 #include <windows.h>
@@ -50,10 +51,21 @@ struct VkPipelineCacheCreateInfo {
 struct {
     int device = 1;
     struct { bool pipelineCreationCacheControl = true; } vk13;
-    struct { unsigned vendorID = 0; } props;   // (not Intel: the fetch lock only with RX_VK_PCACHE_FETCH_LOCK=1)
+    struct { unsigned vendorID = 0; } props;
+    // (dev.policy, which pcache_fetch_lock_on and serial_builds_on read: gpu/vk/device_policy.h makes the two of the GPU's
+    // driver and their switches. Here, not Intel's Windows driver: the fetch lock only with RX_VK_PCACHE_FETCH_LOCK=1, the
+    // case lock-users, and the builds not serial)
+    struct {
+        bool pcache_fetch_lock = [] {
+            const char* e = std::getenv("RX_VK_PCACHE_FETCH_LOCK");
+            return e && *e && std::strcmp(e, "0") != 0;
+        }();
+        bool compute_builds_serial = false;
+    } policy;
 } dev;
 VkPipelineCache pcache = nullptr;
 bool pcache_no_save = false;   // (pcache_init sets this in the renderer)
+bool pcache_file_rejected = false;   // (pcache_init: the cache's file was another driver's)
 std::atomic<size_t> pcache_saved_size{0};
 std::string pcache_dir, pcache_path;
 // (vk_draw.cpp's ordinary save, pipeline_cache_save, extracted unmodified after the play caches: the no-save-periodic case. What the

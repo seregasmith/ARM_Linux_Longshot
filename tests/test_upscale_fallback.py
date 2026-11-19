@@ -102,6 +102,7 @@ bool psycho = false;
 bool missing_storage = false, missing_sample = false, missing_linear = false;
 bool missing_input_view = false, missing_output_view = false;
 unsigned blits = 0, typed_calls = 0, views = 0, movie_calls = 0, writes = 0, gameplay_logs = 0, gameplay_warnings = 0;
+unsigned full_size_logs = 0;
 struct {
     VkPhysicalDevice physical{};
 } dev;
@@ -134,6 +135,7 @@ namespace fsr3_inputs { bool wanted() { return false; } }   // (FSR 3.1, off her
 static bool temporal_rejected_network(VkCommandBuffer, uint64_t, Texture *, const nvn_tex *, Texture *, const nvn_tex *) {
     return false;
 }
+thread_local Texture *stub_picture = nullptr;   // (vk_draw.cpp: the output upscale_stub notes for frame generation's HUD mark)
 void full_barrier(VkCommandBuffer) {}
 bool dump_on() { return false; }
 void logf(const char *format, ...) {
@@ -141,6 +143,8 @@ void logf(const char *format, ...) {
         gameplay_logs++;
     if (std::strstr(format, "gameplay RGB9E5 upscale unavailable"))
         gameplay_warnings++;
+    if (std::strstr(format, "full-size network 9dc98871eb7fc101 is drawn by the typed fallback"))
+        full_size_logs++;
 }
 void texture_written(Texture *t) {
     assert(t == &dst);
@@ -181,8 +185,8 @@ void vkCmdBlitImage(VkCommandBuffer, VkImage a, VkImageLayout al, VkImage b, VkI
            bl == VK_IMAGE_LAYOUT_GENERAL && n == 1 && filter == VK_FILTER_LINEAR);
     assert(r->srcSubresource.mipLevel == 0 && r->srcSubresource.baseArrayLayer == 0 &&
            r->dstSubresource.mipLevel == 0 && r->dstSubresource.baseArrayLayer == 0);
-    assert(r->srcOffsets[1].x == 64 && r->srcOffsets[1].y == 32 && r->dstOffsets[1].x == 128 &&
-           r->dstOffsets[1].y == 64);
+    assert(r->srcOffsets[1].x == (int32_t)src.width && r->srcOffsets[1].y == (int32_t)src.height &&
+           r->dstOffsets[1].x == (int32_t)dst.width && r->dstOffsets[1].y == (int32_t)dst.height);
     blits++;
 }
 '''
@@ -214,11 +218,25 @@ int main(int argc, char **argv) {
         source.d.swizzle_r = 4;
     if (mode.compare(0, 2, "fd") == 0)
         key = 0xfd029a317a9a4b94ull;
-    if (mode == "9dc")
+    if (mode.compare(0, 3, "9dc") == 0)
         key = 0x9dc98871eb7fc101ull;
+    // (an output of the input's size: the full-size pass at 100% Render resolution reads the 3D at the picture's own size;
+    // "same" alone is another program's pass of that shape, which is no upscale)
+    if (mode.find("same") != std::string::npos) {
+        destination.d.width = dst.width = 64;
+        destination.d.height = dst.height = 32;
+    }
+    if (mode == "same-fd")
+        key = 0xfd029a317a9a4b94ull;
+    if (mode == "9dc-same-r11")
+        source.d.format = 63;
+    if (mode == "9dc-smaller") {
+        destination.d.width = dst.width = 32;
+        destination.d.height = dst.height = 16;
+    }
     if (mode == "pipeline-failure" || mode == "fd-pipeline-failure")
         pipeline_ok = false;
-    if (mode == "no-storage" || mode == "fd-no-storage")
+    if (mode == "no-storage" || mode == "fd-no-storage" || mode == "9dc-same-no-storage")
         missing_storage = true;
     if (mode == "no-e5-sample" || mode == "fd-no-e5-sample")
         missing_sample = true;
@@ -248,14 +266,24 @@ int main(int argc, char **argv) {
         assert(typed_calls==((success || mode=="psycho-pipeline-failure")?1u:0u));
         printf("PASS: %s\n",mode.c_str());return 0;
     }
-    assert(upscale_stub((VkCommandBuffer)5, state, key));
-    if (mode == "captured" || mode == "fd") {
+    if (mode == "same" || mode == "9dc-smaller") {   // (no upscale: left to the caller, nothing written)
+        assert(!upscale_stub((VkCommandBuffer)5, state, key));
+        assert(writes == 0 && blits == 0 && typed_calls == 0 && full_size_logs == 0);
+        printf("PASS: %s\n", mode.c_str());
+        return 0;
+    }
+    if (!upscale_stub((VkCommandBuffer)5, state, key)) {
+        printf("RED: %s: upscale_stub turned the pass away, its output never written\n", mode.c_str());
+        return 8;
+    }
+    assert(full_size_logs == (mode == "9dc" || mode == "9dc-same" ? 1u : 0u));
+    if (mode == "captured" || mode == "fd" || mode == "9dc" || mode == "9dc-same" || mode == "same-fd") {
         if (typed_calls != 1 || views != 2 || blits != 0) {
             puts("RED: RGB9E5 input still used physical-format blit");
             return 7;
         }
         assert(writes == 1);
-        assert(gameplay_logs == (mode == "fd" ? 1u : 0u) && gameplay_warnings == 0);
+        assert(gameplay_logs == (mode == "fd" || mode == "same-fd" ? 1u : 0u) && gameplay_warnings == 0);
     } else if (mode == "movie") {
         assert(movie_calls == 1 && typed_calls == 0 && blits == 0 && writes == 1);
     } else if (mode == "pipeline-failure" || mode == "fd-pipeline-failure") {
@@ -267,9 +295,9 @@ int main(int argc, char **argv) {
     }
     if (mode == "fd-view" || mode == "fd-pipeline-failure" || mode == "fd-no-storage" ||
         mode == "fd-no-e5-sample" || mode == "fd-no-e5-linear" ||
-        mode == "fd-null-input-view" || mode == "fd-null-output-view")
+        mode == "fd-null-input-view" || mode == "fd-null-output-view" || mode == "9dc-same-no-storage")
         assert(gameplay_warnings == 1 && gameplay_logs == 0);
-    if (mode == "fd-r11" || mode == "9dc")
+    if (mode == "fd-r11" || mode == "9dc" || mode == "9dc-same" || mode == "9dc-same-r11")
         assert(gameplay_warnings == 0 && gameplay_logs == 0);
     printf("PASS: %s\n", mode.c_str());
 }
@@ -282,7 +310,6 @@ def main():
     args = parser.parse_args()
     body = block(args.source.read_text(encoding='utf-8'), 'bool upscale_stub(')
     env = os.environ.copy()
-    env.pop('RX_VK_NO_UPSCALE_STUB', None)
     with tempfile.TemporaryDirectory(prefix='upscale-fallback-') as tmp:
         tmp = Path(tmp)
         source = tmp / 'check.cpp'
@@ -299,6 +326,7 @@ def main():
         cases = ('captured', 'r11', 'movie', 'view', 'skip', 'mip', 'swizzle', 'fd', 'fd-r11',
                  'fd-view', 'fd-pipeline-failure', 'fd-no-storage', 'fd-no-e5-sample',
                  'fd-no-e5-linear', 'fd-null-input-view', 'fd-null-output-view', '9dc',
+                 '9dc-same', '9dc-same-r11', '9dc-same-no-storage', '9dc-smaller', 'same-fd', 'same',
                  'pipeline-failure', 'no-storage', 'no-e5-sample', 'no-e5-linear',
                  'null-input-view', 'null-output-view', 'psycho', 'psycho-mixed', 'psycho-view', 'psycho-mip',
                  'psycho-swizzle', 'psycho-no-storage', 'psycho-pipeline-failure', 'psycho-null-input', 'psycho-null-output')

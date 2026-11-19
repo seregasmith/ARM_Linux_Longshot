@@ -28,8 +28,9 @@ out_start = replay.index('static bool present_out(uint32_t index, std::unique_lo
 present_out = replay[out_start:replay.index('\n}', out_start) + 2]
 signal = re.search(r'    signal\.semaphore = [^;]+;', present)[0]
 wait = re.search(r'    pi\.pWaitSemaphores = [^;]+;', present_out)[0]
-acquire_wait = re.search(r'    waits\[0\]\.semaphore = [^;]+;', present)[0]
-assert 'acquire_timeout, f.acquired, VK_NULL_HANDLE, &index)' in present
+# (#1376: the acquire signals its fence, waited for on the CPU; the copy's submission waits for nothing of the acquire's on the
+# GPU: tests/test_present_image_free.py)
+assert 'acquire_timeout, VK_NULL_HANDLE, acquire_fence, &index)' in present
 # Include the actual creation attempt: passing oldSwapchain retires it even on failure.
 start = main.index('    ci.oldSwapchain = dev.swapchain;')
 end = main.index('    logf("vk: swapchain', start)
@@ -63,11 +64,11 @@ constexpr VkResult VK_ERROR_SURFACE_LOST_KHR = -1000000000;
 constexpr int VK_PRESENT_MODE_MAILBOX_KHR=1, VK_PRESENT_MODE_IMMEDIATE_KHR=2;
 struct VkSemaphoreCreateInfo { int type; };
 struct Extent { uint32_t width,height; };
-struct Device { int device=1;uint64_t swapchain=0;int swap_format=0;Extent swap_extent{};bool swap_mutable=false;std::atomic<uint32_t> swap_spare{0};
+struct Device { int device=1;uint64_t swapchain=0;int swap_format=0;Extent swap_extent{};bool swap_mutable=false;std::atomic<uint32_t> swap_spare{0};std::atomic<uint32_t> swap_slots{3};
     std::vector<VkImage> swap_images;std::vector<VkSemaphore> swap_rendered;
     std::atomic<uint64_t> swap_resize{0};std::mutex present_mu;uint64_t swapchain_generation=0;
     int instance=1;uint64_t surface=1;bool present_queue_supported=true; } dev;
-struct { int hdr=0; } opts;   // (the Insert menu's HDR row: present_image remakes the swapchain when it changes)
+struct { int hdr=0, framegen=0; } opts;   // (the Insert menu's HDR and Frame generation rows: present_image remakes the swapchain when they change)
 unsigned image_count=4, made=0, fail_at=0;uint64_t serial=1000;
 int query_result=0,data_result=0;uint64_t destroyed_swapchain=0;
 bool idle=false, bad_destroy=false; std::set<uint64_t> live,used;
@@ -88,6 +89,7 @@ void reflex_swapchain_created(uint64_t sc) {cached.swapchain=sc;cached.latency=c
 ''' + reset + r'''
 template<class... T> void logf(const char*,T...) {}
 void present_thread_drain() {}   // (RX_VK_PRESENT_THREAD off: nothing handed over)
+void fg_latency_swapchain_gone() {}   // (RX_VK_FG_LATENCY_LOG unset: no waits for presents)
 std::atomic<bool> presenter_surface_lost{false};   // (and nothing found lost by it)
 int vkCreateSwapchainKHR(int,const CreateInfo* ci,void*,uint64_t* out) {
     if(ci->oldSwapchain) {
@@ -125,6 +127,7 @@ bool recreate() {
     uint32_t n=0,width=640,height=480; struct {int format=1;} fmt;
     struct {uint32_t minImageCount=2;} caps;   // (the surface's: present ahead holds images past it, vk_framegen.cpp)
     CreateInfo ci;int mode=0;VkResult result;
+    const uint32_t slots_made=6;   // (vk_main.cpp: present_slots_for's count for the chain, computed before the cut)
 ''' + tail + r'''
     reflex_swapchain_created(sc);
     return true;
@@ -141,6 +144,7 @@ bool create_swapchain(unsigned width,unsigned height) {
 bool reflex_swapchain_stale() {return stale;}
 int menu_vsync() {return 0;}   // (vk_menu.cpp: the V-Sync row, Auto)
 int swapchain_framegen() {return 0;}   // (vk_main.cpp: frame generation's multiplier as the swapchain was made, none)
+int framegen_now() {return 0;}   // (vk_framegen.cpp: frame generation's setting as it runs, Off)
 bool swapchain_dlssg() {return false;}   // (vk_main.cpp: and DLSS-G makes its sets: no)
 std::mutex present_image_mu;
 struct PendingPresent {
@@ -171,14 +175,11 @@ void present_begin() {
     if(!dev.swapchain || !chains.count(dev.swapchain) || retired.count(dev.swapchain))bad_chain=true;
     ++acquires; // The real prefix must return before the frame fence/acquire on failure.
 }
-struct Frame {uint64_t rendered,acquired;};
 uint64_t choose(unsigned index,unsigned frame_slot) {
-    Frame f{100+frame_slot,200+frame_slot};struct{uint64_t semaphore;}signal{};
-    struct{uint64_t semaphore;}waits[1]{};
+    (void)frame_slot;struct{uint64_t semaphore;}signal{};
     struct{const uint64_t* pWaitSemaphores;}pi{};
-''' + signal + '\n' + wait + '\n' + acquire_wait + r'''
+''' + signal + '\n' + wait + r'''
     if(signal.semaphore!=*pi.pWaitSemaphores)return 0;
-    if(waits[0].semaphore!=200+frame_slot)return 0;
     used.insert(signal.semaphore);
     return signal.semaphore;
 }
@@ -207,6 +208,7 @@ int main() {
     image_count=5;idle=false;
     if(!recreate() || bad_destroy || dev.swap_rendered.size()!=5 || live.size()!=5)return 10;
     if(dev.swap_spare!=3)return 31;
+    if(dev.swap_slots!=6) {std::puts("FAIL: a chain made over an old one lost its frame slots (retire_swapchain's 3)");return 34;}
     for(unsigned image=0;image<5;++image)if(choose(image,image%3)!=dev.swap_rendered[image])return 11;
     // Once creation has been attempted, the old chain cannot be acquired or used as oldSwapchain again.
     image_count=4;made=0;fail_at=3;
@@ -225,6 +227,7 @@ int main() {
         std::puts("FAIL: retired swapchain remains published after creation failure");return 15;
     }
     if(dev.swap_spare) {std::puts("FAIL: images to spare still counted with no swapchain");return 32;}
+    if(dev.swap_slots!=3) {std::puts("FAIL: frame slots of a swapchain that is gone still counted");return 33;}
     create_result=0;
     if(!recreate() || !dev.swapchain || dev.swap_images.size()!=4)return 16;
     data_result=1; // VK_INCOMPLETE from the image-data query must not publish a partial chain.

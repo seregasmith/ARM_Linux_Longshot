@@ -120,6 +120,12 @@ this one) comes from cbFI's padding word, so a set makes each of its frames at i
 at Auto, each refresh's), and a pixel the same in both frames while the scene there moves (the HUD drawn over it) is kept
 where it is (dispatchFlags bit 16; `RX_VK_FSR_FG_HUD=0` turns it off). The optical flow and the dilated inputs run once
 a game frame, the rest once a made frame, and the interpolation is given every present it is asked for, with no frame to
-make too, so its history is the frame before whatever the next set asks for. A semi-transparent HUD over a moving scene is
-not the same in both frames and can still smear a little. This does not solve the separate general scene-transition
+make too, so its history is the frame before whatever the next set asks for. That guess missed the HUD's see-through
+parts (the minimap, the button prompts' backing), its soft edges and anything of it that animates, which still moved with
+the scene: a HUD that smeared and shook at every turn of the camera (#1310, #1420). So the HUD is now known where it can be: the picture is copied right after the gameplay upscale writes it, whoever
+draws that upscale (`vk_framegen.cpp` `framegen_hud_before`, from `vk_draw.cpp`'s dispatch), and at the present what the
+game drew over it since is the HUD, marked 0 in the interpolation source's alpha (`hud_source`, `shaders/fg_hud.comp`;
+dispatchFlags bit 17). Those pixels are this frame's, and a sample landing on the HUD in either frame takes the other's. A
+frame with no gameplay upscale (menus, movies) or a picture not the presented one's size keeps the guess. Under a
+see-through HUD the scene shows at the game's frame rate. This does not solve the separate general scene-transition
 flicker.

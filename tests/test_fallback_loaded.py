@@ -25,7 +25,7 @@ def check_source():
     cache = (ROOT / "gpu/vk/vk_progcache.cpp").read_text(encoding="utf-8")
     start = cache.index("size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted")
     some = cache[start:cache.index("\n}\n", start)]
-    for needle in ('fallback_loaded::on(getenv("RX_VK_FALLBACK_LOADED"))', "if (fallbacks && loaded_too) {",
+    for needle in ("if (fallbacks) {",
                    "for (const auto& w : work) given.insert(w.first);", "fallback_loaded::each(programs, given, fn)"):
         if needle not in some:
             raise SystemExit("program_cache_load_some no longer has: " + needle)
@@ -34,7 +34,7 @@ def check_source():
         raise SystemExit("program_cache_load_some gives the programs in memory before those it reads, or without the lock")
     # (both starts ask for the fallback programs, and make the compute pipelines of what they are given)
     draw = (ROOT / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
-    for head, call in (("void precompile_at_create() {", "}, false, true);"),
+    for head, call in (("void precompile_at_create(void (*progress)(size_t done, size_t total)) {", "}, false, true);"),
                        ("void precompile_run(void (*progress)(size_t done, size_t total)) {", "}, plan.all, true);")):
         at = draw.index(head)
         body = draw[at:draw.index("\n}\n", at)]

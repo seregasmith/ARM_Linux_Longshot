@@ -1,4 +1,4 @@
-"""The translation's vendor fixes (gpu/vk/vk_vendor.h): out-of-bounds texel fetches answered with zero, NaN tests on bits.
+"""The translation's vendor fixes (gpu/vk/device_policy.h): out-of-bounds texel fetches answered with zero, NaN tests on bits.
 
 Both are cut out of the translator (FetchInBounds in backend/spirv/emit_spirv_image.cpp, IsNan in
 emit_spirv_floating_point.cpp) into a Sirit fixture: a compute shader that fetches from an image of every type a fetch

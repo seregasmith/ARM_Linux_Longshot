@@ -49,7 +49,20 @@ python -I scripts/dev_packs.py rt   ../base-main ../rt-my-change my-change
 - Start every run from the same options file (`HOS_OPTIONS_FILE=<a copy kept for this>`), not the player's: a harness
   that silently picked up a lower resolution once turned a 15 fps scene into 20 and a gain into nothing.
 - Frame generation off (or report the game's own fps, never the shown one); the cap off (`HOS_FPS_MAX=1000`) or stated;
-  no overlays, ReShade or shader-cache tools.
+  no overlays, ReShade or shader-cache tools. A change to how frames are shown (frame generation, Frame pacing, V-Sync,
+  the present path) is measured with them on, on the screen: the next bullet.
+- **Frame pacing is measured on the screen, not in the log** ([design.md section 13](../../../docs/design.md#13-frame-generations-presents-as-rules)).
+  The log's `frame interpolation: ... shown on time` and `shown apart` counts are the display thread's present calls; a
+  present can still wait for the GPU after its call (2026-11-16: no late frame in the log, 32% of the frames on the screen
+  under 2 ms). Run PresentMon 2.x on the game during the same scripted camera turn (`PresentMon --process_name
+  longshot.exe --timed <s> --terminate_after_timed --output_file <csv>`), and report per run: the share of frames whose
+  `DisplayedTime` is under 2 ms, the frames shown 2 ms or more a second, and `DisplayedTime`'s median, p10, p90 and
+  stdev. For where a frame waited: `DisplayLatency` minus `CPUBusy` (its call to the screen) against `DisplayLatency`
+  minus `GPULatency` + `GPUTime` (its GPU work's end to the screen).
+- With frame generation on, read which engine made the frames: `DLSS Frame Gen (NGX): of the last 600 presents <n> made
+  by DLSS-G`, in the measured stretch only. The title screen, file select and load draw no scene, so DLSS-G has no
+  inputs there and the built-in maker makes those frames (`without new inputs`): a count over the whole log mixes them in.
+  Say in the run's row which engine made the measured frames.
 - Read back from each run's `longshot_log.txt` what it actually used (output and render size, upscaler, preset, frame
   generation, the switches it names) and write those, not what you meant to set.
 - Steam's Game Mode sets `RADV_FORCE_VRS_CONFIG_FILE`, which keys every RADV pipeline differently: a cache warmed

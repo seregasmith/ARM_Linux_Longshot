@@ -111,10 +111,11 @@ Rotating the key: RELEASING.md, "Rotate the key".
 ## tools.lock (Longshot)
 
 The builders need build tools that are not Longshot's own code. Windows (`windows-x64` lines): llvm-mingw, Python with the
-prompt packages, emsdk, the CPM cache (FFmpeg, Vulkan and SPIR-V headers, VMA, dav1d), the prebuilt files of
+prompt packages, the CPM cache (FFmpeg, Vulkan and SPIR-V headers, VMA, dav1d), the prebuilt files of
 `third_party` (a64emit.dll, lld-link.exe, SDL2/SDL3, zbic.dll). No play profile is among them: play profiles are
 committed in `assets/profiles/`. Linux (`linux-x64` lines): LLVM's clang
 and lld (`emsdk`), the glibc 2.35 `sysroot`, `ffmpeg` with dav1d, `sdl2` and the Vulkan, SPIR-V and VMA headers (`cpm`).
+Windows has no `emsdk`: its build takes clang, lld and the LLVM tools from `llvm-mingw` (`tests/test_windows_toolchain.py`).
 They are not in the release: `tools.lock` names them.
 
 ```
@@ -131,8 +132,8 @@ tool llvm-mingw 20261104 windows-x64 5521…40f 191037046 LongshotBuilder/tools/
   same SHA-256 and unpacked the same way, is taken from it and not downloaded again (the Windows setup excepts a merged
   tool: it comes from its archive each time). `scripts/tools.py install` does the same, for CI and developers.
 - **Where the archives are: Packages.** Every tool is downloaded first from Longshot's copy, a file of a **generic
-  package** of the MagicBeanDev organization (its *Packages* tab): the package `<name>-<system>` (`emsdk-windows-x64`,
-  `emsdk-linux-x64`: a tool's Windows and Linux builds have versions of their own), its version the tool's, the file
+  package** of the MagicBeanDev organization (its *Packages* tab): the package `<name>-<system>` (`cpm-windows-x64`,
+  `cpm-linux-x64`: a tool's Windows and Linux builds have versions of their own), its version the tool's, the file
   `<sha256>-<name>.zip`, at `https://git.magicbean.dev/api/packages/MagicBeanDev/generic/<name>-<system>/<version>/<file>`.
   Forgejo keeps packages in Cloudflare R2, and `git-cdn.magicbean.dev` serves the same paths from Cloudflare's edge
   (cached), so a tool's first URL is its `git-cdn.magicbean.dev` link and its second the same file on git.magicbean.dev
@@ -145,8 +146,8 @@ tool llvm-mingw 20261104 windows-x64 5521…40f 191037046 LongshotBuilder/tools/
   `add` or `assemble`: a new package version, then the line (RELEASING.md, "Bump a tool"). The release workflow refuses a
   `tools.lock` whose package files are not there with their size and SHA-256, or that lacks a tool the
   builder needs (`tools.py check --require`), in its first job, before anything is built.
-- **Today's lock.** Windows: Python and emsdk are taken as they are from Hookshot v2.1.0's Windows builder
-  (NotRexed/Hookshot's `builder-parts` release), with their SHA-256; llvm-mingw is upstream's; the CPM cache is Hookshot
+- **Today's lock.** Windows: Python is taken as it is from Hookshot v2.1.0's Windows builder
+  (NotRexed/Hookshot's `builder-parts` release), with its SHA-256; llvm-mingw is upstream's; the CPM cache is Hookshot
   v2.1.0's with dav1d added (`scripts/windows/dav1d.sh`), and `third-party` the prebuilt files of Hookshot v2.1.0's
   `third_party` part (`assemble third-party`). Linux: `scripts/linux/deps.sh tools`'s. The lock has no play profile:
   play profiles are committed in `assets/profiles/`.

@@ -55,8 +55,8 @@ struct Texture {
     int nvn_format = 0;       // the format it was made for
     // contents
     bool uploaded = false;    // from guest memory, as of upload_gen
-    uint32_t upload_gen = 0;
-    uint64_t bc_retry_frame = 0;   // (longshot) a BC3 image whose upload failed: tried again from this frame (vk_texture.cpp)
+    uint64_t upload_gen = 0;
+    uint64_t retry_frame = 0;   // (longshot) an image whose upload failed: tried again from this frame (vk_texture.cpp)
     uint64_t map_sig = 0;     // (a texture in a virtual pool: its pages' mapping when last uploaded)
     std::vector<uint64_t> page_map;   // (and each 64 KB page's guest address then: what a remap changed)
     struct Run { uint64_t off, guest, n; };   // (and its storage as runs of contiguous guest memory)
@@ -64,9 +64,10 @@ struct Texture {
     uint32_t runs_maps_gen = ~0u;             // (the GPU mappings' generation the runs were made at)
     bool gpu_written = false; // the GPU rendered, copied or stored into it: the image is the content
     bool only_cleared = false; // (longshot) all the GPU did was clear it: what the CPU writes after still counts (a font cache's glyphs)
-    uint32_t gpu_gen = 0;     // (the memory generation when the GPU last wrote it: CPU writes after it are taken)
+    uint64_t gpu_gen = 0;     // (the memory generation when the GPU last wrote it: CPU writes after it are taken)
     bool released = false;    // its texture was finalized after the GPU wrote it: CPU writes count again
-    uint32_t release_gen = 0;
+    uint64_t release_gen = 0;
+    uint64_t gpu_draw_value = 0, gpu_draw_segment = 0;   // (last recording that wrote the image, for byte-exact storage invalidation)
     uint64_t gpu_wrote_seen = 0;   // (the newest finished GPU write into its storage it was uploaded after)
     uint64_t last_written = 0;     // (the frame the GPU last wrote it: a render target, each frame it is used)
     uint64_t first_written = 0;    // (the frame its GPU contents began: written in that frame alone, a table the game baked)
@@ -148,12 +149,23 @@ int texture_segment_end(int index);
 uint32_t texture_epoch();
 /// Changes whenever a texture is destroyed (pointers to textures kept elsewhere go stale)
 uint64_t texture_destroy_generation();
+/// (longshot) Whether t, listed at gpu, is still that texture with that image: not destroyed since (t is only compared until
+/// it is found, so a freed one is never read). Replay thread
+bool texture_alive(uint64_t gpu, const Texture* t, VkImage image);
 // (longshot, RX_VK_FRAME_TRACE: time no other column has; totals in ns, the trace takes their differences)
 int64_t texture_readback_wait_ns();   // (a read-back's submit and wait for the GPU: the write-backs before an eviction)
 int64_t texture_frame_ns();           // (texture_frame as a whole: each present's eviction, compaction and sweeps)
 /// The texture an NVN texture's storage is (made and uploaded at first use, uploaded again when the CPU wrote its
 /// storage since). null for formats and targets that have no image (buffers, unknown formats).
 Texture* texture_get(const nvn_tex* t, bool for_sampling);
+/// (longshot, RX_VK_TEX_AHEAD: texture_ahead.h) Textures made and uploaded before their first draw, while the frames are
+/// light. The host's announcements: a texture the game made, and one it released (any thread)
+void texture_ahead_made(const nvn_tex* t);
+void texture_ahead_gone(const nvn_tex* t);
+/// Once a game frame, with the frame's draws: the next frame's allowance, and the list of textures drawn kept
+void texture_ahead_frame(int64_t draws);
+/// In a submission's recording (its uploads have their command buffer), before its commands: what the allowance lets through
+void texture_ahead_run();
 /// A view of it: the view's levels and layers (all when v is null), as view_type, in the view's format
 /// (attachment: one level, one layer; storage: one level, every layer, in a storage-capable format)
 enum class ViewUse { Sample, Attachment, Storage };
@@ -196,6 +208,7 @@ VkBufferView texel_buffer_view(const nvn_tex* t, const nvn_view* v, bool storage
 void release_texel_buffer_views(VkBuffer buffer);
 /// The texture whose image was rendered for the window (present): t's own, or one rendered at its storage
 Texture* texture_for_present(const nvn_tex* t);
+void texture_complete_writes(uint64_t completed);
 /// Ages the cache by one present; images nothing used for a while go, after the work that last read them
 void texture_frame(uint64_t completed_value);
 void texture_released(const nvn_tex* t);
@@ -205,6 +218,7 @@ void texture_log_guest(const Texture* t);
 void texture_describe_written(uint64_t gpu, uint64_t size, std::string& out);
 /// (a host hook's fast check, any thread) whether a texture the GPU wrote may lie in virtual pages [gpu, gpu + size)
 bool texture_gpu_written_in(uint64_t gpu, uint64_t size);
+bool texture_gpu_written_ever(uint64_t gpu, uint64_t size);   // (longshot) its list ever, without a lock: invalidate_quick
 /// Textures the GPU wrote in [gpu, gpu + size) read back and written into their memory, block linear, as the GPU
 /// would have left them there: before those virtual pages are unmapped or remapped (the work recorded before is
 /// submitted; the replay's lock held). How many were.

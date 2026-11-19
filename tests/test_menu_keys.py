@@ -164,6 +164,7 @@ static void refresh_outputs() {}   // Playback discovery is covered by test_audi
 static void refresh_monitors() {}  // Monitor discovery is covered by test_fullscreen_monitor_menu.py.
 static bool can_outputs() { return false; }
 static bool can_monitors() { return false; }
+static void refresh_nfc() {}
 // TX_MENU_SHORTCUT
 
 // One tick with key pressed (0: none) and the options o, the menu open before it or not: whether it is open after. *back:

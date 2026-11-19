@@ -40,7 +40,13 @@ extern uint8_t *window;
 #define RET(v) (c->x[0] = (uint64_t)(v))
 #define GP(a) ((void *)(window + (a)))
 #define HOS_WRITTEN(p, n) ((void)0)
+typedef struct HleCount { const char *name; long calls; } HleCount;   /* (host/hos.h's, HOS_HLE_STATS) */
+static int hos_hle_stats = 1;
+static inline void hos_hle_counted(HleCount *h, void (*fn)(Ctx *c), Ctx *c) { h->calls++; fn(c); }
+static void hos_log(const char *fmt, ...) { (void)fmt; }   /* (nn_libc.c logs its first call) */
 #define ENTRY_HOOK_SYM(sym) int entry_sym_##sym(Ctx *c)
+#define ENTRY_HOOK_SYM_FROM(sym, min) int entry_sym_##sym(Ctx *c)
+#define A64_POLL(c) ((void)(c))
 static inline void *hos_guest_range(uint64_t a, uint64_t n) { return a < WINDOW && n <= WINDOW - a ? GP(a) : (void *)0; }
 '''
 

@@ -17,7 +17,7 @@
 //   twice as long, 29 s against 15 s);
 // - Linux and NVIDIA's own driver (VK_DRIVER_ID_NVIDIA_PROPRIETARY: the one measured; Mesa's drivers, NVK among them, keep
 //   their own disk caches, untested here);
-// - 20 GB of RAM or less (16 GB PCs report about 15.7 GB);
+// - 20 GB of RAM or less, including a hard memory limit on the process or an ancestor cgroup;
 // - NVIDIA's own cache is on and its folder holds at least kWarmMb (nvidia_cache below: a cache turned off, emptied or never
 //   filled would leave every pipeline to be compiled in play, and there the file is what answers). Only NVIDIA's folder
 //   counts: Mesa's, or another driver's, cannot answer NVIDIA's pipelines;

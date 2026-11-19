@@ -45,7 +45,7 @@ inline uint64_t growth(const PageFile* files, size_t n, DriveFree drive_free) {
 inline uint64_t headroom(uint64_t avail, uint64_t grow) { return avail > UINT64_MAX - grow ? UINT64_MAX : avail + grow; }
 
 /// Whether the growth is worth reading: only below the reserve, where the commit rule would act. Above it the answer is the same
-inline bool wants_growth(uint64_t avail, uint64_t reserve, bool counted) { return counted && reserve && avail < reserve; }
+inline bool wants_growth(uint64_t avail, uint64_t reserve) { return reserve && avail < reserve; }
 
 /// A record of NtQuerySystemInformation's SystemPageFileInformationEx (0x90) on 64-bit Windows: the sizes in pages, the name
 /// a UNICODE_STRING (bytes, then the address of its UTF-16 text). 0x28 bytes

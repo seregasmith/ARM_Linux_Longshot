@@ -21,8 +21,7 @@ inline constexpr uint64_t kPassEvery = 10;
 inline bool pass_due(uint64_t frame_no) { return frame_no % kPassEvery == 0; }
 
 /// Whether the dead targets are looked for at this present, between the passes: every `every` presents (RX_VK_DEAD_EVERY;
-/// 10 or more leaves them to the pass alone, as before), unless they are not looked for at all (RX_VK_DEAD_TARGETS=0) or
-/// nothing is evicted (RX_VK_NO_EVICT)
+/// 10 or more leaves them to the pass alone, as before), unless nothing is evicted (RX_VK_NO_EVICT)
 inline bool sweep_due(uint64_t frame_no, uint64_t every, bool on) {
     return on && !pass_due(frame_no) && frame_no % std::max<uint64_t>(every, 1) == 0;
 }

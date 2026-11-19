@@ -61,9 +61,11 @@ def check_host_callbacks(api, backend):
                 'mic_test': 'hos_mic_test', 'perf_info': 'hos_perf_info',
                 'main_thread_times': 'host_main_thread_times', 'out_of_memory': 'host_out_of_memory',
                 'monitor_count': 'hos_monitor_count',
-                'monitor_info': 'hos_monitor_info', 'monitor_select': 'hos_monitor_select'}
+                'monitor_info': 'hos_monitor_info', 'monitor_select': 'hos_monitor_select',
+                'perf_tracking': 'hos_perf_tracking'}
     assert len(fields) == len(table), 'Host interface/initializer lengths differ'
-    assert fields[-len(expected):] == list(expected), 'Append monitor callbacks after out-of-memory without shifting earlier callbacks'
+    start = fields.index('take_text')   # (later versions append their own after these)
+    assert fields[start:start + len(expected)] == list(expected), 'Append monitor callbacks after out-of-memory without shifting earlier callbacks'
     for field, value in expected.items():
         assert table[fields.index(field)] == value, 'Wrong host callback slot: ' + field
 
@@ -76,6 +78,7 @@ PARSER = r'''
 #include "gpu/vk/vk_api.h"
 _Static_assert(MKWVK_API_VERSION >= 26, "performance info needs a new ABI version");
 _Static_assert(MKWVK_API_VERSION >= 29, "fullscreen monitor selection extends the out-of-memory ABI");
+_Static_assert(MKWVK_API_VERSION >= 30, "opt-in pose sampling extends the performance ABI");
 _Static_assert(offsetof(MkwVkHost, options_path) == offsetof(MkwVkHost, take_text) + sizeof(((MkwVkHost *)0)->take_text),
                "keep the version-23 settings path after text input");
 _Static_assert(offsetof(MkwVkHost, audio_output_count) == offsetof(MkwVkHost, options_path) + sizeof(((MkwVkHost *)0)->options_path),

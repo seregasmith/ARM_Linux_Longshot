@@ -322,9 +322,13 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
                                           kPresetSettle);
     // (the game's native HDR: State::feature_hdr. What the game presents, not the option and the swapchain: with Native
     // picked and the game's picture not PQ, the scene is LDR, and an HDR feature would get LDR colour)
-    // (RX_VK_DLSS_HDR=0: the LDR feature and the clamped colour with Native too, as before this; for comparisons)
-    static const bool hdr_allowed = !getenv("RX_VK_DLSS_HDR") || atoi(getenv("RX_VK_DLSS_HDR")) != 0;
-    const bool hdr = hdr_allowed && present_native_pq.load(std::memory_order_relaxed);
+    // (longshot) and DLAA before the game's bloom and tone map (vk_temporal.cpp temporal_pre_bloom): the scene's linear light,
+    // past 1 at every highlight, before the exposure. The same feature takes the tone-mapped picture, made linear, in a frame
+    // that runs it at the network instead
+    const bool hdr = present_native_pq.load(std::memory_order_relaxed) || temporal_hdr_input();
+    // (for the log: which of the two it is. Not the game's native HDR: DLAA before the bloom asks for it)
+    const char* const hdr_by = present_native_pq.load(std::memory_order_relaxed) ? "the game's native HDR"
+                                                                                : "DLAA before the bloom";
     if (s.feature && s.feature_ow == ow && s.feature_oh == oh && rw <= s.feature_rw && rh <= s.feature_rh &&
         rw >= s.min_rw && rh >= s.min_rh && s.feature_preset == preset && s.feature_hdr == hdr &&
         (!native_aa || s.feature_aa))
@@ -333,7 +337,9 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
     char why[160];
     if (!s.feature && !s.features_made) snprintf(why, sizeof why, "the first");
     else if (!s.feature) snprintf(why, sizeof why, "again after it was let go");
-    else if (s.feature_hdr != hdr) snprintf(why, sizeof why, "the game's native HDR turned %s", hdr ? "on" : "off");
+    else if (s.feature_hdr != hdr)
+        snprintf(why, sizeof why, "HDR colour %s: %s", hdr ? "on" : "off",
+                 hdr ? hdr_by : "neither the game's native HDR nor DLAA before the bloom");
     else if (s.feature_ow != ow || s.feature_oh != oh)
         snprintf(why, sizeof why, "the output went from %ux%u to %ux%u", s.feature_ow, s.feature_oh, ow, oh);
     else if (s.feature_preset != preset)
@@ -436,9 +442,9 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
     logf("vk: NVIDIA DLSS: feature create size %ux%u (recommended), input resources %ux%u", create_w, create_h, max_w, max_h);
     if (s.features_made > 1) perf_event(perf_report::kDlssRecreated);   // (made again in play: a stall)
     logf("vk: NVIDIA DLSS: feature %llu made (%s; frame %llu, %.1f ms of CPU): %ux%u (%ux%u to %ux%u) -> %ux%u, mode %d, "
-         "preset %c%s%s", (unsigned long long)s.features_made, why, (unsigned long long)texture_frame_no(), made_ms, rw, rh,
+         "preset %c%s%s%s%s", (unsigned long long)s.features_made, why, (unsigned long long)texture_frame_no(), made_ms, rw, rh,
          min_w, min_h, max_w, max_h, ow, oh, (int)mode, upscaler_rows::preset_letter(preset),
-         preset ? "" : " (NVIDIA's default)", hdr ? ", HDR colour, linear (the game's native HDR)" : "");
+         preset ? "" : " (NVIDIA's default)", hdr ? ", HDR colour, linear (" : "", hdr ? hdr_by : "", hdr ? ")" : "");
     *in_w = s.feature_rw, *in_h = s.feature_rh;
     return 2;   // (a new history)
 }
@@ -867,9 +873,22 @@ bool dlss_fg_runs(int frames) {
     const Fg& g = fgs();
     if (g.start_failed.load(std::memory_order_relaxed)) return false;
     // (more frames a set than its runtime makes: the renderer's own makes them all (dlss_fg_frames' too_many). Known once
-    // NGX has answered, at the first present with a fixed multiplier; until then it is taken to make them)
+    // NGX has answered, at the start-up screen or the first present with a fixed multiplier; until then it is taken to make
+    // them. The multiplier as it runs stops at that most + 1 from then on (vk_framegen.h framegen_now))
     const unsigned most = g.most_known.load(std::memory_order_relaxed);
     return !most || frames <= (int)most;
+}
+
+// (DLSS-G makes its frames from a temporal Upscaler's depth and motion (dlss_fg_inputs): without one on the Upscaler row
+// (temporal_wanted) the renderer's own or FSR 3.1 makes every set, at the row's multiplier, as when NGX said no or its
+// feature was given up)
+int dlss_fg_most() {
+    if (!fg_asked() || dlss_why() != DLSS_OK || !temporal_wanted()) return 0;
+    const Fg& g = fgs();
+    // (most_known is 0 until NGX's answer, at the start-up screen (dlss_fg_probe) or the first present with a fixed
+    // multiplier)
+    if (g.start_failed.load(std::memory_order_relaxed)) return 0;
+    return (int)g.most_known.load(std::memory_order_relaxed);
 }
 
 void dlss_fg_device_extensions(std::vector<const char*>& want, const std::vector<VkExtensionProperties>& all) {
@@ -1010,11 +1029,16 @@ int dlss_fg_frames(VkCommandBuffer cmd, VkImage color, VkImageView color_view, u
     }
     if (!blend) return g.not_blended++, 0;
     if ((unsigned)count > g.most) {
+        // (no temporal Upscaler: nothing to make them from, which is the reason here (the multiplier is the row's then,
+        // dlss_fg_most), not the runtime's most)
+        if (!temporal_wanted()) return g.no_inputs++, skip(FG_SKIP_INPUTS);
         static bool told = false;   // (once a run: the 600-present lines count them)
         if (!told) {
             told = true;
+            // (only before NGX's answer is known to the multiplier (framegen_now), which stops at its runtime's most + 1)
             logf("vk: DLSS Frame Gen (NGX): %d made frames asked, but its runtime makes %u at most (an older %s?): the "
-                 "renderer's own makes them, and V-Sync Auto keeps its mode without DLSS-G", count, g.most, kFgRuntime);
+                 "renderer's own makes this set; Frame generation runs at %ux from the next", count, g.most, kFgRuntime,
+                 g.most + 1);
         }
         fg_skip_most.store(g.most, std::memory_order_relaxed);
         return g.too_many++, skip(FG_SKIP_TOO_MANY);
@@ -1172,7 +1196,17 @@ void dlss_fg_close() {
     const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     std::unique_lock qk(dev.present_mu, std::defer_lock);
     while (!qk.try_lock() && std::chrono::steady_clock::now() < until) std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    if (!qk.owns_lock()) {
+    // (and the presents' own queues, whose presents let dev.present_mu go while they run: a present stuck there held
+    // device_wait_idle_locked on its lock with no end. Free once while present_mu is held, they stay free: a present takes
+    // present_mu first; only the presenter thread's (RX_VK_PRESENT_THREAD, opt-in) does not)
+    const auto free_by_then = [&](std::mutex& m) {
+        for (;;) {
+            if (m.try_lock()) return m.unlock(), true;
+            if (std::chrono::steady_clock::now() >= until) return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    };
+    if (!qk.owns_lock() || !free_by_then(dev.present_queue_mu) || !free_by_then(dev.presenter_queue_mu)) {
         logf("vk: DLSS Frame Gen (NGX): the queue stayed busy at the exit: its feature left to the process's end");
         return;
     }
@@ -1200,6 +1234,7 @@ void dlss_fg_probe() {}
 bool dlss_fg_forced() { return false; }
 bool dlss_fg_holds() { return false; }
 bool dlss_fg_runs(int) { return false; }
+int dlss_fg_most() { return 0; }
 void dlss_fg_device_extensions(std::vector<const char*>&, const std::vector<VkExtensionProperties>&) {}
 void dlss_fg_inputs(VkCommandBuffer, const TemporalFrame&, const float*, const float*, const float*, bool) {}
 int dlss_fg_frames(VkCommandBuffer, VkImage, VkImageView, uint32_t, uint32_t, int, const VkImage*, const VkImageView*, bool,

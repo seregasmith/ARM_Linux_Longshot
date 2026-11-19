@@ -2,6 +2,7 @@
 
 python -I -B tests/test_lift_cache.py
 """
+import ast
 import importlib.util
 import os
 import tempfile
@@ -119,7 +120,9 @@ def check_key_after_lift():
     the lift is stored under is taken after the lift, from what the next build reads, or that build translates the game again
     (a no-op rebuild of a new work folder: 319 s on Windows, 290 s of it the lift). make_game.py's translate(), read as text"""
     src = (ROOT / "nx2" / "make_game.py").read_text(encoding="utf-8")
-    body = src[src.index("    def translate():"):src.index("\n    translate()\n")]
+    translate, = (node for node in ast.walk(ast.parse(src))
+                  if isinstance(node, ast.FunctionDef) and node.name == "translate")
+    body = ast.get_source_segment(src, translate)
     split = body.index('"nx2/split_hot.py"')
     again = body.find("after = lift_key(exefs, work, env)", split)
     write = body.find("write_lift_key(work, key)", split)

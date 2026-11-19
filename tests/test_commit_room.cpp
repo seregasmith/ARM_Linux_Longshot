@@ -72,9 +72,9 @@ int main() {
     CHECK(growth(huge, 2, [](char) -> uint64_t { return UINT64_MAX; }) == UINT64_MAX);
     CHECK(headroom(UINT64_MAX - 5, 10) == UINT64_MAX && headroom(3 * GB, 0) == 3 * GB && headroom(1 * GB, 94 * GB) == 95 * GB);
 
-    // (the growth is read only below the reserve, with the rule on and the count not switched off)
-    CHECK(wants_growth(1 * GB, 2560 * MB, true) && !wants_growth(2560 * MB, 2560 * MB, true) && !wants_growth(8 * GB, 2560 * MB, true));
-    CHECK(!wants_growth(1 * GB, 2560 * MB, false) && !wants_growth(0, 0, true));
+    // (the growth is read only below the reserve, with the rule on)
+    CHECK(wants_growth(1 * GB, 2560 * MB) && !wants_growth(2560 * MB, 2560 * MB) && !wants_growth(8 * GB, 2560 * MB));
+    CHECK(!wants_growth(0, 0));
 
     // (the reported run: 32 GB, a page file of 2 GB at the start that Windows grew; 2,503 MB of textures with 370 MB left under
     // the limit of the moment were cut to 313 MB, and with 28 MB left a cache goes to 0. With the growth counted they stay)

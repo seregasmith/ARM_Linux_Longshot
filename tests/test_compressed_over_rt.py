@@ -4,8 +4,7 @@ texture_touch skips the upload of a new texture whose storage the GPU rendered i
 already holds what the GPU drew there. The GPU cannot render into a compressed format, so for ASTC, BC and ETC textures
 that storage only means render targets used it before; skipped, a boss or a new enemy whose textures were loaded there was
 drawn with an empty texture, all blue, for its first cutscene (from Shakoquo/Mako ff479e988d). Cuts texture_touch's decision
-out of the source as it is and checks it for each kind of format, with and without RX_VK_SKIP_COMPRESSED_OVER_RT=1 (with
-gpu_owned_since stubbed: the decision alone). Then gpu_owned_since itself, cut out the same way: overlapping render-target
+out of the source as it is and checks it for each kind of format (with gpu_owned_since stubbed: the decision alone). Then gpu_owned_since itself, cut out the same way: overlapping render-target
 ranges count their bytes once, so memory with a gap the GPU never drew is not taken as the GPU's.
 
 python -I -B tests/test_compressed_over_rt.py [--cxx g++]
@@ -37,13 +36,11 @@ static int logs;
 static void logf(const char *, ...) { logs++; }
 static uint32_t gpu_owned_since(uint64_t, uint64_t) { return 7; }   /* (render targets took this storage) */
 static uint32_t decide(Texture *tex) {
-    static const bool upload_all = false;
 DECISION
     return owned;
 }
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); return 1; } } while (0)
-int main(int argc, char **) {
-    const bool old_rule = argc > 1;   /* (RX_VK_SKIP_COMPRESSED_OVER_RT=1) */
+int main() {
     Texture rgba, bc, bc_kept, astc_decoded, astc_raw, etc2, depth;
     bc.format = VK_FORMAT_BC1_RGB_UNORM_BLOCK;
     bc_kept.bc = true;              /* (ASTC decoded and kept as BC3) */
@@ -52,13 +49,12 @@ int main(int argc, char **) {
     etc2.format = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
     depth.format = VK_FORMAT_D32_SFLOAT;
     CHECK(decide(&rgba) == 7 && decide(&depth) == 7);   /* (formats the GPU renders: skipped as before) */
-    for (Texture *t : {&bc, &bc_kept, &astc_decoded, &astc_raw, &etc2}) CHECK(decide(t) == (old_rule ? 7u : 0u));
+    for (Texture *t : {&bc, &bc_kept, &astc_decoded, &astc_raw, &etc2}) CHECK(decide(t) == 0u);
     Texture done = bc;
     done.uploaded = true;
     CHECK(decide(&done) == 0);
-    CHECK(old_rule ? logs == 0 : logs > 0);
-    std::printf("PASS: %s\n", old_rule ? "RX_VK_SKIP_COMPRESSED_OVER_RT=1: compressed textures skipped as before"
-                                       : "compressed textures over render targets' storage uploaded, others skipped as before");
+    CHECK(logs > 0);
+    std::printf("PASS: compressed textures over render targets' storage uploaded, others skipped as before\n");
     return 0;
 }
 '''
@@ -99,8 +95,8 @@ def main():
     a = p.parse_args()
     src = (ROOT / "gpu" / "vk" / "vk_texture.cpp").read_text(encoding="utf-8")
     body = src[src.index("Texture* texture_touch(Texture* tex, bool for_sampling) {"):]
-    start = body.index("    static const bool skip_compressed")
-    end = body.index("\n", body.index("    uint32_t owned = ", start))
+    start = body.index("    const bool compressed = tex->astc || tex->bc ||")
+    end = body.index("\n", body.index("    uint64_t owned = ", start))
     decision = body[start:end]
     assert "gpu_owned_since(tex->gpu, tex->guest_size)" in decision, decision
     # (the log after it is in the block: up to its closing brace)
@@ -119,7 +115,7 @@ def main():
         subprocess.run([cxx, "-std=c++17", "-D_CRT_SECURE_NO_WARNINGS", "-include", str(ENV_ON_H), "-Wall",
                         "-Wno-unused-function", "-Werror", str(tmp / "f.cpp"), "-o", str(exe)],
                        check=True)
-        fn = src[src.index("uint32_t gpu_owned_since(uint64_t gpu, uint64_t n) {"):]
+        fn = src[src.index("uint64_t gpu_owned_since(uint64_t gpu, uint64_t n) {"):]
         fn = fn[:fn.index("\n}\n") + 3]
         (tmp / "owned.cpp").write_text(OWNED.replace("FUNCTION", fn), encoding="utf-8")
         owned = tmp / ("owned.exe" if os.name == "nt" else "owned")
@@ -128,14 +124,10 @@ def main():
         print(r.stdout.strip())
         if r.returncode:
             raise SystemExit("FAIL:\n" + r.stdout + r.stderr)
-        for extra in ({}, {"RX_VK_SKIP_COMPRESSED_OVER_RT": "1"}):
-            env = {k: v for k, v in os.environ.items() if k != "RX_VK_SKIP_COMPRESSED_OVER_RT"}
-            env.update(extra)
-            args = [str(exe)] + (["old"] if extra else [])
-            r = subprocess.run(args, env=env, capture_output=True, text=True)
-            print(r.stdout.strip())
-            if r.returncode:
-                raise SystemExit("FAIL:\n" + r.stdout + r.stderr)
+        r = subprocess.run([str(exe)], capture_output=True, text=True)
+        print(r.stdout.strip())
+        if r.returncode:
+            raise SystemExit("FAIL:\n" + r.stdout + r.stderr)
 
 
 if __name__ == "__main__":

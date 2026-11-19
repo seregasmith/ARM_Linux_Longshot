@@ -43,8 +43,7 @@ def check_source():
     # (the headroom is what is left under the limit now and, below the reserve, what the page files can grow by)
     head = block(tex, "static bool commit_headroom(uint64_t* free_bytes)")
     need("vk_texture.cpp: commit_headroom()", head,
-         ['getenv("RX_VK_COMMIT_GROWTH")',
-          "if (commit_room::wants_growth(m.ullAvailPageFile, commit_reserve(), counted)) {",
+         ["if (commit_room::wants_growth(m.ullAvailPageFile, commit_reserve())) {",
           "grow = page_file_growth();",
           "*free_bytes = commit_room::headroom(m.ullAvailPageFile, grow);"])
     # (the growth comes from the page files' own sizes and maximums and their drives' free space, read at most once a second,
@@ -59,8 +58,6 @@ def check_source():
           "GetDiskFreeSpaceExW(root, nullptr, nullptr, &free_bytes) ? free_bytes.QuadPart : 0"])
     if not tex.index("static uint64_t page_file_growth()") < tex.index("static bool commit_headroom(uint64_t* free_bytes)"):
         raise SystemExit("vk_texture.cpp: page_file_growth() is no longer defined before commit_headroom()")
-    docs = (ROOT / "docs/development.md").read_text(encoding="utf-8")
-    need("docs/development.md", docs, ["`RX_VK_COMMIT_GROWTH=0`"])
 
 
 def main():

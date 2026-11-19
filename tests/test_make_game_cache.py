@@ -16,6 +16,8 @@ from pathlib import Path
 import stat
 import sys
 import tempfile
+import threading
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -97,16 +99,28 @@ class NupCacheHarness(unittest.TestCase):
                 for path in self.out.rglob("*") if path.is_file() and ".game" not in path.parts}
 
     def run_to_lift(self, nup, failure=None, supported=True, include_romfs=True, update=False, folders=None,
-                    romfs_files=None, start_files=True, romfs_from=None):
+                    romfs_files=None, start_files=True, romfs_from=None, overlap=False, replace_package=False):
         self.assert_owned_fixture()
+
+        translating = threading.Event()
+        reading_assets = threading.Event()
 
         def run(cmd, env=None, on_line=None):
             if "nx2/nup.py" in cmd:
                 target = Path(cmd[cmd.index("--extract") + 1]).resolve()
                 self.assertTrue(target.is_relative_to(self.root))
                 self.extractions.append(nup)
-                (target / "exefs").mkdir(parents=True)
-                (target / "exefs" / "main").write_bytes(module_bytes(supported=supported))
+                part = cmd[cmd.index("--only") + 1] if "--only" in cmd else None
+                if part != "romfs":
+                    (target / "exefs").mkdir(parents=True)
+                    (target / "exefs" / "main").write_bytes(module_bytes(supported=supported))
+                if part == "exefs":
+                    return
+                if part == "romfs":
+                    reading_assets.set()
+                    self.assertTrue(translating.wait(5), "the asset reader must run beside translation")
+                    if replace_package:
+                        nup.write_bytes(b"a different package")
                 if failure:
                     (target / "romfs").mkdir()
                     (target / "romfs" / "asset.txt.part").write_bytes(b"incomplete authored asset")
@@ -125,6 +139,9 @@ class NupCacheHarness(unittest.TestCase):
             if "nx2/unpack.py" in cmd:   # (a chosen exefs folder: its authored module is already unpacked)
                 return
             if "nx2/lift.py" in cmd:
+                translating.set()
+                if overlap:
+                    self.assertTrue(reading_assets.wait(5), "translation must run beside the asset reader")
                 raise Prepared
             self.fail("Unexpected build subprocess: %r" % cmd)
 
@@ -161,6 +178,8 @@ class NupCacheHarness(unittest.TestCase):
             stack.enter_context(mock.patch.object(make_game, "vk_profile_for",
                                                   partial(make_game.vk_profile_for, root=make_game.ROOT)))
             stack.enter_context(mock.patch.object(make_game, "lift_key", return_value="test key"))
+            if overlap:
+                stack.enter_context(mock.patch.object(make_game, "overlap_package_read", return_value=True))
             stack.enter_context(mock.patch.object(make_game, "run", side_effect=run))
             output = stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
             try:
@@ -172,6 +191,49 @@ class NupCacheHarness(unittest.TestCase):
 
 
 class NupCacheTests(NupCacheHarness):
+    def test_first_install_overlap_uses_available_memory_jobs_and_disk(self):
+        fresh = self.root / "fresh"
+        package = SimpleNamespace(st_size=1 << 30)
+        paths = fresh, self.work, fresh / ".longshot_exefs", fresh / "romfs"
+        with mock.patch("build.free_mb", return_value=8192) as memory, \
+                mock.patch.object(make_game, "spinning_disk", return_value=False) as drive:
+            self.assertTrue(make_game.overlap_package_read(2, package, *paths))
+            self.assertFalse(make_game.overlap_package_read(1, package, *paths))
+            self.assertFalse(make_game.overlap_package_read(2, self.new_nup.stat(), *paths))
+            memory.return_value = 8191
+            self.assertFalse(make_game.overlap_package_read(2, package, *paths))
+            memory.return_value = 8192
+            drive.side_effect = lambda path: path == self.work
+            self.assertFalse(make_game.overlap_package_read(2, package, *paths))
+            drive.side_effect = None
+            (fresh / "romfs").mkdir(parents=True)
+            self.assertFalse(make_game.overlap_package_read(2, package, *paths))
+
+    def test_fresh_assets_complete_beside_translation(self):
+        self.out = self.root / "fresh"
+        self.out.mkdir()
+        with self.assertRaises(Prepared):
+            self.run_to_lift(self.new_nup, overlap=True)
+        self.assertEqual((self.out / "romfs/asset.txt").read_bytes(), b"new authored assets")
+        self.assertEqual((self.out / ".longshot_exefs/main").read_bytes(), module_bytes())
+        self.assertEqual((self.out / ".longshot_romfs").read_text().strip(), self.stamp(self.new_nup))
+
+    def test_parallel_unpack_refuses_missing_assets_before_compile(self):
+        self.out = self.root / "fresh"
+        self.out.mkdir()
+        with self.assertRaises(SystemExit):
+            self.run_to_lift(self.new_nup, overlap=True, include_romfs=False)
+        self.assertIn("did not contain a romfs folder", self.output)
+        self.assertFalse((self.out / ".longshot_romfs").exists())
+
+    def test_changed_package_during_parallel_unpack_is_not_published(self):
+        self.out = self.root / "fresh"
+        self.out.mkdir()
+        with self.assertRaises(SystemExit):
+            self.run_to_lift(self.new_nup, overlap=True, replace_package=True)
+        for name in (".game", "romfs", ".longshot_exefs", ".longshot_romfs"):
+            self.assertFalse((self.out / name).exists(), name)
+
     def test_failed_scratch_exefs_cleanup_stops_before_copy_or_extraction(self):
         scratch = self.work / "exefs"
         scratch.mkdir()

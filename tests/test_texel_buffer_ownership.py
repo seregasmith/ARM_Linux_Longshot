@@ -44,7 +44,7 @@ def main():
     # Rollback, prefetch drops, a trim's rollback (mirrors_trim) and both published-import reapers must share the same
     # owner-release point.
     assert memory.count("vkDestroyBuffer(") == 1
-    assert memory.count("destroy_import_buffer(") == 11   # (and placed_import's rollback, arm64 port)
+    assert memory.count("destroy_import_buffer(") == 12   # (main's 11, and placed_import's rollback, arm64 port)
     fixture = (ROOT / "tests/texel_buffer_ownership_test.cpp").read_text(encoding="utf-8")
     fixture = fixture.replace("/* DEAD IMPORT */", block(memory, "struct DeadImport {") + ";")
     fixture = fixture.replace("/* ACTUAL */", actual)

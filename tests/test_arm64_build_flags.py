@@ -41,7 +41,7 @@ def build_flags(machine, windows=False):
     end = BUILD.index("\n\n\n", BUILD.index("def flags(", start))
     names = {"os": os, "platform": Platform(machine), "toolchain": Toolchain(windows), "kit": Kit, "target": lambda: [],
              "CPU": ["-march=<cpu>"], "NX2_RT": "nx2/rt", "WRITE_TRACK": ["-DA64_WRITE_TRACK"], "LINUX": not windows,
-             "POSIX": "host/posix", "HOST": "host", "rt64": "rt64", "gen": "gen"}
+             "POSIX": "host/posix", "HOST": "host", "rt64": "rt64", "gen": "gen", "TRACY": False, "TRACY_FLAGS": [], "MARK_BITMAP": ["-DA64_MARK_BITMAP"]}
     exec(BUILD[start:end], names)
     host_start = BUILD.index("    host_fl = ")
     exec(textwrap.dedent(BUILD[host_start:BUILD.index("    host_roots = ", host_start)]), names)

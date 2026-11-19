@@ -2,6 +2,9 @@
 
 Catch missing low-budget trimming, ignored overrides, stale preset defaults and
 on/off spellings that accidentally keep the automatic quality reduction enabled.
+Custom with no memory_budget (0: an options file from before it, or Custom chosen on
+the preset row) goes by Auto (this PC)'s tier for this PC, as the Shadow resolution's
+Auto does: a Steam Deck on such a file got the terrain's 1365x1365x90 arrays at full size.
 """
 import argparse
 import os
@@ -26,6 +29,8 @@ def main():
     source = (ROOT / "gpu/vk/vk_texture.cpp").read_text(encoding="utf-8-sig")
     mip = block(source, "{   // huge textures leave out their top levels:")
     policy = block(source, "bool low_vram_texture_mips(") if "bool low_vram_texture_mips(" in source else ""
+    menu = (ROOT / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8-sig")
+    tier = block(menu, "int menu_memory_tier() {") if "int menu_memory_tier() {" in menu else ""
     helpers = "\n".join(block(source, marker) for marker in (
         "bool is_bc(VkFormat f)", "bool is_astc(VkFormat f)", "uint64_t texture_level_units("))
     fixture = r'''
@@ -47,6 +52,8 @@ struct Texture {
 struct { bool sparse_images = false; VkPhysicalDevice physical{}; VkPhysicalDeviceProperties props{}; } dev;
 struct { int preset = 1, budget = 1; } opts;
 constexpr int kAutoPreset = 6;   // (gpu/vk/vk_menu.h: the Quality preset Auto (this PC), its tier's budgets in budget)
+struct { int tier = 0; } auto_choice;   // (vk_menu.cpp: Auto (this PC)'s choice for this PC, made at the start)
+@TIER@
 uint64_t allowed, ram;
 bool query_ok;
 uint64_t system_ram_bytes() { return ram; }
@@ -70,7 +77,8 @@ void check_image(const Texture& x, int skip, int width, int levels) {
     CHECK(x.levels == (uint32_t)levels);
 }
 int main(int argc, char** argv) {
-    CHECK(argc == 15);
+    CHECK(argc == 16);
+    auto_choice.tier = std::atoi(argv[15]);
     opts.preset = std::atoi(argv[1]);
     opts.budget = std::atoi(argv[12]);
     dev.props.deviceType = std::atoi(argv[13]) ? VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU : VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
@@ -97,7 +105,7 @@ int main(int argc, char** argv) {
     }
     std::printf("PASS %s\n",argv[11]);
 }
-'''.replace("@HELPERS@", helpers).replace("@POLICY@", policy).replace("@MIP@", mip)
+'''.replace("@HELPERS@", helpers).replace("@TIER@", tier).replace("@POLICY@", policy).replace("@MIP@", mip)
     # The preset: a number, its budget the same (as a preset sets it); or (preset, budget): Auto (this PC) with its tier's budgets,
     # or Custom with the budgets of the preset it was turned from (kept, as the Debug tab's Set up for a weak laptop leaves them).
     # Literal outcomes: (skip, width, levels) for a 3072-square image and a
@@ -145,6 +153,33 @@ int main(int argc, char** argv) {
         ("integrated-unknown-ram", 1, 7402, 1, {}, original, 0, 1, 0),
         ("discrete-16gb-large-budget", 1, 7402, 1, {}, original, 0, 0, 16122),
     ]
+    # Auto (this PC)'s tier for this PC, which Custom with no memory_budget goes by: (name, preset, overrides, expected,
+    # (driver budget, integrated, RAM in MB, Auto's tier)). A Steam Deck OLED: 14798 MB of RAM, the driver allowed 5872 MB,
+    # Auto's tier Minimum (an integrated GPU is always Minimum: auto_settings.h tier_of). Every preset saves its own number as
+    # memory_budget (apply_preset), so only Custom chosen on the row, or a file from before memory_budget, has 0.
+    deck = (5872, 1, 14798, 1)
+    tiers = [
+        ("deck-custom-no-budget", (0, 0), {}, minimum, deck),
+        ("deck-custom-after-minimum", (0, 1), {}, minimum, deck),
+        ("deck-custom-after-low", (0, 2), {}, original, deck),
+        ("deck-custom-after-balanced", (0, 3), {}, original, deck),
+        ("deck-custom-after-high", (0, 4), {}, original, deck),
+        ("deck-custom-after-ultra", (0, 5), {}, original, deck),
+        ("deck-minimum", 1, {}, minimum, deck),
+        ("deck-low", 2, {}, original, deck),
+        ("deck-balanced", 3, {}, original, deck),
+        ("deck-high", 4, {}, original, deck),
+        ("deck-ultra", 5, {}, original, deck),
+        ("deck-auto", (6, 1), {}, minimum, deck),
+        ("deck-balanced-file-with-budget-0", (3, 0), {}, original, deck),
+        ("deck-custom-no-budget-switch-off", (0, 0), {"RX_VK_LOW_VRAM_MIPS": "0"}, original, deck),
+        ("deck-custom-no-budget-auto-not-known", (0, 0), {}, original, (5872, 1, 14798, 0)),
+        ("integrated-32gb-custom-no-budget", (0, 0), {}, original, (15000, 1, 32500, 1)),
+        ("discrete-8gb-custom-no-budget", (0, 0), {}, original, (7500, 0, 32500, 3)),
+        ("discrete-8gb-16gb-ram-custom-no-budget", (0, 0), {}, original, (7500, 0, 16122, 3)),
+        ("discrete-4gb-custom-no-budget", (0, 0), {}, minimum, (3674, 0, 16122, 1)),
+        ("discrete-4gb-custom-after-low", (0, 2), {}, original, (3674, 0, 16122, 1)),
+    ]
     for value in ("0", "off", "false", "no", "OFF", "FaLsE", " no \t", ""):
         cases.append(("disabled-" + repr(value), 1, 3674, 1,
                       {"RX_VK_LOW_VRAM_MIPS": value}, original, 0))
@@ -161,16 +196,23 @@ int main(int argc, char** argv) {
         if a.sanitize:
             cmd += ["-fsanitize=" + a.sanitize, "-fno-omit-frame-pointer"]
         subprocess.run(cmd + [str(cpp), "-o", str(exe)], check=True)
-        for name, preset, budget, query, overrides, expected, switch, integrated, ram in \
-                [c + (0, 32500) for c in cases] + shared:
+        failed = []
+        # (the cases before Auto's tier: none known, 0, so they check the rule as memory_budget and the preset have it)
+        for name, preset, budget, query, overrides, expected, switch, integrated, ram, auto_tier in \
+                [c + (0, 32500, 0) for c in cases] + [c + (0,) for c in shared] + \
+                [(n, p, b, 1, o, e, 0, i, r, t) for n, p, o, e, (b, i, r, t) in tiers]:
             env = os.environ.copy()
             for key in ("RX_VK_LOW_VRAM_MIPS", "RX_VK_TEX_MAX_DIM", "RX_VK_TEX_MAX_MB", "RX_VK_TEX_SKIP_MB"):
                 env.pop(key, None)
             env.update(overrides)
             preset, memory_budget = preset if isinstance(preset, tuple) else (preset, preset)
-            args = [preset, budget, query, *expected, switch, name, memory_budget, integrated, ram]
-            subprocess.run([str(exe), *map(str, args)], env=env, check=True)
-    print("PASS %d mip-policy configurations" % (len(cases) + len(shared)))
+            args = [preset, budget, query, *expected, switch, name, memory_budget, integrated, ram, auto_tier]
+            if subprocess.run([str(exe), *map(str, args)], env=env).returncode:
+                failed.append(name)
+    if failed:
+        sys.exit("FAIL %d of %d mip-policy configurations: %s" % (
+            len(failed), len(cases) + len(shared) + len(tiers), ", ".join(failed)))
+    print("PASS %d mip-policy configurations" % (len(cases) + len(shared) + len(tiers)))
 
 
 if __name__ == "__main__":

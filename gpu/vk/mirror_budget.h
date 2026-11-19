@@ -11,9 +11,17 @@ namespace mkwvk::mirror_rule {
 /// (texture_budget.h)
 inline bool small_card(uint64_t vram) { return vram && vram <= (4ull << 30) + (512ull << 20); }
 
-/// The mirrors: a quarter of the card, at most 2 GB under 15 GB and 3 GB from there, and on a card of 4.5 GB or less an eighth, at
-/// most 256 MB (the Minimum (4GB) preset's). The one rule
-/// for every card: no menu row or Quality preset sets them. A pool left out is read by the GPU over PCIe: on 8 GB cards, a 3070 or
+/// What a card of 6.5 GB or less is, past the small ones: a 6 GB card, where the mirrors get a third, at most 1700 MB
+inline bool six_gb_card(uint64_t vram) { return !small_card(vram) && vram && vram <= (6ull << 30) + (512ull << 20); }
+
+/// The mirrors: a quarter of the card, at most 2 GB under 15 GB and 3 GB from there; on a card of 6.5 GB or less a third, at most
+/// 1700 MB; and on a card of 4.5 GB or less an eighth, at most 256 MB (the Minimum (4GB) preset's). The one rule
+/// for every card: no menu row or Quality preset sets them, and vk_memory.cpp works nothing out beside it. (The 6 GB cards'
+/// 1700 MB came with #637, "to hold open-area peaks without falling back to PCIe reads"; it is kept as those cards run it.
+/// It was written in vk_memory.cpp ahead of this rule for every card of 6.5 GB or less, so a 4 GB card got a third too, 1365 MB
+/// beside its 2.2 GB of textures: 3.5 of its 4 GB before a render target, a buffer or a pipeline. Its comment spoke of 6 GB
+/// cards, and the small cards' 256 MB below was not argued against: the small cards have it again.)
+/// A pool left out is read by the GPU over PCIe: on 8 GB cards, a 3070 or A pool left out is read by the GPU over PCIe: on 8 GB cards, a 3070 or
 /// a 4060, that left the GPU at a few percent and the frame stuttering, and on a 6 GB RTX 3060 Laptop at an eighth (768 MB) or the
 /// Low preset's 512 MB, 30-32 GB of bound ranges went over PCIe every 600 submits in Hyrule Field, the GPU's frame 27 ms against
 /// 19 at a quarter. The Balanced (8GB) preset's 1024 MB, what every 8 GB card started on, filled within minutes on an RTX 3060 Ti
@@ -30,6 +38,7 @@ inline bool small_card(uint64_t vram) { return vram && vram <= (4ull << 30) + (5
 inline uint64_t auto_bytes(uint64_t vram) {
     if (!vram) return 3072ull << 20;
     if (small_card(vram)) return std::min<uint64_t>(vram / 8, 256ull << 20);
+    if (six_gb_card(vram)) return std::min<uint64_t>(vram / 3, 1700ull << 20);
     return std::min<uint64_t>(vram / 4, vram < (15ull << 30) ? 2048ull << 20 : 3072ull << 20);
 }
 

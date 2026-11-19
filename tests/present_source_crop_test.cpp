@@ -51,6 +51,8 @@ void note_maker(FgMaker m) { last_maker = m; }
 bool holds = false;
 bool dlss_fg_holds() { return holds; }
 uint64_t antilag_frame() { return 0; }   // (vk_antilag.cpp: AMD Anti-Lag 2 not on here)
+// (vk_framegen.cpp hud_source: FSR 3.1's source with the HUD marked; no picture copied here, the frame as it is)
+bool hud_source(VkCommandBuffer, int, uint32_t, uint32_t, int, int, uint32_t, uint32_t) { return false; }
 int fsr_calls = 0, fsr_result = 1;
 bool last_native_pq = false;
 int fsr3fi_frames(VkCommandBuffer, OutSet&, int, uint32_t w, uint32_t h, uint64_t sequence, bool native_pq, const float* t,

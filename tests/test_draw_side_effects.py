@@ -235,7 +235,11 @@ def main():
         helper_start = src.index("static bool writes_memory(const Program& p)")
         helper_end = src.index("enum class FallbackRole", helper_start)
         start = src.index("    static const bool always_wait =", src.index("void draw(VkCommandBuffer"))
-        end = src.index("    cur_program = &p;", start)
+        # (the block ended at draw()'s `cur_program = &p;`, a thread-local that is now dynamic_state's argument: it ends at
+        # the line that followed it; a --source from before still ends where it did)
+        end = src.find("    cur_program = &p;", start)
+        if end < 0:
+            end = src.index("    dlss_trace_draw(s, p, d, at);", start)
     except ValueError:
         raise SystemExit("draw readiness block changed; update this test's extraction anchors") from None
     header = (args.source / "gpu/vk/translate_wait.h").read_text(encoding="utf-8").replace("#pragma once", "")

@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
 import kit  # noqa: E402,F401  (a64-kit on the path)
 import chunks  # noqa: E402
+import lifted_c  # noqa: E402
 
 PREAMBLE = '#include "a64.h"\nvoid f_90000000(Ctx *A64_NOESC);\n'
 
@@ -28,7 +29,21 @@ def check(what, ok):
         raise SystemExit("FAIL: " + what)
 
 
+def definition_boundaries():
+    head = "void f_a(Ctx *__restrict A64_NOESC c) {"
+    for nl in ("\n", "\r\n"):
+        for prefix, noted in (("", False), ("/* symbol */" + nl, True), ("/* */" + nl, False),
+                              ("  /* symbol */" + nl, False), ("/* symbol */" + nl + nl, False)):
+            text = prefix + head + nl + "}" + nl + "  " + head + nl + PREAMBLE
+            for source in (text, text.encode(), bytearray(text.encode())):
+                check("only a definition at column zero starts a function",
+                      [m.start() for m in lifted_c.definitions(source)] == [len(prefix)])
+            check("only the immediately preceding note moves a chunk boundary",
+                  list(lifted_c.noted_starts(text)) == [0 if noted else len(prefix)])
+
+
 def main():
+    definition_boundaries()
     budget = 200000
     with tempfile.TemporaryDirectory(prefix="longshot-chunk-split-") as d:
         small = [function(0x80000000 + 16 * i, 2000) for i in range(60)]

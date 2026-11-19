@@ -25,6 +25,7 @@ jobs:
       - uses: https://github.com/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          filter: blob:none   # (history without file contents: the server sends commits and trees only; files come when read)
           persist-credentials: false
       - name: Every part
         run: python3 -I scripts/check_third_party.py

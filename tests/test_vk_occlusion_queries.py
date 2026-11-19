@@ -29,7 +29,7 @@ import subprocess
 import sys
 import tempfile
 
-RUN_ALL_ARGS = ["--cxx", "{cxx}"]
+RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]
 
 ROOT = Path(__file__).resolve().parents[1]
 REPLAY = ROOT / "gpu" / "vk" / "vk_replay.cpp"
@@ -748,12 +748,23 @@ SWITCH_CASES = [
 
 # occ_copy_wanted() alone (RX_VK_OCC_COPY): on by default with Intel's Windows driver on a discrete GPU only, where it was
 # measured; the switch either way; off with the parallel replay. FAKE_GPU: the driver's VkDriverId and the deviceType
-COPY_SWITCH = COMMON + r'''
-struct { int driver_id = 0; struct { int deviceType = 0; } props; } dev;
+# (the default and the switch are device_policy.h's, occ_copy, which occ_copy_wanted reads: the fixture makes that GPU's
+# policy with the real environment, then asks the function cut from vk_replay.cpp. Not COMMON: device_policy.h takes the
+# Vulkan headers' own types)
+COPY_SWITCH = r'''
+#include <cstdio>
+#include <cstdlib>
+#include "device_policy.h"
+static struct { mkwvk::DevicePolicy policy; } dev;
 int par_threads() { const char* e = getenv("RX_VK_PARALLEL"); return e ? atoi(e) : 0; }
 ''' + "%COPY%" + r'''
 int main() {
-    if (std::sscanf(getenv("FAKE_GPU"), "%d,%d", &dev.driver_id, &dev.props.deviceType) != 2) return 2;
+    int driver = 0, type = 0;
+    if (std::sscanf(getenv("FAKE_GPU"), "%d,%d", &driver, &type) != 2) return 2;
+    mkwvk::DeviceFacts f;
+    f.driver_id = (VkDriverId)driver, f.device_type = (VkPhysicalDeviceType)type;
+    dev.policy = mkwvk::device_policy(f);
+    mkwvk::device_policy_env(dev.policy, f, [](const char* name) -> const char* { return getenv(name); });
     std::printf("%d\n", occ_copy_wanted() ? 1 : 0);
 }
 '''
@@ -813,7 +824,7 @@ def check_wiring(replay, draw):
     # draw command after it preceded by its query's issue, with no way out between; nothing else begins it
     fn = block(draw, "void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {")
     guard = fn.index("OccGuard occ(cmd, d);")
-    assert fn.index("StatsQuery stats_query(cmd, p.key, d);") < guard
+    assert fn.index("StatsQuery stats_query(cmd, p, d);") < guard
     assert fn.index("begin_pass(cmd, at);") < guard
     assert "vkCmdBeginQuery" not in fn and "d.occ_pool" not in fn[:guard].replace("batch.occ_pool", "")
     body = fn[guard:]
@@ -835,12 +846,12 @@ def check_wiring(replay, draw):
     assert batches.index("batch.occ_pool = VK_NULL_HANDLE") < batches.index("draw(cmd, s, batch);")
 
 
-def compile_and_run(cxx, tmp, name, code, env=None):
+def compile_and_run(cxx, tmp, name, code, env=None, includes=()):
     cpp = Path(tmp) / (name + ".cpp")
     exe = Path(tmp) / (name + ".exe")
     cpp.write_text(code, encoding="utf-8")
     r = subprocess.run([cxx, "-std=c++20", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Wno-unused-function", "-Werror",
-                        str(cpp), "-o", str(exe)], capture_output=True, text=True)
+                        *includes, str(cpp), "-o", str(exe)], capture_output=True, text=True)
     if r.returncode:
         sys.exit("the %s fixture did not compile:\n%s%s" % (name, r.stdout, r.stderr))
     return exe
@@ -849,6 +860,8 @@ def compile_and_run(cxx, tmp, name, code, env=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cxx", default="g++")
+    # (the Vulkan headers device_policy.h needs, for occ_copy_wanted's fixture; else the compiler's own)
+    parser.add_argument("--headers", type=Path, default=None)
     args = parser.parse_args()
     replay = REPLAY.read_text(encoding="utf-8")
     draw = DRAW.read_text(encoding="utf-8")
@@ -864,7 +877,10 @@ def main():
             if got != want:
                 sys.exit("occ_queries_on() with %s: %d, want %d" % (extra, got, want))
         print("PASS: occ_queries_on(): RX_VK_OCC_FIXED wins over RX_VK_OCC_QUERIES; on with RX_VK_ASYNC=1 (the render thread)")
-        exe = compile_and_run(args.cxx, tmp, "copy", COPY_SWITCH.replace("%COPY%", block(replay, "bool occ_copy_wanted()")))
+        # (-isystem: the renderer's headers are not this check's to warn about)
+        policy_headers = ["-isystem", str(REPLAY.parent)] + (["-isystem", str(args.headers)] if args.headers else [])
+        exe = compile_and_run(args.cxx, tmp, "copy", COPY_SWITCH.replace("%COPY%", block(replay, "bool occ_copy_wanted()")),
+                              includes=policy_headers)
         for extra, want in COPY_CASES:
             env = {k: v for k, v in os.environ.items() if not k.startswith(("RX_VK_OCC", "RX_VK_PARALLEL", "FAKE_GPU"))}
             env.update(extra)

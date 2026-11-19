@@ -8,10 +8,11 @@ and were never written where the file is neither read nor written: the preparati
  - off (the rule's other answers): no cache made, builds go to pcache, compute builds through cached_compute, the thread's
    driver-only asking untouched;
  - on: a cache made and let go at the end of the scope, graphics builds handed it (driver_cache_only, driver_ask_cache, as
-   build_graphics reads them) and the thread's asking put back as it was, even nested; compute builds handed it too;
+   build_graphics reads them) and the thread's asking put back as it was, even nested; compute builds handed it too, after
+   their turn at the memory gate as cached_compute's (none compiled when the turn is refused);
  - a cache that cannot be made: as off.
-And checks the warm, the preparation's compute pipelines and the load at create use it, and that pcache_load_off sets the flag
-from the rule. No game or GPU.
+And checks the warm and the preparation's compute pipelines use it, that pcache_load_off sets the flag from the rule, and that
+the load at create's workers run below normal with the memory in their progress lines. No game or GPU.
 python -I -B tests/test_driver_only_builds.py [--cxx g++]
 """
 import argparse
@@ -34,7 +35,7 @@ typedef int VkResult;
 #define VK_SUCCESS 0
 #define VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO 17
 struct VkPipelineCacheCreateInfo { int sType; };
-struct VkComputePipelineCreateInfo { int sType; };
+struct VkComputePipelineCreateInfo { int sType; int flags; };
 struct { void* device = nullptr; } dev;
 static VkPipelineCache pcache = (VkPipelineCache)0x1000;
 static bool pcache_driver_builds = false;
@@ -53,6 +54,20 @@ static VkResult guarded_compute_held(VkPipelineCache c, const VkComputePipelineC
     return VK_SUCCESS;
 }
 static VkResult cached_compute(const VkComputePipelineCreateInfo*, VkPipeline*) { cached++; return VK_SUCCESS; }
+// (cached_compute's turn at the memory gate and Intel's lock: DriverOnlyBuilds' compute takes them as it does)
+#define VK_ERROR_OUT_OF_HOST_MEMORY (-1)
+#define VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT 0x100
+static int turns = 0, turn_refused = 0;
+struct ComputeTurn {
+    explicit ComputeTurn(const VkComputePipelineCreateInfo&) { turns++; }
+    bool ok() const { return !turn_refused; }
+};
+struct IntelDriverGate {
+    bool busy = false;
+    explicit IntelDriverGate(bool) {}
+};
+static bool compiles_nothing(int) { return false; }
+static VkResult intel_gate_busy() { return -2; }
 %s
 static int fails = 0;
 #define NEED(c, what) do { if (!(c)) { fails++; std::printf("FAIL: %%s\n", what); } } while (0)
@@ -74,6 +89,11 @@ int main() {
         NEED(driver_cache_only && driver_ask_cache == own.cache(), "on: graphics builds handed it (build_graphics)");
         own.compute(&ci, &pl);
         NEED(guarded == 1 && last_guarded == own.cache() && cached == 1, "on: compute builds handed it");
+        NEED(turns == 1, "on: a compute build takes its turn at the memory gate, as cached_compute's");
+        turn_refused = 1;
+        pl = (VkPipeline)1;
+        NEED(own.compute(&ci, &pl) != VK_SUCCESS && pl == VK_NULL_HANDLE && guarded == 1, "a turn refused (stopped): nothing compiled");
+        turn_refused = 0;
         {
             DriverOnlyBuilds inner;
             NEED(driver_ask_cache == inner.cache() && inner.cache() != own.cache(), "nested: the inner one's");
@@ -123,11 +143,11 @@ def check_source(draw):
     off = block(draw, "bool pcache_load_off() {", "\n}\n")
     if "pcache_driver_builds = !choice.load && pcache_load::builds_into_driver(choice.why);" not in off:
         problems.append("pcache_load_off does not set pcache_driver_builds from the rule")
-    at_create = block(draw, "void precompile_at_create() {", "\n}\n")
-    runs = at_create.split("warm_bounded::run(")[1:]
-    if len(runs) != 2 or any(", held_now, [&](size_t) {\n        memory.sample();" not in r for r in runs) or \
-            at_create.count("THREAD_PRIORITY_BELOW_NORMAL") != 2:
-        problems.append("precompile_at_create's workers are not held while memory is short, or not below normal")
+    at_create = block(draw, "void precompile_at_create(void (*progress)(size_t done, size_t total)) {", "\n}\n")
+    worker = at_create[at_create.index("const auto worker = [pass, taking] {"):]
+    if "THREAD_PRIORITY_BELOW_NORMAL" not in worker[:worker.index("for (size_t i;")] or \
+            "start_memory_words().c_str()" not in at_create:
+        problems.append("precompile_at_create's workers are not below normal, or its progress lines say nothing of memory")
     return problems
 
 

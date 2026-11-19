@@ -3,9 +3,10 @@
 longshot_programs.bin keeps translated programs; vk_shader.cpp translator_stamp hashes the environment variables whose names
 start with one of its prefixes, so changing one translates the programs again. A switch that changes the translation but
 is left out of the list does nothing for the programs already cached (RX_VK_NO_INVARIANT and the NaN guard were
-such a case once; RX_VK_NO_CBUF_LOAD_RULE, RX_VK_PTR_SPLIT_FALLBACK and others were until this check). Read every
+such a case once, and several of the storage buffer pass's switches until this check). Read every
 RX_VK_ name the translator (gpu/vk/eden/shader_recompiler) reads, and the translation's own switches in vk_shader.cpp,
-and check each against the stamp's list. No game or GPU is needed.
+and check each against the stamp's list. A name that is no longer a switch (a GONE row of gpu/vk/switches.def) is passed
+over by the stamp, live and in nx2/bake_ds, so a run that still sets one keeps its cache. No game or GPU is needed.
 """
 import argparse
 import re
@@ -19,7 +20,7 @@ LOG_ONLY = {
     "RX_VK_PTR_DIAG": "counts the pointer pass's outcomes for the log",
 }
 # The switches vk_shader.cpp reads that change what the translator is given
-SHADER_SWITCHES = ("RX_VK_NO_DRAW_PARAMS", "RX_VK_ALL_GLOBAL_PROGS")
+SHADER_SWITCHES = ("RX_VK_ALL_GLOBAL_PROGS", "RX_VK_MESH_NOCULL")
 
 
 def block(text, marker):
@@ -70,6 +71,16 @@ def main():
     if bake_prefixes != prefixes:
         raise SystemExit("nx2/bake_ds/bake_ds.cpp's stamp list differs from vk_shader.cpp translator_stamp's:\n  bake_ds %s\n  live    %s"
                          % (bake_prefixes, prefixes))
+    # (a removed switch is none of the stamp's, in both: the names are passed over before the list is asked)
+    for what, text in (("vk_shader.cpp translator_stamp", loop[:loop.index("add(*e")]),
+                       ("nx2/bake_ds/bake_ds.cpp disk_stamp", bake_loop[:bake_loop.index("add(*e")])):
+        if "switches::find_gone(" not in text or "continue;" not in text:
+            raise SystemExit("%s hashes a set name that is no longer a switch (switches.def's GONE rows): a run that still sets "
+                             "one would get a program cache of its own for nothing" % what)
+    gone = set(re.findall(r'^GONE\((RX_VK_[A-Z0-9_]+),', (args.source / "gpu" / "vk" / "switches.def").read_text(encoding="utf-8"), re.M))
+    listed_gone = sorted(gone & set(prefixes))
+    if listed_gone:
+        raise SystemExit("translator_stamp's list names removed switches: " + ", ".join(listed_gone))
     stale = [name for name in LOG_ONLY if name not in names]
     if stale:
         raise SystemExit("LOG_ONLY names a switch the translator no longer reads: " + ", ".join(stale))

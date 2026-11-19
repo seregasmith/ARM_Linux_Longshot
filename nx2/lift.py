@@ -25,14 +25,20 @@ import time
 import capstone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # (python -I leaves the script folder off)
+import long_paths  # noqa: E402
+long_paths.install()   # (paths past 260 characters on Windows, before anything reads a file: #1115)
 import kit
 import nso2  # noqa: F401  (DT_RELR)
 import insn
+import fastvec   # (longshot) TBL/EXT, vector loads, DUP and FMUL by element as single vector instructions
+import oot_patches   # (longshot) the game's patches: asked which functions they change (nx2/guest_locals.py)
+import guest_locals as local_regs   # (longshot) registers and flags as C locals (A64_LOCAL_REGS, A64_LOCAL_FLAGS): nx2/guest_locals.py
 import fastfp   # (longshot) fast float regions (A64_FASTFP): its emit_function, under lift_fixes' and poll's wrappers
 import dead_flags   # (longshot) the kit's dead_flags, answered at once for a function that writes no flag
 import walk   # (longshot) the kit's walk, with one shared entry per plain op's word
 import discover   # (longshot) the discovery's walks in new processes where there is no fork
 import lift_fixes
+import entry_hooks
 import suyu_rt_fixes
 import chunks
 import standalone
@@ -46,10 +52,14 @@ import a64_lift
 import a64_rtgen
 
 insn.install()
+fastvec.install()   # (around the kit's vectorize_fpx, op_text and fpx_header)
 fastfp.install()   # (before lift_fixes and poll wrap emit_function: theirs go around this one)
+local_regs.install(oot_patches.touches)   # (around fastfp's emit_function and the kit's localize_regs; the defaults; the patches asked)
+local_regs.install_plain()   # (around those: the functions the patches name keep the kit's context-flag text)
 dead_flags.install()
 walk.install()
 lift_fixes.install()
+entry_hooks.install()   # (host/*.c's ENTRY_HOOK_SYM hooks at the entry of their SDK functions: add() below)
 suyu_rt_fixes.install()
 
 
@@ -173,6 +183,8 @@ def main():
         print("ADR / ADRP+ADD code addresses outside the %d unwind-covered functions: %d, %d of them new entries" % (
             len(spans), len(refs), len(new)))
     L = a64_lift.Lifter(img)
+    if a.standalone:   # (longshot) the host's memcpy, memset, ... first, the SDK's own kept behind them (nx2/entry_hooks.py)
+        entry_hooks.add(L, img)
     if a.standalone:   # (longshot) widescreen and ultrawide: C after a few of the game's instructions
         import oot_wide
         oot_wide.install(L, img)
@@ -183,6 +195,14 @@ def main():
         import oot_jitter   # (the temporal upscalers' camera jitter, DLSS's and FSR 3.1's: none unless one runs, host/rx_backend.c)
         oot_jitter.install(L, img)
     discover.discover(L, img_dir, chunks.file_jobs(), max_insns=a.max_func)
+    if a64_lift.local_regs() or a64_lift.local_flags():   # (C spliced after an instruction reads and writes the context)
+        print("locals: %d functions with spliced code kept in the context" % local_regs.keep_spliced(L))
+        print("locals: %d functions entered above their first block kept in the context" % local_regs.keep_entered_below(L))
+        print("locals: %d functions that hold an address the patches name kept in the context" % (
+            local_regs.keep_mentioned(L, oot_patches.mentioned_addresses())))
+        cold = local_regs.keep_not_ran(L)   # (locals only where play runs the code: nx2/ran_funcs.txt, A64_LOCAL_FUNCS)
+        print("locals: every function may have them (A64_LOCAL_FUNCS=all, or no nx2/ran_funcs.txt)" if cold is None else
+              "locals: %d functions no play session ran kept in the context (nx2/ran_funcs.txt)" % cold)
     print("discovered %d functions (%.0fs)" % (len(L.funcs), time.time() - t0))
     last[0] = time.time()
 
@@ -206,7 +226,6 @@ def main():
         gen = os.path.join(out_dir, "gen")
         files = chunks.write(L, gen, os.path.join(a.work, "image"), a.rechunk and not a.standalone,
                              counters=[] if a.no_polls else [poll.stats], took=took, beside=report)
-        import oot_patches
         main_build = next((m["build_id"] for m in meta["modules"] if m["name"] == "main"), "")
         def tables():   # (the runtime tables and the standalone files: they read the image, not the lifted C)
             lines = []
@@ -222,11 +241,17 @@ def main():
         # (made in a process of their own while the C is edited: 4-8 s that waited for the edits. Where there is no fork, after them)
         side = chunks.start_side(tables)
         chunks.edit_c(gen, L.stats, a.standalone and main_build == oot_patches.LIFE_BUILD_ID, whole=not a.max_func, took=took)
+        if a64_lift.local_regs() or a64_lift.local_flags():   # (nx2/guest_locals.py: the patched functions kept the context)
+            print("locals: %d functions kept in the context for the patches; %d patched functions checked in the written C" % (
+                L.stats["locals_kept_for_patches"], local_regs.check_patched(gen)))
+            took("locals check")
         print("\n".join(chunks.end_side(side, tables)), flush=True)
         took("runtime tables and standalone files (beside the edits)" if side else "runtime tables and standalone files")
         L.report()
         if L.stats["entry_gotos"]:   # (nx2/lift_fixes.py, 4)
             print("functions with code below their entry, started at it by a goto: %d" % L.stats["entry_gotos"])
+        if a.standalone:   # (nx2/entry_hooks.py: one per hook the lift found a function for)
+            print("entry hooks spliced: %d" % L.stats["entry_hooks"])
         print("interrupt polls: %d loop headers in %d functions" % (poll.stats["polls"], poll.stats["functions"]))
         print("wrote %d code files to %s (%.0fs)" % (len(files), gen, time.time() - t0))
     print("done (%.0fs)" % (time.time() - t0))

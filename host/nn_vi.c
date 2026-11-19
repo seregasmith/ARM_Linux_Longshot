@@ -21,13 +21,41 @@ static volatile LONG nvsync;
 static HANDLE vsync_thread;
 
 static int fps_max(void);   /* (below: HOS_FPS_MAX) */
+/* (longshot) The ticker's wait. hos_sleep_ns under a millisecond yields in a loop until the time (hos_thread.c), so an
+   uncapped ticker (1 ms period) spun a core. This waits on a thread-local high-resolution waitable timer instead, as
+   sleep_ns does for the game's own sleeps; the timer cannot be made: hos_sleep_ns. HOS_VSYNC_YIELD=1: hos_sleep_ns
+   always, as before */
+static void vsync_wait_ns(int64_t ns) {
+    static _Thread_local HANDLE timer;
+    static _Thread_local int tried;
+    if (!tried) {
+        tried = 1;
+        timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+        if (!timer) hos_log("vi: the vsync ticker has no high-resolution timer: it waits by yielding");
+    }
+    if (timer) {
+        LARGE_INTEGER due;
+        due.QuadPart = -(ns / 100 > 0 ? ns / 100 : 1);   /* relative, 100 ns units */
+        if (SetWaitableTimerEx(timer, &due, 0, NULL, NULL, NULL, 0)) {
+            WaitForSingleObject(timer, INFINITE);
+            return;
+        }
+    }
+    hos_sleep_ns(ns);
+}
+static void vsync_sleep(int64_t ns) {
+    static int yield = -1;   /* (read once: only the ticker calls this) */
+    if (yield < 0) yield = env_on("HOS_VSYNC_YIELD");
+    if (yield) hos_sleep_ns(ns);
+    else vsync_wait_ns(ns);
+}
 static DWORD WINAPI vsync_main(void *p) {
     (void)p;
     int64_t next = hos_now_ns() + 1000000000LL / fps_max();
     for (;;) {
         const int64_t period = 1000000000LL / fps_max();   /* (each tick: the menu's cap changes in play) */
         const int64_t now = hos_now_ns();
-        if (next > now) hos_sleep_ns(next - now);
+        if (next > now) vsync_sleep(next - now);
         next += period;
         if (next < hos_now_ns()) next = hos_now_ns() + period;   /* (fell behind: no burst of vsyncs) */
         for (LONG i = 0; i < nvsync; i++) hos_system_event_signal(vsync_events[i]);
@@ -142,7 +170,7 @@ static void fps_refresh(void) {
         const char *e = getenv("HOS_FPS_MAX");
         env = e ? fps_of(atoi(e)) : 0;
         start = hos_ini_option("frame_rate_cap", 0);
-        movie_pace = !(getenv("HOS_MOVIE_PACE") && !atoi(getenv("HOS_MOVIE_PACE")));   /* (0: the movie pacing off) */
+        movie_pace = env_on_or("HOS_MOVIE_PACE", 1);   /* (0: the movie pacing off) */
     }
     const int i = env ? 0 : rx_option(HOS_OPT_FPS_CAP, start);
     const int row = env ? env : fps_of(i == -1 ? 30 : caps[i >= 0 && i < CAPS ? i : 0]);
@@ -182,7 +210,7 @@ int hos_vi_native_interval(Ctx *c, int requested) {
        as it is ready, 60 at most; the game still reads back its own interval. HOS_GAME_INTERVAL=1, or Game speed Per frame:
        paced to the game's interval, as before */
     static int game_interval = -1;
-    if (game_interval < 0) game_interval = getenv("HOS_GAME_INTERVAL") && atoi(getenv("HOS_GAME_INTERVAL")) != 0;
+    if (game_interval < 0) game_interval = env_on("HOS_GAME_INTERVAL");
     int rx_option(int id, int otherwise);
     const int clamped = requested < 1 ? 1 : requested > 4 ? 4 : requested;
     /* (longshot) 30 has its own display period; interval 2 would pace it to 15.
@@ -316,7 +344,7 @@ uint32_t hos_movie_frames(uint64_t player) {
     uint32_t n = 1;
     memcpy(&secs, &bits, 4);
     AcquireSRWLockExclusive(&lock);
-    if (timed < 0) timed = !(getenv("HOS_FPS_MOVIE") && !atoi(getenv("HOS_FPS_MOVIE")));
+    if (timed < 0) timed = env_on_or("HOS_FPS_MOVIE", 1);
     if (timed) {
         int i = 0;
         while (i < PLACES && carry[i].player != player) i++;
@@ -351,6 +379,32 @@ uint32_t hos_frame_whole(uint64_t at, uint32_t amount_bits) {
     const uint32_t whole = frame_whole(&frame_whole_state, at, amount_bits, __atomic_load_n(&hos_frame_seconds_bits, __ATOMIC_RELAXED) != 0);
     ReleaseSRWLockExclusive(&frame_whole_lock);
     return whole;
+}
+/* (the same for a counter that runs `times` substeps a frame: the whole substeps, so a frame above 60 fps runs some of them
+   instead of all or none) */
+uint32_t hos_frame_whole_times(uint64_t at, uint32_t amount_bits, uint32_t times) {
+    AcquireSRWLockExclusive(&frame_whole_lock);
+    const uint32_t whole = frame_whole_times(&frame_whole_state, at, amount_bits, times,
+                                             __atomic_load_n(&hos_frame_seconds_bits, __ATOMIC_RELAXED) != 0);
+    ReleaseSRWLockExclusive(&frame_whole_lock);
+    return whole;
+}
+/* (nx2/oot_patches.py patch_loop_steps, patch_loop_pose) the step of an animation entry's clock, and the time a skeleton is drawn at,
+   for a loop of one frame or less while the frames' own time is the step: whole frames, and the loop's start (host/loop_step.h,
+   issue 988: the frozen Zoras twitched above a 60 cap). Anything else, and a cap of 60, as the game has it. */
+#include "loop_step.h"
+static LoopStep loop_step_state;
+static SRWLOCK loop_step_lock = SRWLOCK_INIT;   /* (the game's update threads) */
+uint32_t hos_loop_step(uint64_t at, uint32_t step_bits, uint32_t start_bits, uint32_t end_bits) {
+    const int timed = __atomic_load_n(&hos_frame_seconds_bits, __ATOMIC_RELAXED) != 0;
+    if (!timed || !loop_is_pose(start_bits, end_bits)) return step_bits;   /* (most entries: no lock) */
+    AcquireSRWLockExclusive(&loop_step_lock);
+    const uint32_t whole = loop_step(&loop_step_state, at, step_bits, start_bits, end_bits, timed);
+    ReleaseSRWLockExclusive(&loop_step_lock);
+    return whole;
+}
+uint32_t hos_loop_pose(uint32_t time_bits, uint32_t start_bits, uint32_t end_bits) {
+    return loop_pose(time_bits, start_bits, end_bits, __atomic_load_n(&hos_frame_seconds_bits, __ATOMIC_RELAXED) != 0);
 }
 volatile uint64_t hos_res_module = 0;   /* (f_831f3200's object, whose +0xe5c is the 3D's scale: nx2/oot_patches.py) */
 /* Quantize the time step to the engine's integer nominal rate. Keep debt from a short frame even when the minimum
@@ -480,7 +534,7 @@ static void realtime_step(int64_t now) {
        game fast), and the rate under it stays the engine's, 60 at most.
        HOS_FPS_STEP=0, or a lift without the hook (hos_step_probe unset): the rate up to the cap, as before */
     static int timed_step = -1;
-    if (timed_step < 0) timed_step = !(getenv("HOS_FPS_STEP") && !atoi(getenv("HOS_FPS_STEP")));
+    if (timed_step < 0) timed_step = env_on_or("HOS_FPS_STEP", 1);
     const int timed = fps_max() != 60 && timed_step && hos_step_probe;
     if (timed) {
         const double secs = sum / count, shortest = 1.0 / (fps_max() > 240 ? fps_max() : 240);

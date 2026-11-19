@@ -36,11 +36,14 @@
 #include "shader_recompiler/shader_info.h"
 #include "longshot_env.h"
 #include "fallback_loaded.h"
+#include "start_steps.h"
 #include "fallback_size_policy.h"
+#include "fallback_lanes.h"
 #include "vk_paths.h"
 #include "vk_internal.h"
 #include "vk_progcache.h"
 #include "prepare_workers.h"
+#include "threaded_rendering.h"   // (longshot: usable_cores counts by threaded::cores_of)
 #include "vk_programs.h"
 
 namespace mkwvk {
@@ -368,7 +371,12 @@ void get_info(Reader& r, Shader::Info& i) {
 void program_cache_save(const Program& p, const std::vector<std::vector<uint32_t>>& spirv) {
     // (each stage's phis, for fallback_compute_pipelines: the SPIR-V is not kept after this. Before the program is published)
     if (spirv.size() == p.stages.size())
-        for (size_t k = 0; k < p.stages.size(); k++) p.stages[k].phis = fallback_size::spirv_phis(spirv[k].data(), spirv[k].size());
+        for (size_t k = 0; k < p.stages.size(); k++) {
+            p.stages[k].phis = fallback_size::spirv_phis(spirv[k].data(), spirv[k].size());
+            p.stages[k].calls = fallback_size::spirv_calls(spirv[k].data(), spirv[k].size());
+            p.stages[k].lane_free = fallback_lanes::spirv_lane_free(spirv[k].data(), spirv[k].size());
+        }
+    descriptor_arrays_note(p);   // (its indexed descriptor arrays counted: every translated program passes here, vk_programs.cpp)
     disk_init();
     if (!disk_on || spirv.size() != p.stages.size()) return;
     std::vector<uint8_t> o;
@@ -508,6 +516,8 @@ void program_cache_read(FILE* in, std::mutex* mu, uint64_t key, const std::vecto
             }
             st.module = make_module(spirv, key, nullptr);
             st.phis = fallback_size::spirv_phis(spirv.data(), spirv.size());
+            st.calls = fallback_size::spirv_calls(spirv.data(), spirv.size());
+            st.lane_free = fallback_lanes::spirv_lane_free(spirv.data(), spirv.size());
             ok = ok && st.module;
         }
         ok = ok && answers_fit(*p, p->answers);   // (longshot: an answer past the stages or their slots: not this record)
@@ -525,6 +535,7 @@ void program_cache_read(FILE* in, std::mutex* mu, uint64_t key, const std::vecto
                      (unsigned long long)key, (long long)d.at, d.size);
             continue;
         }
+        descriptor_arrays_note(*p);   // (and every program read: vk_programs.cpp)
         p->ready.store(true, std::memory_order_release);
         variants.push_back(std::move(p));
         st_cache_hits++;
@@ -597,6 +608,7 @@ std::unique_ptr<Program> program_cache_read_light(FILE* in, std::mutex* mu, uint
     get_info(t, st.info);
     if (t.bad || !answers_fit(*p, p->answers)) return nullptr;
     p->code_at = d.at + (int64_t)code_at, p->code_words = words;
+    descriptor_arrays_note(*p);
     p->ready.store(true, std::memory_order_release);
     return p;
 }
@@ -631,6 +643,8 @@ bool complete_from(Program& p, FILE* in, std::mutex* mu, bool* busy = nullptr) {
         return false;
     }
     st.phis = fallback_size::spirv_phis(spirv.data(), spirv.size());
+    st.calls = fallback_size::spirv_calls(spirv.data(), spirv.size());
+    st.lane_free = fallback_lanes::spirv_lane_free(spirv.data(), spirv.size());
     module_id_learned(p.key, p.variant, st.module);   // (the next run's load makes its pipeline without this read: vk_programs.h)
     return true;
 }
@@ -772,6 +786,18 @@ std::vector<uint64_t> program_cache_compute_keys() {
         if (!kv.second.empty() && (kv.second[0].kind & 1)) keys.push_back(kv.first);
     return keys;
 }
+size_t program_cache_fallback_steps() {
+    disk_init();
+    // (the records program_cache_load_some(..., fallbacks) would take now, then what is in memory: start_steps::create_steps)
+    std::unordered_map<uint64_t, std::vector<DiskRecord>> taken;
+    if (disk_on) {
+        std::lock_guard lk(disk_mu);
+        for (const auto& kv : disk_records)
+            if (!kv.second.empty() && (kv.second[0].kind & 4)) taken.emplace(kv.first, kv.second);
+    }
+    std::lock_guard lk(shader_mu);
+    return start_steps::create_steps(taken, programs);
+}
 std::string program_cache_path() {
     disk_init();
     return disk_on ? disk_path : std::string();
@@ -830,8 +856,7 @@ size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted, const
     }
     // (and the mesh fallback programs in memory already, whose records an earlier read took: the state lists' programs in the
     // start that prepared the shaders. They had no compute pipelines until their first draw, which was left out: fallback_loaded.h)
-    static const bool loaded_too = fallback_loaded::on(getenv("RX_VK_FALLBACK_LOADED"));
-    if (fallbacks && loaded_too) {
+    if (fallbacks) {
         std::unordered_set<uint64_t> given;
         for (const auto& w : work) given.insert(w.first);
         const size_t loaded = fallback_loaded::each(programs, given, fn);
@@ -841,6 +866,19 @@ size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted, const
     return n;
 }
 
+/// (longshot) As program_cache_borrow, every variant of key given to fn at once (alive until fn returns): the preparation's compute
+/// warm hands them to several threads (vk_draw.cpp prepare_run)
+void program_cache_borrow_all(uint64_t key, const std::function<void(std::vector<std::unique_ptr<Program>>&)>& fn) {
+    std::vector<std::unique_ptr<Program>> variants;
+    program_cache_load(key, variants, true);
+    fn(variants);
+    for (auto& p : variants) {
+        for (Stage& st : p->stages)
+            if (st.module) vkDestroyShaderModule(dev.device, st.module, nullptr);
+        if (p->layout) vkDestroyPipelineLayout(dev.device, p->layout, nullptr);
+        if (p->set_layout) vkDestroyDescriptorSetLayout(dev.device, p->set_layout, nullptr);
+    }
+}
 /// (longshot) Program key's kept variants made for fn, then let go (modules and layouts): the records stay for play
 void program_cache_borrow(uint64_t key, const std::function<void(Program&)>& fn) {
     std::vector<std::unique_ptr<Program>> variants;
@@ -1124,6 +1162,29 @@ unsigned usable_cpus() {
     for (uint64_t m = (uint64_t)proc; m; m &= m - 1) n++;
     // (a mask covers one processor group, 64 CPUs at most: past that, Windows may run the process on every group)
     return n < 64 ? std::clamp(n, 1u, all) : all;
+}
+/// (longshot) The physical cores among the logical processors the process may run on: Threaded rendering's Auto count
+/// (threaded_rendering.h, whose tiers were measured by cores: on 4 cores the recorder thread made a third of the frames long,
+/// 18 Nov). GetLogicalProcessorInformation's cores, one mask each of its logical processors (on Linux host/posix's, from sysfs
+/// core_id and physical_package_id), each counted once when any of its logical processors is in the affinity mask
+/// (threaded::cores_of), so a Steam Deck's 4 cores and 8 threads count 4. The affinity mask not read: every core. The cores
+/// not read (the call fails, or no core is in the mask): usable_cpus, the logical count, as before. Never more than that
+unsigned usable_cores() {
+    DWORD_PTR proc = 0, sys = 0;
+    if (!GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys) || !proc) proc = ~(DWORD_PTR)0;
+    std::vector<SYSTEM_LOGICAL_PROCESSOR_INFORMATION> info;
+    DWORD len = 0;
+    if (!GetLogicalProcessorInformation(nullptr, &len) && len) {   // (the size it needs)
+        info.resize(len / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION) + 1);
+        len = (DWORD)(info.size() * sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION));
+        if (GetLogicalProcessorInformation(info.data(), &len)) info.resize(len / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION));
+        else info.clear();
+    }
+    std::vector<uint64_t> masks;
+    for (const SYSTEM_LOGICAL_PROCESSOR_INFORMATION& e : info)
+        if (e.Relationship == RelationProcessorCore) masks.push_back((uint64_t)e.ProcessorMask);
+    const unsigned cores = threaded::cores_of(masks.data(), (unsigned)masks.size(), (uint64_t)proc), cpus = usable_cpus();
+    return cores ? std::min(cores, cpus) : cpus;
 }
 unsigned half_cpus() {
     return std::max(1u, std::min(std::max(1u, std::thread::hardware_concurrency()) / 2, usable_cpus()));

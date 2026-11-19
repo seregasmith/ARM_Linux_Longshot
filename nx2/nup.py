@@ -29,6 +29,10 @@ import stat
 import struct
 import sys
 from time import monotonic
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:   # (python -I leaves the script folder off)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import long_paths  # noqa: E402
+long_paths.install()   # (paths past 260 characters on Windows, before anything reads a file: #1115)
 
 
 ZSTD = b"\x28\xb5\x2f\xfd"
@@ -760,39 +764,58 @@ def damaged_game_files(romfs, progress=None):
     return found
 
 
-def stand_in_for(path, damaged=()):
+def folder_listing(folder):
+    """(name, size) of each file in folder, in the listing's order: one listing, whose entries carry the sizes on Windows"""
+    with os.scandir(long_path(folder)) as entries:
+        return [(entry.name, entry.stat().st_size) for entry in entries if entry.is_file()]
+
+
+def stand_in_for(path, damaged=(), listings=None):
     """A whole file of the same kind beside a damaged one, to load in its place: the same last part of the name
     (_Nrm.bntx.zs: a normal map for a normal map), the longest common start of the name, then the nearest size. Never
-    one of the damaged files, even one already given a stand-in"""
+    one of the damaged files, even one already given a stand-in. The files of its kind are ranked by name and size
+    first, then opened in that order until a whole one: one or two opens, not one for each file of its kind
+    (PreComputedCulling/RuntimeId holds about 35,000 .bcul.zs; each was opened for each damaged file, #1275).
+    listings: folder -> folder_listing, kept across one pass's calls so a folder is listed once"""
     folder, name = os.path.split(path)
     suffix = re.search(r"(_[A-Za-z]+\d*)?(\.[^_]*)$", name).group(0)
+    listing = None if listings is None else listings.get(folder)
+    if listing is None:
+        listing = folder_listing(folder)
+        if listings is not None:
+            listings[folder] = listing
     size = os.path.getsize(long_path(path))
-    best = None
-    for other in os.listdir(long_path(folder)):
-        if other == name or not other.endswith(suffix):
-            continue
+    # (ties go to the first in the listing, as when each was opened in turn)
+    ranked = sorted((-len(os.path.commonprefix((name, other))), abs(other_size - size), i, other)
+                    for i, (other, other_size) in enumerate(listing)
+                    if other != name and other.endswith(suffix) and os.path.join(folder, other) not in damaged)
+    for *_, other in ranked:
         candidate = os.path.join(folder, other)
-        if candidate in damaged:
-            continue
         with open(long_path(candidate), "rb") as f:
-            if not zstd_start(f.read(4)):
-                continue
-        score = (len(os.path.commonprefix((name, other))), -abs(os.path.getsize(long_path(candidate)) - size))
-        if best is None or score > best[0]:
-            best = (score, candidate)
-    return best and best[1]
+            if zstd_start(f.read(4)):
+                return candidate
+    return None
+
+
+# An incomplete dump has a few damaged files (three textures in the 23.3 GB dumps). Past this many the dump is damaged
+# throughout: no stand-in is looked for, and the build stops at once (#1275's had 1896, and sat overnight first)
+MOST_STAND_INS = 100
 
 
 def stand_in_damaged(romfs, progress=None, damaged=None):
     """Each damaged .zs file in an unpacked romfs replaced by a copy of its stand-in: (damaged, stand-in or None) each.
     Only for a romfs this tool unpacked: the player's own folder is never written to. progress: damaged_game_files'.
-    damaged: the paths already known (the extraction's HEADS_NAME), so no file is opened to find them"""
+    damaged: the paths already known (the extraction's HEADS_NAME), so no file is opened to find them. More than
+    MOST_STAND_INS damaged: none is given a stand-in (each is None) and nothing is written"""
     done = []
     if damaged is None:
         damaged = damaged_game_files(romfs, progress)
+    if len(damaged) > MOST_STAND_INS:
+        return [(path, None) for path in damaged]
     excluded = set(damaged)
+    listings = {}
     for path in damaged:
-        other = stand_in_for(path, excluded)
+        other = stand_in_for(path, excluded, listings)
         if other:
             shutil.copyfile(long_path(other), long_path(path + ".part"))
             os.replace(long_path(path + ".part"), long_path(path))

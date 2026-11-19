@@ -115,7 +115,7 @@ int main(int argc,char** argv) {
     if(which=="empty") {
         consume_dump(false);require(waits==0 && invalidations==0 && png.empty(),"empty queue reads/waits");return 0;
     }
-    armed=true;
+    dump_armed=true;
     if(which=="ssbo" || which=="ssbo-tail") {
         std::vector<uint32_t> words(which=="ssbo"?8:16384);
         words[1]=1;words[3]=2;words.back()=3;upload(words);

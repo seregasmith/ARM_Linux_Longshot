@@ -124,6 +124,22 @@ If the row can't be changed, `longshot_env.txt` sets it: remove its `RX_VK_ASTC_
 
 [Search AMD reports](https://longshot.magicbean.dev/progress/#problem-search?q=amd)
 
+### Windows: HDR is on, but the game stays SDR
+
+The **HDR** row in the **Graphics** tab of the menu (<kbd>F1</kbd>) says why under its help ("The picture stays
+SDR: ..."), and `longshot_log.txt` has the same in its `vk: HDR:` line.
+
+1. **"HDR is off for this display":** turn on **Use HDR** for the display the game is on, in Windows' **Settings >
+   System > Display**.
+2. **"Windows has HDR on, but the graphics driver offers the game no HDR output":** Windows' desktop is in HDR, but
+   the driver doesn't offer HDR to Vulkan games. Updating the driver may not be enough: reinstall it with a clean
+   install (NVIDIA: run the driver's installer from nvidia.com, choose **Custom**, tick **Perform a clean
+   installation**), then restart the PC. A clean install resets the driver's settings, such as the output colour
+   depth. If the line stays, [report it](#still-stuck) with your graphics card, your display and `longshot_log.txt`.
+3. **Update the graphics driver** if neither fits.
+
+[Search HDR reports](https://longshot.magicbean.dev/progress/#problem-search?q=hdr)
+
 ## In game: performance and freezes
 
 ### It stutters the first time you see something

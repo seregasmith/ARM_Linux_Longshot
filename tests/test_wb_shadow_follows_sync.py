@@ -3,12 +3,11 @@ sync of a pool with a shadow copies the same bytes into the shadow and notes eac
 write-back's forget those pages are known again (shadow_synced_known), but only while the pool's shadow is the one that
 had the copy; the notes of a shadow being freed are dropped first (shadow_synced_freed), as a shadow made after may get
 its handle. The functions are taken from the source as they are and run over pools of the test's own, with
-vkCmdCopyBuffer recorded. With RX_VK_SHADOW_FOLLOWS_SYNC=0 nothing is copied or noted (the fixture is run again so).
+vkCmdCopyBuffer recorded.
 
 python -I -B tests/test_wb_shadow_follows_sync.py [--cxx g++]
 """
 import argparse
-import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -91,17 +90,8 @@ int count_known(uint64_t lo) {
     for (uint64_t pg = 0; pg < 128; pg++) n += known(lo, pg);
     return n;
 }
-int main(int argc, char** argv) {
+int main() {
     const std::vector<VkBufferCopy> rs = {{0, 0x1000, 0x2000}, {0x3000, 0x5ffc, 8}, {0x4000, 0x7000, 0}};   // (pages 1-2, 5-6, none)
-    if (argc > 1 && !std::strcmp(argv[1], "off")) {   // (RX_VK_SHADOW_FOLLOWS_SYNC=0: as before, nothing copied or noted)
-        reset();
-        shadow_sync_copy(1, kStage, imported[kA], rs);
-        CHECK(cmd_copies.empty() && shadow_synced.empty());
-        shadow_synced_known();
-        CHECK(count_known(kA) == 0);
-        std::puts("PASS: with RX_VK_SHADOW_FOLLOWS_SYNC=0 a mirror sync leaves the shadow alone");
-        return 0;
-    }
     // the sync's regions copied into the shadow too, and each page they touch noted with the pool and that shadow
     reset();
     shadow_sync_copy(1, kStage, imported[kA], rs);
@@ -158,17 +148,15 @@ def main():
     args = parser.parse_args()
     text = args.source.read_text(encoding='utf-8')
     fixture = (FIXTURE
-               .replace('@FOLLOWS@', through(text, 'bool shadow_follows_sync_on() {', 'void shadow_synced_known() {'))
+               .replace('@FOLLOWS@', through(text, 'struct LateStats {', 'void shadow_synced_known() {'))
                .replace('@FREED@', block(text, 'void shadow_synced_freed() {')))
-    env = {k: v for k, v in os.environ.items() if k != 'RX_VK_SHADOW_FOLLOWS_SYNC'}
     with tempfile.TemporaryDirectory(prefix='shadow-follows-sync-') as tmp:
         src = Path(tmp) / 'follows.cpp'
         exe = Path(tmp) / 'follows.exe'
         src.write_text(fixture, encoding='utf-8')
         subprocess.run([args.cxx, '-std=c++20', '-O1', '-Wall', '-Wextra', '-Werror', '-I', str(ROOT), str(src), '-o', str(exe)],
                        check=True)
-        subprocess.run([str(exe)], check=True, env=env, timeout=60)
-        subprocess.run([str(exe), 'off'], check=True, env=dict(env, RX_VK_SHADOW_FOLLOWS_SYNC='0'), timeout=60)
+        subprocess.run([str(exe)], check=True, timeout=60)
 
 
 if __name__ == '__main__':

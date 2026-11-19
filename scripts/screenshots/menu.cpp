@@ -25,6 +25,8 @@ uint64_t device_vram_bytes() { return 0; } // No physical device: the DLSS model
 int dlss_fg_skip(unsigned* most) { if (most) *most = 0; return FG_SKIP_NOT_BUILT; }
 int dlss_fg_unavailable() { return FG_SKIP_NOT_BUILT; }
 bool dlss_fg_forced() { return false; }
+int dlss_fg_most() { return 0; }   // (no DLSS FG top: the Frame generation row's own values)
+int framegen_capped(int framegen, int) { return framegen; }
 bool fsr4_built() { return false; }
 FsrWhy fsr4_why() { return FSR_NOT_BUILT; }
 bool xess_built() { return false; }

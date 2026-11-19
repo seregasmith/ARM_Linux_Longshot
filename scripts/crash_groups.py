@@ -352,9 +352,12 @@ def main() -> int:
     failed, link = [], None
     if a.files:
         reports = []
+        basenames = collections.Counter(os.path.basename(path) for path in set(a.files))
         for path in a.files:
+            name = os.path.basename(path)
+            report_id = path if basenames[name] > 1 else name
             with open(path, encoding="utf-8", errors="replace") as f:
-                reports.append({"id": os.path.basename(path), "title": "", "text": f.read()})
+                reports.append({"id": report_id, "title": "", "text": f.read()})
     else:
         try:
             found = crash_issues(a.state, a.limit)

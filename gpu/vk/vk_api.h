@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 30
+#define MKWVK_API_VERSION 35
 enum { HOS_MONITOR_CURRENT = 1, HOS_MONITOR_PRIMARY = 2 };
 typedef struct MkwVkMonitor {
     char id[512];             /* opaque persistent preference; never a runtime handle or list index */
@@ -266,8 +266,14 @@ typedef struct MkwVkHost {
        Send performance statistics is ticked: the map Link is in and his age ("Kokiri Forest (child)", as the log's map: line;
        "" before a save is loaded) into map, and the movies' totals so far (host/nn_video.c): [0] pictures shown, [1] skipped to
        keep up with the sound, [2] shown late (over 50 ms after the one before), [3] decoding time in ns, [4] decoders that did
-       not start (another one took over). Returns the build's version (LONGSHOT_VERSION) */
-    const char *(*perf_info)(char *map, int cap, int64_t movie[5]);
+       not start (another one took over). Returns the build's version (LONGSHOT_VERSION).
+       Version 30: and Link's pose, for the one-second samples: pose = {x, y, z} his world position (game units), then the
+       gameplay camera's {yaw, pitch} (radians: yaw 0 toward +z and pi/2 toward +x, in [-pi, pi]; pitch above 0 looking up, in
+       [-pi/2, pi/2]), exact (perf_report.h sends them as cells and bins). *has_pose is 1 only when they are current: 0 unless
+       perf_tracking(1) was called, 0 while Link isn't updating (the title, the file select, a load: nothing set in the last
+       second), while no map is set (map is empty), while an event plays (a cutscene) and from a change of the map until his
+       next update, or when camera zero isn't the gameplay view */
+    const char *(*perf_info)(char *map, int cap, int64_t movie[5], float pose[5], int *has_pose);
     /* Version 27 (longshot): the frame trace's main-thread columns (RX_VK_FRAME_TRACE, gpu/vk/vk_replay.cpp): the game's main
        thread's (sead::MainThread) time so far, in ns: [0] waiting for a virtual core, [1] blocked in a wait or sleep, both
        counted while fps_timing is on, [2] its CPU time. 0 before the game names that thread */
@@ -282,6 +288,31 @@ typedef struct MkwVkHost {
     int (*monitor_count)(void);
     int (*monitor_info)(int index, struct MkwVkMonitor *out);
     void (*monitor_select)(const char *id);
+    /* Version 30: the opt-in performance sample is being collected (1, at the first frame with the tick on) or not (0: the
+       tick undone, the exit); the host reads Link's pose only while enabled, and forgets it at 0. */
+    void (*perf_tracking)(int enabled);
+    /* (version 32, longshot) a short rumble on the controllers at the Rumble strength as it is now: the Insert menu's row plays it when
+       it is changed (host/pad_sdl.c) */
+    void (*rumble_test)(void);
+    /* (version 33, longshot) the NFC tags of the player's folder (host/nn_nfp.c), for the Insert menu's NFC tab: how many there
+       are (listing them again), one's name (its file's, without the ending), one held to the reader (index; -1: taken away;
+       returns 0 when its file is not an NFC tag's), and what the reader is doing (bits: 1 the game uses NFC tags, 2 it waits for
+       one now, 4 one is held to it, 8 the game has read it), and the folder */
+    int (*nfc_count)(void);
+    const char *(*nfc_name)(int index);
+    int (*nfc_tap)(int index);
+    int (*nfc_state)(void);
+    const char *(*nfc_dir)(void);
+    /* (version 33) a tag on the Switch 2 Pro Controller's reader copied into that folder (host/nn_nfp.c, host/pad_switch2.c):
+       start 1 begins a scan; returns 0 none, 1 looking for a tag, 2 saved (nfc_scan_name: its file's name), 3 no tag in ten
+       seconds, 4 the tag is not a figure's, 5 no such controller over USB, 6 it could not be read or written */
+    int (*nfc_scan)(int start);
+    const char *(*nfc_scan_name)(void);
+    /* (version 34, longshot): the A/B within one run (host/hos_ab.c, HOS_AB), for the frame trace's ab_side column: the side
+       of the frame from from_ns to to_ns (the host's clock, now_ns; from_ns 0 when not known): -1 outside the A/B (none set,
+       its warm-up), 0 the switch's normal value, 1 the A/B's, 2 or 3 those sides in a transition (a flip inside the frame,
+       or less than 0.3 s before its end), which scripts/ab_summary.py leaves out */
+    int (*ab_frame)(int64_t from_ns, int64_t to_ns);
 } MkwVkHost;
 
 /* One completed temporal-upscale sample; all zero while inactive. */
@@ -357,7 +388,11 @@ typedef struct MkwVkRenderer {
        game's thread, before any draw uses it: what the back end kept ready for it can be loaded now (gpu/vk/vk_programs.cpp).
        Its stages' code and control sections are in the game's memory at this call */
     void (*nvn_program_created)(const nvn_prog *p);
-    /* (version 30, arm64 port) a memory pool finalized (non-virtual), on the game's thread: what the back end placed under
+    /* (version 31, longshot) nvn_invalidate when nothing in [gpu, gpu + size) can make it wait: 1, done (the host keeps the
+       game thread's virtual core for it); 0, call nvn_invalidate (with the core given up, as before). Never waits: no lock
+       but a short one of its own (RX_VK_WB_MAX_KB's table), any thread */
+    int (*nvn_invalidate_quick)(uint64_t gpu, uint64_t size);
+    /* (version 35, arm64 port) a memory pool finalized (non-virtual), on the game's thread: what the back end placed under
        it goes back into ordinary memory before the game uses the memory again (gpu/vk/vk_memory.cpp, where the driver takes
        neither host pointers nor dma-bufs of the guest window) */
     void (*nvn_pool_finalized)(uint64_t gpu, uint64_t size);

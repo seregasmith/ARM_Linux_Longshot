@@ -10,6 +10,10 @@
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#ifdef TRACY_ENABLE
+#define HT_WRAP_LOCKS   /* (LONGSHOT_TRACY: this file's locks that have to wait are zones) */
+#include "hos_tracy.h"
+#endif
 static SRWLOCK lock = SRWLOCK_INIT;
 #define LOCK() AcquireSRWLockExclusive(&lock)
 #define UNLOCK() ReleaseSRWLockExclusive(&lock)
@@ -151,6 +155,20 @@ static void discard_pages(uint64_t addr, uint64_t size) {
     static int keep = -1;
     if (keep < 0) keep = env_on("HOS_KEEP_FREED_PAGES");
     if (hi <= lo || keep) return;
+#if !defined(__EMSCRIPTEN__)
+    /* (pages the Vulkan back end imported stay where they are, zeroed, on every system. Linux: a hole punched under a
+       dma-buf import would leave the GPU on the old pages and the game on new ones. Windows: the same for a host-pointer
+       import, whose driver holds the physical pages: DiscardVirtualMemory or MEM_RESET lets the system take them from the
+       game's mapping and give it fresh ones at its next touch, and the GPU would go on reading and writing the old ones.
+       Before, Windows discarded them with no look at the imports. Zeroed and marked written (hos_guest_fill): the
+       renderer's mirror, captures and write-back shadow of these pages are the old bytes until it is told, and a later
+       write-back could put them back over the zeros. As FreeMemoryPages below) */
+    extern int rx_guest_imported(uint64_t lo, uint64_t hi);
+    if (rx_guest_imported(lo, hi)) {
+        hos_guest_fill(lo, 0, hi - lo);
+        return;
+    }
+#endif
 #if defined(_WIN32) && !defined(__EMSCRIPTEN__)
     extern int hos_large_pages;   /* (hos_main.c: large pages cannot be discarded) */
     if (hos_large_pages) return;
@@ -165,11 +183,7 @@ static void discard_pages(uint64_t addr, uint64_t size) {
         VirtualAlloc(GP(lo), (SIZE_T)(hi - lo), MEM_RESET, PAGE_READWRITE);
 #elif !defined(__EMSCRIPTEN__)
     extern int hos_posix_guest_discard(void *p, size_t n);   /* (hos_main.c: MADV_REMOVE on the memfd window) */
-    extern int rx_guest_imported(uint64_t lo, uint64_t hi);
-    /* (pages a dma-buf import holds stay where they are, zeroed: a hole punched under one would leave the GPU on
-       the old pages and the game on new ones) */
-    if (rx_guest_imported(lo, hi)) memset(GP(lo), 0, (size_t)(hi - lo));
-    else hos_posix_guest_discard(GP(lo), (size_t)(hi - lo));
+    hos_posix_guest_discard(GP(lo), (size_t)(hi - lo));
 #endif
 }
 
@@ -425,9 +439,11 @@ HLE(_ZN2nn2os15FreeMemoryPagesEmm) {
     if (ARG(0) + ARG(1) > (1ULL << 32)) {   /* (mkw-recomp: the pair of AllocateMemoryPages' commit above) */
         const uint64_t lo = (ARG(0) + 0xFFF) & ~0xFFFULL, hi = (ARG(0) + ARG(1)) & ~0xFFFULL;
         /* (pages the Vulkan back end imported, as part of a pool's 16 MB chunk, stay committed and are zeroed: the GPU
-           still maps them, and decommitted pages under an import faulted the device. Read as zero, as freed pages) */
+           still maps them, and decommitted pages under an import faulted the device. Read as zero, as freed pages.
+           Zeroed and marked written (hos_guest_fill): the renderer's mirror, captures and write-back shadow of them
+           are the old bytes until it is told, and a later write-back could put those back over the zeros) */
         extern int rx_guest_imported(uint64_t lo, uint64_t hi);
-        if (hi > lo && rx_guest_imported(lo, hi)) memset(GP(lo), 0, (size_t)(hi - lo));
+        if (hi > lo && rx_guest_imported(lo, hi)) hos_guest_fill(lo, 0, hi - lo);
 #if defined(_WIN32)
         else if (hi > lo) VirtualFree(GP(lo), (SIZE_T)(hi - lo), MEM_DECOMMIT);
 #else

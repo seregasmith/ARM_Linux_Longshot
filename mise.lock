@@ -2,26 +2,6 @@
 
 lockfile_version = 4
 
-[[tools."aqua:pre-commit/pre-commit"]]
-version = "4.0.1"
-backend = "aqua:pre-commit/pre-commit"
-specifiers = ["4.0.1"]
-
-[tools."aqua:pre-commit/pre-commit"."platforms.linux-arm64"]
-checksum = "sha256:f3e65c943795be7879e7ea2beda248321b6c8ae851dabc785522a432fb8ce003"
-url = "https://github.com/pre-commit/pre-commit/releases/download/v4.0.1/pre-commit-4.0.1.pyz"
-url_api = "https://api.github.com/repos/pre-commit/pre-commit/releases/assets/197703571"
-
-[tools."aqua:pre-commit/pre-commit"."platforms.linux-x64"]
-checksum = "sha256:f3e65c943795be7879e7ea2beda248321b6c8ae851dabc785522a432fb8ce003"
-url = "https://github.com/pre-commit/pre-commit/releases/download/v4.0.1/pre-commit-4.0.1.pyz"
-url_api = "https://api.github.com/repos/pre-commit/pre-commit/releases/assets/197703571"
-
-[tools."aqua:pre-commit/pre-commit"."platforms.macos-arm64"]
-checksum = "sha256:f3e65c943795be7879e7ea2beda248321b6c8ae851dabc785522a432fb8ce003"
-url = "https://github.com/pre-commit/pre-commit/releases/download/v4.0.1/pre-commit-4.0.1.pyz"
-url_api = "https://api.github.com/repos/pre-commit/pre-commit/releases/assets/197703571"
-
 [[tools."github:CircleCI-Public/circleci-cli"]]
 version = "1.14.0"
 backend = "github:CircleCI-Public/circleci-cli"

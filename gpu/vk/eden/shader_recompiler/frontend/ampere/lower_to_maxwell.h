@@ -302,8 +302,6 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             }
         }
         if (!any_high) native_high = {};
-        static const bool no_extended = env_on("RX_VK_NO_EXTREGS");   // (as before them: rejected)
-        if (any_high && no_extended) return fail(index, "native program uses lowering scratch registers");
         std::array<bool, 256> lowering_used{};   // (the reserved numbers uniform_register gave this instruction)
         const size_t words_before = result.instructions.size();
         const size_t relocations_before = relocations.size();
@@ -1643,11 +1641,10 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             // warp's shared memory accesses in order, Vulkan orders another lane's store and this lane's load only through a
             // barrier, and the driver's compiler may move them past each other (OoT's 4/3 gameplay network on NVIDIA's cooperative
             // matrix path: 16x2 bright bars, Longshot issue 2455). As for LDSM: a subgroup barrier before the first LDS after an
-            // STS, only where the LDS is not predicated (every lane of the warp reaches it). RX_VK_SHARED_NO_LDS_BARRIER=1: none, as before
-            static const bool lds_barrier = !env_on("RX_VK_SHARED_NO_LDS_BARRIER");
+            // STS, only where the LDS is not predicated (every lane of the warp reaches it)
             if (opcode == 0x388) {
                 shared_store_pending = true;
-            } else if (shared_store_pending && lds_barrier && native_predicate == 7) {
+            } else if (shared_store_pending && native_predicate == 7) {
                 emit(0xef98000000000000ULL | predicate | (u64{1} << 20));   // (MEMBAR, bit 20: barrier_operations.cpp)
                 shared_store_pending = false;
             }
@@ -1775,10 +1772,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             // barrier. A subgroup barrier before the reads (the stores have landed) and after them (no lane's next store reaches
             // the rows before every lane has read them); LDSM is warp-collective, so every lane reaches both. nxnative's finding
             // (seedds/nxnative, MIT: "LDSM reads rows other lanes stored", white blotches through agl's upscaler).
-            // RX_VK_MMA_NO_LDSM_BARRIER=1: none, as before
-            static const bool ldsm_barrier = !env_on("RX_VK_MMA_NO_LDSM_BARRIER");
             const auto subgroup_barrier = [&] {
-                if (ldsm_barrier) emit(0xef98000000000000ULL | predicate | (u64{1} << 20));   // (MEMBAR, bit 20: barrier_operations.cpp)
+                emit(0xef98000000000000ULL | predicate | (u64{1} << 20));   // (MEMBAR, bit 20: barrier_operations.cpp)
             };
             subgroup_barrier();
             if (transpose) {

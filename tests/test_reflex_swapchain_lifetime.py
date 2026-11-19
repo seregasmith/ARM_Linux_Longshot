@@ -64,7 +64,7 @@ int sleep_call(int,uint64_t chain,const VkLatencySleepInfoNV*){if(!chain)invalid
 struct Reflex {
     bool ready=true,latency=true,latency_next=true,frame_marked=true;
     uint64_t swapchain=42,swapchain_generation=0,wake=100,wake_value=0,id=1;
-    int mode=1;TestMutex mu;PresentId pid;uint64_t pid_value=0,presenting=0,last_present_id=0;
+    int mode=1;uint32_t interval_us=0;TestMutex mu;PresentId pid;uint64_t pid_value=0,presenting=0,last_present_id=0;
     void (*marker)(int,uint64_t,const VkSetLatencyMarkerInfoNV*)=marker_call;
     int (*sleep)(int,uint64_t,const VkLatencySleepInfoNV*)=sleep_call;
 } state;
@@ -72,7 +72,8 @@ struct {int device=1;}dev;
 Reflex& rx(){return state;}
 bool framegen_on(){return fg;}
 int wanted_mode(){return wanted;}
-void apply_mode(){if(!state.swapchain)invalid=true;++modes;}
+void apply_mode(uint32_t){if(!state.swapchain)invalid=true;++modes;}
+uint32_t fifo_min_interval_us(){return 0;}
 void log_timings(){}
 template<class... T> void logf(const char*,T...){}
 int vkWaitSemaphores(int,const VkSemaphoreWaitInfo*,uint64_t);
@@ -132,8 +133,6 @@ int main(){
     reflex_present_frame=kReflexThisFrame;   // (then frame generation off: the frame being made, 7, goes up from 5)
     if(reflex_present_id(&next)!=&state.pid||*state.pid.pPresentIds!=7||marked_id!=7)return 20;
     // a queue submit's tag (reflex_submit_id): the frame its GPU work belongs to; none where there is no such frame.
-    // RX_VK_REFLEX_SUBMIT_IDS follows longshot_env.h's rule: this runs once with =on (tags on) and once with =0 (off)
-    if(getenv("EXPECT_SUBMIT_IDS_OFF")){reset();state.id=3;if(reflex_submit_id(&next)!=&next)return 29;std::puts("PASS: RX_VK_REFLEX_SUBMIT_IDS=0 leaves the submits untagged");return 0;}
     using Tag=VkLatencySubmissionPresentIdNV;
     reset();state.id=3;
     const auto* t=static_cast<const Tag*>(reflex_submit_id(&next));   // (the frame being made)
@@ -157,8 +156,4 @@ with tempfile.TemporaryDirectory(prefix='reflex-swapchain-') as tmp:
     cpp.write_text(fixture)
     subprocess.run([a.cxx, '-std=c++20', '-O1', '-I' + str(a.source/'gpu/vk/compat'),
                     '-I' + str(Path(__file__).resolve().parents[1]/'gpu/vk'), str(cpp), '-o', str(exe)], check=True)
-    # (=on keeps the tags: an atoi(...) == 0 reading took it as off; =0 turns them off)
-    rc = subprocess.run([str(exe)], env=dict(os.environ, RX_VK_REFLEX_SUBMIT_IDS='on')).returncode
-    if rc == 0:
-        rc = subprocess.run([str(exe)], env=dict(os.environ, RX_VK_REFLEX_SUBMIT_IDS='0', EXPECT_SUBMIT_IDS_OFF='1')).returncode
-    raise SystemExit(rc)
+    raise SystemExit(subprocess.run([str(exe)]).returncode)

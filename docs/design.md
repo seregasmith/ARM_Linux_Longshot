@@ -103,7 +103,7 @@ second game.
 
 1. **Cross-queue `nvnCommandBufferWaitEvent` is honoured.** MKW's queues pass stages back and forth with events;
    replaying them in arrival order on one Vulkan queue flashed. `gpu/vk/vk_replay.cpp` `submit_job` replays each
-   submission as far as its waits allow, with per-queue state (`RX_VK_EVENT_WAITS=0` turns it off, for A/B only).
+   submission as far as its waits allow, with per-queue state (always on: the `RX_VK_EVENT_WAITS` switch is gone).
    *Check early:* log the game's queues and event waits on the first boot (which queues, how many waits per frame).
 2. **Nothing the replay reads comes from live guest memory.** Games write per-frame data ahead of the GPU: every
    read is from submit-time captures, and pools are captured from their creation, not their first GPU use
@@ -269,7 +269,8 @@ dump, the runtime made game-neutral, the stage-1 tools checked on MKW's dump as 
 ## 11. Findings, 2026-11-06, day
 
 - Builds: `nx2/split_hot.py` puts code_hot.c in eight files that compile side by side, 79 minutes to about 6
-  (a release ships no hot list, so a player's build has no hot pieces: every lifted file is built at `-O1`). `RX_PGO=gen` counts branches
+  (a release shipped no hot list, so a player's build had no hot pieces: every lifted file was built at `-O1`; since the list was
+  committed, `assets/profiles/hot_funcs.txt`, every build has them). `RX_PGO=gen` counts branches
   (host/pgo_rt.c writes LLVM raw format 11, the toolchain has no compiler-rt profile library), `HOS_PGO=<path>` with `<path>.reset` and
   `<path>.dump` files drives a run, `nx2/pgo_pieces.py` fits the merged profile to the pieces, `RX_PGO=<file>` uses it. `RX_VK_ONLY=1`: the renderer alone.
   (2026-11-14, after ProjectReLink) The renderer module the same way, apart from the game's: `RX_VK_PGO=gen` counts in the back end's own
@@ -278,8 +279,8 @@ dump, the runtime made game-neutral, the stage-1 tools checked on MKW's dump as 
 - Dark frames, open: lit surfaces come out black for one frame, geometry and depth intact. 5% with `RX_VK_FRAMEGEN=0`, 2.9% with the menu's Off, about 0.1% at 4x.
   Not the cause: render conditions, clear flags, ClearBuffer order, GPU lag, write-back, the real-time step, the ambient cubemap.
   `HOS_COND_RECORD` and `RX_VK_COND_ALWAYS` look like fixes by count and are not: the picture goes white. Tools: the frame log's dark trap dumps probes, passes and conditions; `RX_VK_PROBE_MIN`, `RX_VK_PROBE_UBO_HEX`.
-  Also not the cause: colour write masks (`wm` in the pass trace: f on every lit pass), constants (`RX_VK_PROBE_UBO_HEX`), queue order (`RX_VK_EVENT_WAITS=0`), and the capture in
-  synchronous mode (`RX_VK_SYNC_CAPTURE=1`, which does take 380,000 pages per 600 submits). `RX_VK_QUEUE_STATE=0` stops the game at the Load menu, and `RX_VK_MIRROR=0` is 8 fps: neither says anything.
+  Also not the cause: colour write masks (`wm` in the pass trace: f on every lit pass), constants (`RX_VK_PROBE_UBO_HEX`), queue order, and the capture in
+  synchronous mode (which does take 380,000 pages per 600 submits). `RX_VK_MIRROR=0` is 8 fps, which says nothing.
   What holds: geometry and depth are right (black shapes against the fog), the prepass and the lit passes run with the same draw counts, and the lit passes output black.
   The lit materials' four storage buffers (c0+0x510..0x540) keep their addresses, sizes and non-zero counts in dark frames as seen in guest memory; the 720 KB one is all zeros in good
   frames too, so it is no cause, though its compute shader (4b03b304) runs every frame. Guest memory is not what the GPU reads, so these need comparing on the GPU's side.
@@ -313,3 +314,72 @@ dump, the runtime made game-neutral, the stage-1 tools checked on MKW's dump as 
   output, a 240 Hz compositor and `RX_VK_IMMEDIATE=1` left the wait as it was.)
 - Measuring on this PC: two runs of the same build vary by 10% and more (other work on the machine); fps differences under that
   need many alternating runs. `chain.py`'s stretches are steadier: they say which part moved.
+
+## 13. Frame generation's presents, as rules
+
+Checked 2026-11-16 (Windows 11, RTX 5090, NVIDIA 621.24, 5120x2160 at 165 Hz with G-Sync, DLSS Frame Gen at 3x and 4x,
+PresentMon 2.3.0). Each fault these rules keep away looked like frame generation turned off: the FPS
+counter and the display thread's own counts said the frames were made and on time, and the screen showed the game's frame
+rate. `tests/test_framegen_fixed_pace.py` runs the timing functions through a model of the display loop.
+
+1. **Frame pacing is measured on the screen, not in the log.** The display thread's `frame interpolation: ... shown on time`
+   and `shown apart` counts are its present calls. After the call a present can still wait for the GPU: on 2026-11-16 the
+   log had no late frame while PresentMon showed 32% (3x) and 45% (4x) of the frames on the screen under 2 ms. Read
+   PresentMon's `DisplayedTime` (the share under 2 ms, its p10 to p90) and, for where a frame waited, `DisplayLatency` against
+   `CPUBusy` (the call) and `GPULatency` + `GPUTime` (its GPU work). The method: the measure skill,
+   `.claude/skills/measure/SKILL.md`.
+2. **A fixed multiplier's set is shown on the game's timeline, in every present mode** (`gpu/vk/vk_framegen.cpp`
+   `fixed_on_timeline`, `fixed_dues`, `pace_lead`), whatever Frame pacing says. An immediate (V-Sync Off) swapchain shows
+   each present at once: a set presented as it came (its made frames and the game's within a millisecond) showed the
+   game's frame and hardly the made ones. Evenly apart (the smoothed frame time over the set) the motion stutters as much
+   as the game's frame times vary; on the game's timeline each frame moves as far as its time. Under FIFO (V-Sync On) a VRR
+   display shows each present when it comes, one a refresh at most: as they came, a set's frames were a refresh apart and
+   its last one waited for the next set (3x at 60 fps on 240 Hz: 4.2, 4.2 and 8.3 ms), so there a frame goes at its time
+   but no sooner than a refresh after the one before was given (`fifo_slot`). `RX_VK_FG_TIMELINE=0` gives the old way
+   back, for an A/B.
+3. **The GPU's delay is fed back only from sets taken as they came** (`pace_delay`, `display_main`'s `as_came`). A set's
+   frames are done with the game frame's GPU work, so its times wait for that (`fg.late_ns`). A set whose copies went to the
+   GPU late for another reason (no swapchain image free, the display thread busy with the set before) would raise the delay
+   by its own lateness, which sends the next set's copies later still: at 4x it ran to a whole game frame.
+4. **A set presented ahead needs a frame slot per frame of both sets in flight, and two sets' spare swapchain images**
+   (`gpu/vk/vk_replay.cpp` `present_slots_for`, `gpu/vk/vk_main.cpp` `create_swapchain`, `present_ahead_wanted`). Each present
+   waits for the copy last made in its slot: with fewer slots than a set's frames, its 4th copy waited for its own first
+   copy, and with a slot per frame of one set the next set's copy k waited for the shown set's copy k, each so for all the
+   game's work queued before it, while frames of the shown set were due. The slot count is the swapchain's
+   (`dev.swap_slots`), set when it is made for its sets, in every present mode; `RX_VK_FG_TIMELINE=0` keeps 3. An app may hold at most
+   imageCount - minImageCount acquired images (an NVIDIA surface: 8 images, 6 spare): the next set's copies go as images
+   come free (`copy_up_to`), never all or none. The slots are also how many copies may still be on the GPU: what a copy
+   reads lives through `kPresentSlotsMax` presents after it (the overlays' staging buffers and old textures,
+   `gpu/vk/vk_imgui.cpp` `kFramesLater`; Dear ImGui's vertex buffers, `ImageCount`). At 4, frame generation at 3x and up
+   let them go while copies could still read them (a test-only log showed it on an RTX 5090; a likely cause of a
+   tester's lost device on an RTX 5080, not reproduced).
+5. **A present waits on the queue it is made on.** On the replay's graphics queue it waits behind the game's next frame (3 to
+   12 ms at 5120x2160), and a second queue of the graphics family takes turns with it on the GPU. A compute family's queue
+   runs beside it (`RX_VK_PRESENT_QUEUE`, `vk_main.cpp` `create_device`): 0.1% of the frames under 2 ms, on the screen 4.9
+   to 6.9 ms apart at 3x (p10 to p90), each present's call to the screen 1.3 ms instead of 6.6 (an RTX 5090). It is off
+   by default on every PC, `=1` turns it on: with frame generation it lost the GPU on a tester's RTX 5080 with NVIDIA's
+   621.24 (crashes at 2x and 3x that stopped with `=0`; #1491, another RTX 5080, looks the same), as it gave an RTX 4090
+   on 621.14 a black screen in Hookshot issue 1161, before the fork. The fault was never placed.
+6. **Under FIFO the made frames do not queue** (`gpu/vk/vk_framegen.cpp` `fifo_catch_up`, `fifo_pick`,
+   `gpu/vk/vk_reflex.cpp` `fifo_min_interval_us`). FIFO shows one frame a refresh: when the game's frame rate times the
+   multiplier passes the refresh, the frames queue in the sets taken ahead and their refresh slots, the game is held
+   back, and each game frame reaches the screen later and later (RTX 5090, 165 Hz: 3x, 40 to 51 ms after its hand-over
+   before the timeline under FIFO and 65 to 82 ms with it; at 2x under the refresh, 15 and 22 ms; 6x, the game held to
+   27.5 game frames a second (45.7 with V-Sync Off) and each game frame presented 138 ms after its hand-over). FIFO's catch-up (`display_main`'s `take`): a set
+   whose game frame, its last, would be shown over a refresh after its own time keeps the most frames that bring it
+   within one, the ones left out spread over the set so the picture moves in even steps (6x with 3 shown: the 2nd, 4th
+   and 6th), and their copies are not made, so no image is held for them. Past the refresh the screen then shows 160 to
+   165 frames a second at 165 Hz, each game frame within a refresh of its time, the game at its own rate (the model in
+   `tests/test_framegen_fixed_pace.py`: 3x, 4x and 6x at 33 to 60 game frames a second; in the game, 6x: the game at
+   52 to 55 frames a second and each game frame on screen 46 to 52 ms after its hand-over; these game runs had the presents
+   on their own queue, then the default with NVIDIA's 621.24, rule 5). At most all but one made frame is left out:
+   at 2x the one made frame stays, as a set of one frame is not presented ahead. The GPU's delay is fed back against
+   the set's first frame whichever frames are shown: a copy takes as long for any of them, and against the first one
+   shown 6x ran the delay down to 0, so its frames came due before their copies and a frame more a set was left out.
+   For a G-SYNC or
+   FreeSync display, `RX_VK_FG_FIFO_CAP=1` has NVIDIA Reflex's sleep, while frames are made, hold the game to the
+   multiplier's share of refresh - refresh²/3600 frames a second (157 at 165 Hz: 52.5 game frames at 3x), as NVIDIA's
+   own Reflex keeps a G-SYNC display under the refresh with V-Sync (with the first catch-up, 3x on 165 Hz: 29 ms on
+   screen with a 60 cap against main's 45 to 51 before the timeline under FIFO, and 39 uncapped against 33 to 40). It is off by default: a
+   display of a fixed refresh then has refreshes without a new frame (7 a second at 165 Hz), and the game cannot tell
+   the two apart.

@@ -65,7 +65,8 @@ class Lock(unittest.TestCase):
         self.assertEqual(tools.named(lock, "llvm-mingw").prefix, "llvm-mingw-20261104-ucrt-x86_64")
         # (every tool the Linux builder needs is in the lock: the AppImage carries none, builder/linux/linux_tools.py)
         self.assertEqual(sorted(t.name for t in tools.of_system(lock, "linux-x64")), sorted(tools.REQUIRED["linux-x64"]))
-        self.assertNotEqual(tools.named(lock, "emsdk", "linux-x64").sha256, tools.named(lock, "emsdk").sha256)
+        # (Windows builds with llvm-mingw alone: no emsdk to download, tests/test_windows_toolchain.py)
+        self.assertNotIn("emsdk", [t.name for t in tools.of_system(lock, "windows-x64")])
         # (the release workflow requires every tool; what is still to assemble is listed in RELEASING.md)
         with self.assertRaises(SystemExit):
             tools.named(lock, "nothing")

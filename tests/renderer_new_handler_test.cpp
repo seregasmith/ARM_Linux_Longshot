@@ -12,6 +12,9 @@
 #include <new>
 #include <string>
 
+#ifndef _Static_assert   // (gpu/render/rx_nvn.h is C: clang, the build's compiler, takes its asserts in C++ too; g++ does not)
+#define _Static_assert static_assert
+#endif
 #include "gpu/vk/vk_api.h"
 #include "gpu/vk/vk_new.h"
 

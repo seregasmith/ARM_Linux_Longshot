@@ -66,13 +66,20 @@ bool dlss_fg_forced();
 void dlss_fg_probe();
 /// (longshot) Whether the set dlss_fg_frames did not make is the game's frame alone (vk_framegen.cpp framegen_record): DLSS FG
 /// asked for, on a temporal Upscaler (vk_temporal.h temporal_wanted), and no picture from it for this set, as in the game's
-/// own menus, movies and loading screens. Else (another Upscaler, more frames than its runtime makes, a refusal) the built-in
-/// one makes them, as before. Right after dlss_fg_frames, on its thread
+/// own menus, movies and loading screens. Else (another Upscaler, a refusal, a set of more frames than its runtime makes
+/// before NGX's answer) the built-in one makes them, as before. Right after dlss_fg_frames, on its thread
 bool dlss_fg_holds();
 /// Whether it makes the sets of `frames` made frames (the multiplier less 1) as far as is known: asked for, on a device DLSS
-/// runs on, NGX's answer not a no, its feature not given up and its runtime making that many (an older one makes 1 at the
-/// most, so 3x and 4x are the renderer's own). The swapchain's present mode follows it: vk_main.cpp swapchain_dlssg
+/// runs on, NGX's answer not a no, its feature not given up and its runtime making that many (an RTX 40's makes 1 at the
+/// most; the multiplier as it runs stops there, dlss_fg_most). The swapchain's present mode follows it: vk_main.cpp
+/// swapchain_dlssg
 bool dlss_fg_runs(int frames);
+/// (longshot) The most made frames its runtime makes a set (NGX's MultiFrameCountMax: 5 on an RTX 50's runtime, 1 on an RTX
+/// 40's) while DLSS-G is to make the frames: asked for, on a device DLSS runs on, a temporal Upscaler chosen (its inputs),
+/// NGX's answer a yes and its feature not given up. 0 otherwise, and before NGX has answered. Frame generation's fixed
+/// multiplier stops at it + 1 (vk_framegen.h framegen_now): past it NGX was not asked for the sets (FG_SKIP_TOO_MANY) and the
+/// renderer's own made every frame
+int dlss_fg_most();
 /// Frame generation's device extensions, asked of NGX, added to `want` when the device has them
 void dlss_fg_device_extensions(std::vector<const char*>& want, const std::vector<VkExtensionProperties>& all);
 /// The chain's frame (vk_temporal.cpp, after its engine's evaluation): its depth and motion copied, its camera kept, for the

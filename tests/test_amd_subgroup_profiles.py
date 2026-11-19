@@ -32,6 +32,7 @@ using VkShaderStageFlags = uint32_t;
 constexpr uint32_t VK_DRIVER_ID_AMD_PROPRIETARY = 1;
 struct {
     uint32_t sg32_stages = 0, subgroup_size = 32, subgroup_max = 32, driver_id = 0;
+    uint32_t max_workgroup_subgroups = 32;   // (pins_32: 32-lane subgroups cover the 64 invocations profile_pinned assumes)
     struct {
         bool shaderFloat16 = true;   // (k10: f16 lowered where the GPU has none; here it has)
         // (make_profile: storage image and texel buffer arrays indexed nonuniformly where the GPU can)
@@ -40,7 +41,10 @@ struct {
     } vk12;
     bool float_atomic_add = false;
     struct { struct { uint64_t minStorageBufferOffsetAlignment = 16; } limits; } props;
-    struct { bool gather_offset = false; } fixes;   // (vk_vendor.h: make_profile reads the gather offset from it)
+    // (device_policy.h, as make_profile reads it: the long warp path where a subgroup can have more than 32 lanes, the
+    // fragment shuffles' fallback on AMD's Windows driver, the gather offset. main() fills the first two by those rules,
+    // which tests/test_device_policy.py holds device_policy() to)
+    struct { bool warp64 = false, frag_shuffle_fallback = false, gather_offset = false; } policy;
 } dev;
 
 using Shader::Stage;
@@ -71,6 +75,8 @@ int main(int argc, char** argv) {
     dev.subgroup_max = number(2);
     dev.sg32_stages = number(3);
     dev.driver_id = number(4);
+    dev.policy.warp64 = dev.subgroup_max > 32;
+    dev.policy.frag_shuffle_fallback = dev.driver_id == VK_DRIVER_ID_AMD_PROPRIETARY;
     // (storage buffers bound and translated at 16 bytes at least: AMD's 4 made the 8- and 16-byte vector views inexact)
     for (const uint64_t device : {uint64_t{4}, uint64_t{16}, uint64_t{64}}) {
         dev.props.limits.minStorageBufferOffsetAlignment = device;
@@ -127,9 +133,10 @@ void check_stamp(uint32_t size, uint32_t pinned, bool workaround, bool forced) {
 }
 '''
     internal = (VK / "vk_internal.h").read_text(encoding="utf-8")
-    fixture = (FIXTURE + section(internal, "inline uint64_t storage_binding_align()", "/// A range of guest memory")
+    fixture = (FIXTURE + section(internal, "inline bool pins_32(", "/// (longshot) Where a storage buffer binding starts")
+               + section(internal, "inline uint64_t storage_binding_align()", "/// A range of guest memory")
                + section(shader, "Shader::Profile make_profile(", "Shader::HostTranslateInfo host_info()")
-               + section(shader, "const Shader::Profile& profile()", "const std::vector<Code>& codes_of(")
+               + section(shader, "const Shader::Profile& profile()", "const std::vector<SharedCode>& codes_of(")
                + section(warp, "Id HostThreadId(", "Id GuestLane(")
                + section(warp, "bool UseShuffleFallback(", "Id ShuffleAbsolute(") + check_stamp + CASES)
     with tempfile.TemporaryDirectory(prefix="longshot-subgroup-profile-") as tmp:
@@ -156,7 +163,7 @@ void check_stamp(uint32_t size, uint32_t pinned, bool workaround, bool forced) {
         env = {k: v for k, v in os.environ.items() if k not in ("RX_VK_WARP64", "RX_VK_FRAG_SHUFFLE_FALLBACK")}
         for device, expected, overrides in cases:
             subprocess.run([str(exe), *map(str, device + expected)], env=env | overrides, check=True, timeout=10)
-    assert "EmitSPIRV(profile_pinned(), rt, t->program, bindings)" in shader
+    assert "EmitSPIRV(profile_pinned(uint64_t(wg[0]) * wg[1] * wg[2]), rt, t->program, bindings)" in shader
     for stage in ("TASK", "MESH"):
         assert f"fallback ? profile_pinned() : profile_graphics(VK_SHADER_STAGE_{stage}_BIT_EXT)" in shader
     for start, end in (("Id ShuffleRelative(", "Id BroadcastLane("), ("Id EmitShuffleIndex(", "Id EmitShuffleUp("),

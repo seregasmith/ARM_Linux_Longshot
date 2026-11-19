@@ -15,7 +15,11 @@ A first start prepares shaders before the first frame: give it `--launch-timeout
 
 Written to OUT (default `work/memtour-<time>`, a new folder):
     mem.csv      one row every INTERVAL seconds: the game's RssAnon, RssShmem, swap (anonymous and shared), the sum
-                 `game_total` (resident + swapped, file pages left out: they can be dropped), MemAvailable, swap in use
+                 `game_total` (resident + swapped, file pages left out: they can be dropped), MemAvailable, swap in use;
+                 then the renderer's newest `vk: budget:` line of the run's log (every 600 presents, gpu/vk/mem_account.h):
+                 the VRAM its pools hold, the driver's allowance and count and what no pool reports, the RAM they hold,
+                 the process's private memory, and a column for each pool (MB; empty until the first line, and
+                 `vram_unaccounted` empty where the driver gives no count)
     marks.csv    the tour's events with wall times (in_play, each teleport, arrival, dwell)
     summary.md   the peaks and each area's peak, end value and lowest MemAvailable
     run/         the control run's folder (manifest, log.txt, shots/)
@@ -27,6 +31,7 @@ import csv
 import importlib.util
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -34,8 +39,21 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_DESTS = "13,1,2,3,0,7,9,11"
+# (the renderer's pools by the ledger they can be in, as gpu/vk/vk_texture.cpp and vk_memory.cpp register them:
+# tests/test_mem_account.py checks that every registered name is here)
+BUDGET_VRAM = ["textures", "sparse textures", "target pool", "dead images", "dead buffers", "other images", "blocks free",
+               "mirrors", "shadows", "staging", "captures", "capture spares", "imports", "retired imports", "other buffers"]
+BUDGET_RAM = ["imports", "retired imports", "retired records", "captures", "capture spares", "capture staging spares",
+              "capture table", "staging", "textures in RAM", "target pool", "dead images", "dead buffers", "other images",
+              "other buffers"]
+BUDGET_COLUMNS = (["vram_sum", "vram_allowed", "vram_driver", "vram_unaccounted"]
+                  + ["vram_" + n.replace(" ", "_") for n in BUDGET_VRAM] + ["vram_others", "ram_sum", "ram_private"]
+                  + ["ram_" + n.replace(" ", "_") for n in BUDGET_RAM] + ["ram_others"])
 COLUMNS = ["t", "wall", "pid", "rss", "anon", "shmem", "file", "vmswap", "swap_all", "shmem_swapped", "game_total",
-           "memavail", "swapused", "sys_shmem"]
+           "memavail", "swapused", "sys_shmem"] + BUDGET_COLUMNS
+# ("unaccounted n/a": the driver gives no count of its own, so there is nothing to take the sum from: an empty cell)
+BUDGET_LINE = re.compile(r"vk: budget: VRAM (\d+) of (\d+) MB \((\d+) MB by the driver, (?:(-?\d+) MB unaccounted|unaccounted "
+                         r"n/a)\): (.*); RAM (\d+) MB \(the process's private memory (\d+) MB\): (.*)$")
 
 
 def load_ctl(path=None):
@@ -74,12 +92,59 @@ def sample(pid, proc="/proc"):
                 swapused=mi.get("SwapTotal", 0) - mi.get("SwapFree", 0), sys_shmem=mi.get("Shmem", 0))
 
 
-class Sampler(threading.Thread):
-    """Writes a row to `path` every `interval` seconds until stopped or the process is gone"""
+def parse_budget(line):
+    """{column: MB} for a log line with the renderer's `vk: budget:` in it (every BUDGET_COLUMNS key), or None. A pool
+    the line leaves out holds nothing: 0. A pool this script has no column for is added to its ledger's others."""
+    m = BUDGET_LINE.search(line.rstrip("\r\n"))
+    if not m:
+        return None
+    out = dict.fromkeys(BUDGET_COLUMNS, 0)
+    out.update(vram_sum=int(m[1]), vram_allowed=int(m[2]), vram_driver=int(m[3]),
+               vram_unaccounted="" if m[4] is None else int(m[4]), ram_sum=int(m[6]), ram_private=int(m[7]))
+    for ledger, known, pools in (("vram_", BUDGET_VRAM, m[5]), ("ram_", BUDGET_RAM, m[8])):
+        for item in pools.split(", "):
+            name, _, mb = item.rpartition(" ")
+            if not name or not mb.isdigit():   # ("none", or a list the log cut short)
+                continue
+            out[ledger + (name.replace(" ", "_") if name in known else "others")] += int(mb)
+    return out
 
-    def __init__(self, pid, path, interval=2.0, proc="/proc"):
+
+class BudgetLog:
+    """The newest `vk: budget:` line of a log that is still being written: newest() reads what was added since the
+    last call and returns parse_budget's columns for the last such line so far ({} before the first, or with no log)"""
+
+    def __init__(self, path):
+        self.path, self.at, self.rest, self.last = path, 0, b"", {}
+
+    def newest(self):
+        if not self.path:
+            return self.last
+        try:
+            with open(self.path, "rb") as f:
+                f.seek(self.at)
+                data = self.rest + f.read()
+                self.at = f.tell()
+        except OSError:
+            return self.last
+        lines = data.split(b"\n")
+        self.rest = lines.pop()   # (a line still being written: read whole at the next call)
+        for line in reversed(lines):   # (the pools' line, not the arbiter's "vk: budget: gave back ..." ones)
+            row = parse_budget(line.decode("utf-8", "replace")) if b"vk: budget: VRAM" in line else None
+            if row:
+                self.last = row
+                break
+        return self.last
+
+
+class Sampler(threading.Thread):
+    """Writes a row to `path` every `interval` seconds until stopped or the process is gone. `log`: the game's log,
+    for the budget columns (none: they stay empty)"""
+
+    def __init__(self, pid, path, interval=2.0, proc="/proc", log=None):
         super().__init__(daemon=True)
         self.pid, self.path, self.interval, self.proc = pid, path, interval, proc
+        self.budget = BudgetLog(log)
         self.stop_event = threading.Event()
 
     def run(self):
@@ -94,7 +159,8 @@ class Sampler(threading.Thread):
                     break
                 if row:
                     row.update(t=round(now - t0, 1), wall=round(now, 1))
-                    w.writerow([row[c] for c in COLUMNS])
+                    row.update(self.budget.newest())
+                    w.writerow([row.get(c, "") for c in COLUMNS])
                 self.stop_event.wait(max(0.0, self.interval - (time.time() - now)))
 
     def stop(self):
@@ -211,7 +277,8 @@ class Tour:
 
 def read_rows(path):
     with open(path, newline="") as f:
-        return [{k: float(v) for k, v in r.items()} for r in csv.DictReader(f)]
+        # (an empty cell: a budget column before the renderer's first line, or with no log)
+        return [{k: float(v) if v != "" else float("nan") for k, v in r.items()} for r in csv.DictReader(f)]
 
 
 def areas(marks):
@@ -306,7 +373,7 @@ def main(argv=None):
                                     wrapper=json.loads(a.wrapper) if a.wrapper else None)
         info = session.info()
         mark("started", f'pid {info["pid"]}')
-        sampler = Sampler(info["pid"], out / "mem.csv", a.interval)
+        sampler = Sampler(info["pid"], out / "mem.csv", a.interval, log=info.get("log"))
         sampler.start()
         bridge = ctl.Bridge(info["socket"], 10)
         tour = Tour(ctl, bridge, mark)

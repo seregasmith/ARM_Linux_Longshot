@@ -64,7 +64,7 @@ def main():
     layout = block(tex, "bool bc_scratch_layout(")
     need(layout.count("0, 1, 0, bc_layers()};") == 2 and "kBcLayers" not in layout, "a scratch's first layout names layers it does not have")
     upload = block(tex, "bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {")
-    need("const uint32_t run = bc_layers();" in upload and "k1 - k0 < run" in upload, "an upload's run is not the scratch's layers")
+    need("tex.bc ? bc_layers()" in upload and "k1 - k0 < run" in upload, "an upload's run is not the scratch's layers")
     copy = block(tex, "bool texture_copy_into_bc(")
     need("l0 += bc_layers()" in copy and "std::min(bc_layers(), layers - l0)" in copy and "kBcLayers" not in copy,
          "a copy into a BC3 texture writes scratch layers that are not there")
@@ -81,7 +81,7 @@ def main():
             got = subprocess.run([str(exe)], text=True, capture_output=True, timeout=20, env=env, check=True).stdout.strip()
             need(got == want, f"RX_VK_BC_LAYERS={value}: {got} (layers, MB), wanted {want}")
         # (the production loops, run: texture_copy_into_bc whole, and the lines of upload_astc_gpu that form a run)
-        a = upload.index("size_t k1 = k0 + 1;")
+        a = upload.index("const uint32_t run =")
         b = upload.index("const uint32_t n = (uint32_t)(k1 - k0);", a) + len("const uint32_t n = (uint32_t)(k1 - k0);")
         fixture = (ROOT / "tests/bc_scratch_batches_test.cpp").read_text(encoding="utf-8")
         need(fixture.count("/* COPY */") == 1 and fixture.count("/* RUN */") == 1, "the batches fixture lost a mark")

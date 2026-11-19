@@ -205,7 +205,7 @@ def parallel_emit(emit, order, texts, counters, jobs, run=2000):
 
 # What the emit reads of the lifter besides the bodies of the functions it emits (a64_lift.Lifter.emit_function and the
 # methods it calls): sent once to each new process
-EMIT_TABLES = ("entries", "plt", "jt", "devirt", "after", "no_local", "setjmp_owner", "comments", "names")
+EMIT_TABLES = ("entries", "plt", "jt", "devirt", "after", "no_local", "setjmp_owner", "comments", "names", "entry_hooks")
 _view = None   # (a new process's view: a lifter with the tables only, and its counters)
 
 
@@ -460,7 +460,6 @@ def write(L, gen_dir, img_dir, rechunk=False, counters=(), jobs=None, took=None,
     return files
 
 
-HEAD = lifted_c.HEAD_NOTED
 PART = re.compile(r"code_(\d{3})_(\d+)\.c")
 HOT_PIECE = re.compile(r"code_hot_\d+\.c")   # (nx2/split_hot.py's pieces of code_hot.c)
 # (a function's compile time grows with the square of its size: LLVM's passes over one function of tens of thousands of blocks. Fitted to
@@ -477,7 +476,7 @@ def fn_cost(size):
 
 def text_cost(text):
     """The estimated compile cost of a C file of lifted functions"""
-    marks = [m.start() for m in HEAD.finditer(text)] + [len(text)]
+    marks = list(lifted_c.noted_starts(text)) + [len(text)]
     return marks[0] + sum(fn_cost(b - a) for a, b in zip(marks, marks[1:]))
 
 
@@ -498,7 +497,7 @@ def write_costs(gen_dir, costs):
 def _cut(text, budget):
     """A chunk's text cut at function starts into parts of about equal cost when its cost is past the budget:
     ([(part's text, its cost)], the total cost) with the chunk's own (first) part first, or (None, its cost) when it stays whole"""
-    marks = [h.start() for h in HEAD.finditer(text)]
+    marks = list(lifted_c.noted_starts(text))
     ends = marks[1:] + [len(text)]
     cost = [fn_cost(b - a) for a, b in zip(marks, ends)]
     total = sum(cost)
@@ -531,7 +530,7 @@ def _cut_already(gen_dir, path, nnn, text, budget):
     finished the cut and whose result was lost when another worker stopped (the pool breaks, _each runs the chunk again here).
     The chunk and its parts on disk joined and cut again must give those same files, so an earlier lift's parts beside a
     chunk that is small now are not taken: (the parts, {file: cost}, the line to print), or None"""
-    marks = [h.start() for h in HEAD.finditer(text)]
+    marks = list(lifted_c.noted_starts(text))
     if not marks:
         return None
     preamble = text[:marks[0]]

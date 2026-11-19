@@ -28,6 +28,10 @@ import hashlib
 import os
 import struct
 import sys
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:   # (python -I leaves the script folder off)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import long_paths  # noqa: E402
+long_paths.install()   # (paths past 260 characters on Windows, before anything reads a file: #1115)
 
 # [(msbt, label, {a wording's fingerprint: (start, end, replacement)})]: the string's bytes [start, end) become the replacement
 STRINGS = [

@@ -82,10 +82,12 @@ def main():
     graphics = block(draw, "VkResult graphics_with(")
     need("return cached_graphics" in graphics, "the play-cache path takes the lock twice")
     need("if (gate.busy) return intel_gate_busy();" in graphics, "graphics_with makes an ask wait for a compile")
+    need("quick_build || compiles_nothing(ci->flags)" in graphics, "a temporary build blocks behind the compiler")
     # (an ask answered cold because the gate was busy is counted and logged: the pipeline may be in a cache all the same)
     busy = block(draw, "VkResult intel_gate_busy()")
     need("++st_intel_gate_busy" in busy and "logf(" in busy and "return VK_PIPELINE_COMPILE_REQUIRED;" in busy,
          "an ask answered cold for a busy gate is not counted")
+    need("gate_busy = true;" in busy, "a quick pipeline cannot distinguish a busy Intel gate from a cache miss")
     # (a dispatch's module, for a program read without its code: made on the replay thread when the gate is free, so a
     # prepared pipeline is had at once, and left to the worker, not waited for, while a worker holds it. Its code is looked
     # at under the cache's lock once the CAS is won, not before)

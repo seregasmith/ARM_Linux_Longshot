@@ -36,12 +36,21 @@ def check_source():
         raise SystemExit("texture_gpu_wrote no longer notes the write's regions")
     if wrote.index("wrote_regions::mark(lo, hi);") > wrote.index("std::lock_guard lk(gpu_wrote_mu);"):
         raise SystemExit("texture_gpu_wrote notes the regions after the map may have the write: a texture could be told no")
-    into = block(tex, "bool gpu_wrote_into(Texture& tex) {")
+    into = block(tex, "uint64_t gpu_wrote_into(const Texture& tex) {")
     if "wrote_regions::any(lo, hi)" not in into:
         raise SystemExit("gpu_wrote_into no longer asks the table")
     if into.index("wrote_regions::any(lo, hi)") > into.index("std::lock_guard lk(gpu_wrote_mu);"):
         raise SystemExit("gpu_wrote_into takes its lock before it asks the table")
-    for needle in ("it->second.second <= completed_value", "tex.gpu_wrote_seen = newest;"):
+    if "texture_complete_writes(completed);" not in block(tex, "void texture_frame(uint64_t completed) {") or \
+            "gpu_wrote.complete(completed);" not in block(tex, "void texture_complete_writes(uint64_t completed) {"):
+        raise SystemExit("completed writes are not published at the frame boundary")
+    if "note_drawn_storage(tex);" not in block(tex, "void texture_written(Texture* tex, const char* why) {") or \
+            "gpu_wrote.forget(tex->id, tex->gpu, tex->gpu + tex->guest_size);" not in block(tex, "void forget_gpu(Texture* tex) {"):
+        raise SystemExit("drawn image storage tracking no longer follows texture ownership")
+    touch = block(tex, "Texture* texture_touch(Texture* tex, bool for_sampling) {")
+    if "if (up_ok) {\n        if (gpu_dirty) tex->gpu_wrote_seen = gpu_dirty;" not in touch:
+        raise SystemExit("a failed upload must leave the write available for a retry")
+    for needle in ("gpu_wrote.newest(lo, hi, tex.gpu_written ? tex.id : 0)", "newest <= tex.gpu_wrote_seen"):
         if needle not in into:
             raise SystemExit("gpu_wrote_into's walk no longer has: " + needle)
 

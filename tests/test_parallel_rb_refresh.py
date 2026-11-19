@@ -29,7 +29,7 @@ ENV_ON_H = str(Path(__file__).resolve().parents[1] / "gpu" / "vk" / "compat" / "
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 ROOT = Path(__file__).resolve().parents[1]
-CASES = ("parallel", "untracked", "serial")
+CASES = ("parallel", "untracked", "serial", "nomirror")
 
 
 def cut(source, start, end):

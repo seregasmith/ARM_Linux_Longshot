@@ -15,13 +15,12 @@
 namespace mkwvk::hold_gpu {
 enum class Choice { Wait, Hold, Force };
 
-/// on: the rule (RX_VK_HOLD_GPU_WAIT; off: Force as soon as hold_ms is past, as before)
 /// gpu_wait: a thread of the game's is waiting for the GPU now
 /// held_ms: since the queues stopped
 /// since_gpu_wait_ms: since such a wait was last seen, or since the queues stopped, whichever is later
-constexpr Choice choose(bool on, bool gpu_wait, double held_ms, double since_gpu_wait_ms, double hold_ms, double most_ms) {
+constexpr Choice choose(bool gpu_wait, double held_ms, double since_gpu_wait_ms, double hold_ms, double most_ms) {
     if (held_ms <= hold_ms) return Choice::Wait;
-    if (!on || held_ms >= most_ms) return Choice::Force;
+    if (held_ms >= most_ms) return Choice::Force;
     if (gpu_wait || since_gpu_wait_ms <= hold_ms) return Choice::Hold;
     return Choice::Force;
 }

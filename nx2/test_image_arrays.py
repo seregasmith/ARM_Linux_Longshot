@@ -5,7 +5,7 @@ renderer writes that many descriptors to its binding (vk_draw.cpp). tests/image_
 the same ones with single descriptors, runs them through the real texture pass and SPIR-V back end, and writes their
 modules. Each must translate, pass spirv-val (Vulkan 1.3) and declare every binding with the count Info gives it: an
 OpTypeArray of that many images for a count above 1, the image itself for 1. Image buffers and storage images are read and
-written or added to atomically, texture buffers and textures fetched (plain, and with the fetch bounds of vk_vendor.h).
+written or added to atomically, texture buffers and textures fetched (plain, and with the fetch bounds of device_policy.h).
 Programs whose device indexes the arrays nonuniformly must carry NonUniform decorations (an atomic's texel pointer too)
 and that kind's capability.
 

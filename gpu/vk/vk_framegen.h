@@ -6,6 +6,15 @@
 namespace mkwvk {
 
 bool framegen_on();
+/// (RX_VK_FG_LATENCY_LOG) Before the swapchain is destroyed (retire_swapchain): the log's waits for its presents end first
+void fg_latency_swapchain_gone();
+/// (longshot) Frame generation's setting as it runs: the Insert menu's (opts.framegen: 0 Off, 1 Auto, 2 to 8 a fixed
+/// multiplier), a fixed one at most NVIDIA DLSS Frame Generation's runtime's most made frames + 1 while DLSS-G is to make the
+/// frames (vk_dlss.h dlss_fg_most: 6x on an RTX 50's runtime, 2x on an RTX 40's; that most is 0 otherwise: no cap). Past it
+/// NGX was not asked for the sets, and the renderer's own or AMD FSR 3.1 made every frame with DLSS FG chosen. A saved value
+/// past it is kept (another engine runs it), and is shown and run as that top. Off and Auto are as they are
+int framegen_capped(int framegen, int dlss_most);
+int framegen_now();
 /// Records the frame's processing into the present's recording (src: the window texture's view, sw x sh, the crop
 /// x, y, w, h; native_pq: the encoding of that captured present); false when interpolation cannot run
 /// (the present goes to the window as without it)
@@ -16,8 +25,14 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
 /// game's own menus, movies and loading screens: vk_dlss.cpp dlss_fg_holds)
 enum class FgMaker { None, BuiltIn, Dlss, Fsr3, DlssPaused };
 FgMaker framegen_maker();
-/// The first frame the last framegen_record made (null when it made none), w x h, GENERAL
-VkImage framegen_made_image(uint32_t* w, uint32_t* h);
+/// The first frame the last framegen_record made (null when it made none), w x h, GENERAL; with RX_VK_SHOT_MADE=all, each
+/// call the next of its made frames in turn, its place in the set in index
+VkImage framegen_made_image(uint32_t* w, uint32_t* h, int* index = nullptr);
+/// (longshot) The gameplay upscale's picture (its output, at level), recorded right after the upscale wrote it, before the
+/// game draws its HUD into it: copied while AMD FSR 3.1's frame interpolation is asked for, so that framegen_record can mark
+/// the HUD for it (what the game drew over the picture since). Anything else (null, another format or shape) is left alone
+struct Texture;
+void framegen_hud_before(VkCommandBuffer cmd, Texture* picture, uint32_t level);
 /// After that recording's submit (value): the display thread shows its frames
 void framegen_queue(uint64_t value);
 /// The window's present of an image (GENERAL, w x h; crop as above or null), vk_replay.cpp: the display thread's

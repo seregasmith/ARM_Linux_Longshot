@@ -2,7 +2,7 @@
 draw (no game/GPU required): maybe_split asks for the end (part_end_wanted) and replay() makes it (split_part) before a
 NOP_DRAW, NOP_DRAW_IDX or NOP_DRAW_INDIRECT that will be recorded, so no cut leaves a part beginning with a mesh draw or a dispatch. On an
 Intel Arc B580 a command buffer that began with mesh draws drew the plain draws after them as exploded triangles (white
-shards while moving). RX_VK_SPLIT_BEFORE_DRAW=0 ends a part after its 120th draw or dispatch, as before.
+shards while moving). RX_VK_SPLIT_BEFORE_DRAW=0 ends a part after its RX_VK_CHUNK-th draw or dispatch, as before.
 
 python -I -B tests/test_split_before_draw.py
 """
@@ -42,7 +42,12 @@ def main():
 
     # the switch: on by default on Intel, RX_VK_SPLIT_BEFORE_DRAW either way elsewhere
     on = block(replay, "bool part_ends_before_draw() {")
-    need("part_ends_before_draw", on, ['getenv("RX_VK_SPLIT_BEFORE_DRAW")', "!env_value_off(e)", "dev.props.vendorID == 0x8086"])
+    # (device_policy.h's split_before_draw: the rule, then the switch by device_policy_env's one rule, off words off and any
+    # other value on, as it was but for an empty value, now the PC's default; tests/test_device_policy.py runs both)
+    need("part_ends_before_draw", on, ["return dev.policy.split_before_draw;"])
+    policy = (ROOT / "gpu/vk/device_policy.h").read_text(encoding="utf-8")
+    need("device_policy.h", policy, ['flag(Sw::split_before_draw, "RX_VK_SPLIT_BEFORE_DRAW", p.split_before_draw);',
+                                     "p.split_before_draw = f.intel();"])
 
     # maybe_split only asks; the old behaviour (the end at once) is what the switch's off does
     ask = block(replay, "void maybe_split(VkCommandBuffer& cmd) {")

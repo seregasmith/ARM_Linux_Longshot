@@ -48,6 +48,8 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)   # (python -I leaves the script folder off)
+import long_paths  # noqa: E402
+long_paths.install()   # (paths past 260 characters on Windows, before anything reads a file: #1115)
 from prompt_faces import FACES, override, parts   # noqa: E402 (the faces: their icons, drawings and their parts)
 import prompt_keys   # noqa: E402 (the keyboard face)
 KENNEY = os.path.join(os.path.dirname(HERE), "third_party", "kenney_input")
@@ -308,6 +310,10 @@ PICTURE_BUTTONS = {"east": (869, 227, 31), "south": (800, 286, 31), "north": (80
 # part of the pad input bound to it: one line per pad input, chosen by the controls; a face button or the d-pad: a frame round the
 # group, as the game's round its face buttons, the label's icon telling which) or a pad input (fixed: the sticks)
 GUIDES = ("ControllerGuide_Pro_00", "ControllerGuide_Pro_01")
+# (longshot) the page's other leader line textures: a face may give any of the five by hand, and a hand-given one is
+# written whole, with no line drawn over it; 02 to 04 (ZR, the d-pad, L and R) over the game's labels' bars, kept from the
+# game's (nx2/prompt_faces/README.md)
+HAND_GUIDES = tuple(f"ControllerGuide_Pro_0{i}" for i in range(5))
 GUIDE_SCALE, GUIDE_AT, BARS = 1.1136, (131.3, 462.6), (147, 1407)
 GUIDE_LINES = [(0, 0, 333, "zl"), (1, 0, 561, "minus"), (0, 0, 667, "lstick"), (0, 1, 558, "plus"), (0, 1, 713, "a"),
                (0, 1, 1225, "rstick")]
@@ -492,6 +498,10 @@ def face_layers(b, tex, face, otf):
     own = None
     if face != "switch":
         hand = override(face, PICTURES[0] + ".png")
+        lines = [n for n in HAND_GUIDES if n not in GUIDES and override(face, n + ".png")]
+        if lines and not hand:   # (lines drawn for a picture that isn't there: they would point at the drawn one's places)
+            raise SystemExit(f"prompts: nx2/prompt_faces/{face}/ gives {lines[0]}.png but not the {PICTURES[0]}.png it was "
+                             "drawn for")
         own = Image.open(hand).convert("RGBA") if hand else prompt_draw.picture(
             face, decode(b, tex[PICTURES[0]]).convert("RGBA"), Icons("switch", otf))
     if own:
@@ -512,9 +522,16 @@ def face_layers(b, tex, face, otf):
         r = max(c[2] for c in PICTURE_BUTTONS.values())
         layers.append(Layer(name + ".png", name, 0xFF, 0, im, (min(xs) - r, min(ys) - r, max(xs) + r + 1, max(ys) + r + 1)))
     layers += guide_layers_of(b, tex, face)
+    return hand_layers(face, layers)
+
+
+def hand_layers(face, layers):
+    """layers with each image nx2/prompt_faces/<face>/ has by its name in place of the made one (of the same size, or the
+    build stops); not ControllerGuide_Pro_02 to 04, which guide_layers_of has already put over the game's labels' bars"""
+    from PIL import Image
     for layer in layers:
         hand = override(face, layer.name)
-        if hand:
+        if hand and not (layer.texture in HAND_GUIDES and layer.texture not in GUIDES):
             im = Image.open(hand).convert(layer.im.mode)
             if im.size != layer.im.size:
                 raise SystemExit(f"prompts: {hand} is {im.size[0]}x{im.size[1]}, the texture {layer.im.size[0]}x{layer.im.size[1]}")
@@ -800,6 +817,8 @@ def guide_layers_of(b, tex, face):
         return []
     game = [decode(b, tex[n]) for n in GUIDES]
     keep, moving = guide_layers(game, face)
+    if all(override(face, n + ".png") for n in GUIDES):
+        moving = {}   # (every line of these two is given by hand: nothing is drawn over them)
     layers = []
     for tx, name in enumerate(GUIDES):
         box = Image.new("L", game[tx].size, 0)   # (every place a line is or may be)
@@ -809,27 +828,51 @@ def guide_layers_of(b, tex, face):
         for end, lines in moving.get(tx, []):
             for pad, im in lines.items():
                 layers.append(Layer(f"{name}.{end}.{pad}.png", name, SW[end], PADS.index(pad), im, over=name + ".png"))
+    for name in HAND_GUIDES:
+        if name in GUIDES:
+            continue
+        hand = override(face, name + ".png")
+        if not hand:
+            continue
+        im = Image.open(hand).convert("L")
+        own = decode(b, tex[name])
+        if im.size != own.size:
+            raise SystemExit(f"prompts: {hand} is {im.size[0]}x{im.size[1]}, the texture {own.size[0]}x{own.size[1]}")
+        box = ImageChops.lighter(own, im).getbbox()   # (the game's own lines go with ours: ours cover them; none: no lines)
+        if not box:
+            continue
+        bars = Image.new("L", own.size, 0)   # (the game's labels' bars stay under the lines given: nothing of the game's in git)
+        bars.paste(own.crop((0, 0, BARS[0], own.height)), (0, 0))
+        bars.paste(own.crop((BARS[1], 0, own.width, own.height)), (BARS[1], 0))
+        layers.append(Layer(name + ".png", name, 0xFF, 0, ImageChops.lighter(bars, im), box))
     return layers
 
 
 def picture_layers(b, tex, im):
-    """the layers putting a face's controller picture (1160x680 RGBA, drawn like Controller_Pro) in place of the Pro Controller:
-    the picture, the page's tinted copy (each channel a line of the grey level, fitted on the game's pair) and the shadow (the
-    outline's left part squeezed into ControllerSh_Pro1 and blurred, fitted on the game's)"""
+    """the layers putting a face's controller picture (1160x680 RGBA, drawn in grey like Controller_Pro) in place of the Pro
+    Controller: the picture, the page's tinted copy (each grey the game's own pair gives it) and the shadow (the outline's left
+    part squeezed into ControllerSh_Pro1 and blurred, fitted on the game's). The game's tint is no straight line of the grey:
+    its black outlines turn a brown lighter than the #333333 body, which turns almost black (a line fitted through the pair
+    crushed the outlines, lit the body and dimmed the buttons). A picture with colours of its own gives its tinted copy by
+    hand too (nx2/prompt_faces/README.md)"""
     import numpy as np
     from PIL import Image, ImageFilter
     plain, tinted = (np.asarray(decode(b, tex[n]).convert("RGBA")).astype(float) for n in (PICTURES[0], PICTURE_TINT))
-    solid = plain[..., 3] > 250
-    grey = plain[solid][:, :3].sum(1)
-    lines = [np.polyfit(grey, tinted[solid][:, c], 1) for c in range(3)]
+    solid = (plain[..., 3] > 250) & (tinted[..., 3] > 250)
+    grey, colour = np.rint(plain[solid][:, :3].mean(1)).astype(int), tinted[solid][:, :3]
+    levels, counts = np.unique(grey, return_counts=True)
+    levels = levels[counts >= 20]   # (the greys the game drew enough of: not a few blended edge pixels)
+    if not len(levels):
+        raise SystemExit(f"prompts: no grey of the game's {PICTURES[0]} has its colour in {PICTURE_TINT}: not the pair known")
+    table = np.array([np.median(colour[grey == v], 0) for v in levels])
     px = np.asarray(im).astype(float)
-    level = px[..., :3].sum(2)
-    tint = np.dstack([np.clip(np.polyval(lines[c], level), 0, 255) for c in range(3)] + [px[..., 3]])
+    level = px[..., :3].mean(2)
+    tint = np.dstack([np.interp(level, levels, table[:, c]) for c in range(3)] + [px[..., 3]])
     sh = tex[PICTURE_SHADOW]
     shadow = im.getchannel("A").crop((40, 0, 480, 680)).resize((sh[2], sh[3])).filter(ImageFilter.GaussianBlur(24))
     shadow = shadow.point(lambda v: round(v * 0.7))
     return [Layer(PICTURES[0] + ".png", PICTURES[0], 0xFF, 0, im),
-            Layer(PICTURE_TINT + ".png", PICTURE_TINT, 0xFF, 0, Image.fromarray(tint.astype("uint8"))),
+            Layer(PICTURE_TINT + ".png", PICTURE_TINT, 0xFF, 0, Image.fromarray(np.rint(tint).astype("uint8"))),
             Layer(PICTURE_SHADOW + ".png", PICTURE_SHADOW, 0xFF, 0, shadow)]
 
 

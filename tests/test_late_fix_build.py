@@ -62,6 +62,7 @@ def section(text, first, before):
 
 FIXTURE = r'''
 #include "gpu/vk/compat/longshot_env.h"
+#include "gpu/vk/page_marks.h"
 #include <algorithm>
 #include <atomic>
 #include <cstring>
@@ -133,6 +134,7 @@ std::mutex wb_pages_mu;
 @WBPAGES@;
 WbPages wb_pages, wb_parts, wb_direct;
 void (*wb_writers_hook)(uint64_t, uint64_t, uint64_t, uint64_t) = nullptr;   // (RX_VK_LOG_RB_WRITERS: off)
+mkwvk::PageMarks<kPages, kChunkPages> wb_ever;   // (invalidate_quick's marks: wb_pages_note sets them)
 @WBNOTE@
 @SECTION@
 @CAPTURE@;
@@ -324,6 +326,36 @@ int main() {
         late_fixes.clear(), late_pages.clear();
         note(WB_DIFF, pg, 0x100000010ull);                // (after: D's low 32 bits, as the stamps are)
         CHECK(build(c9, 0x10000000aull) && late_fixes.size() == 1 && late_fixes[0].after == 0xa);
+    }
+    // (a2) a page found late only at the replay (late_new: capture_late_at_replay) keeps the CPU's words of its capture: it
+    // is not copied again from guest memory, and its fix counts from the capture's own view of the GPU (late_done), so the
+    // words of a diff write-back done since are taken from the shadow too
+    reset();
+    note(WB_DIFF, pg, 11);
+    {
+        Capture c = cap({(uint32_t)pg}, 9);
+        c.late_new = {0};
+        CHECK(!build(c, 9) && fell(3) == 1);              // (no stamps yet: as any late page, a block made and the capture waits)
+        filled(pg, 5);
+        completed_now = 12, copied_pages.clear(), flushes = 0;   // (the write-back is done by now: 12)
+        CHECK(late_fix_build(c) && late_fixes.size() == 1 && late_fixes[0].after == 9);
+        CHECK(copied_pages.empty() && flushes == 1);      // (not copied again: guest memory is the game's later frame by now)
+        CHECK(late_pages.count((uint32_t)pg) == 1);
+        late_fixes.clear(), late_pages.clear();
+        // (the same page late at the capture already: as before, copied again, and nothing to fix once the write-back is done)
+        Capture old = cap({(uint32_t)pg}, 9);
+        CHECK(build(old, 12) && late_fixes.empty());
+        // (stamps that began counting after the capture's view cannot say which words: the page goes the old way)
+        filled(pg, 10);
+        Capture young = cap({(uint32_t)pg}, 9);
+        young.late_new = {0};
+        CHECK(build(young, 12) && late_fixes.empty() && copied_pages.size() == 1);
+        // (a whole copy or a write in place since the capture's view: no record of which words, the old way too)
+        filled(pg, 5);
+        in_place(pg, 10);
+        Capture direct = cap({(uint32_t)pg}, 9);
+        direct.late_new = {0};
+        CHECK(build(direct, 12) && late_fixes.empty() && copied_pages.size() == 1);
     }
     // (c) a page written in place by a submission not done by D: which words, unknown, so it waits
     reset();
@@ -627,6 +659,24 @@ int main() {
         shadow_synced_known();
         CHECK(pool.shadow_known[i >> 6] >> (i & 63) & 1);
     }
+    // (s) the forget's list is searched as it was built: pages out of order and twice in it, a page 4096 pages from a synced
+    // one (the same low 12 bits), and synced pages noted twice. Only the synced pages the list really holds stay unknown
+    {
+        reset();
+        Pool& pool = imported[kLo];
+        std::fill(pool.shadow_known.begin(), pool.shadow_known.end(), 0ull);
+        std::vector<VkBufferCopy> rs{{0, pg * 4096 - kLo, 4 * 4096}, {0, (pg + 1) * 4096 - kLo, 4096}};   // (pg to pg + 3; pg + 1 again)
+        shadow_sync_copy(1, kCapBuf, pool, rs);
+        CHECK(shadow_synced.size() == 5);
+        shadow_forgotten_last = {(uint32_t)pg + 3, (uint32_t)pg + 4096 + 2, 7, (uint32_t)pg + 1, (uint32_t)pg + 3, (uint32_t)pg - 4096};
+        shadow_synced_known();
+        const auto is_known = [&](uint64_t p) {
+            const uint64_t i = p - (kLo >> kPageShift);
+            return (pool.shadow_known[i >> 6] >> (i & 63) & 1) != 0;
+        };
+        CHECK(is_known(pg) && is_known(pg + 2) && !is_known(pg + 1) && !is_known(pg + 3));
+        CHECK(st_lfx.sync_known == 2 && st_lfx.sync_left_unknown == 3 && shadow_synced.empty());
+    }
     std::puts("PASS: late_fix_build's fixes and waits, its stamp blocks, snapshots, their ranges and slots, and a CPU read of a fixed late page");
 }
 '''
@@ -657,7 +707,7 @@ def main():
                         + block(text, 'void late_fix_cpu_read(uint32_t page, VkBuffer buffer, uint8_t* slot) {'))
                .replace('@FORGET@', block(text, 'void shadows_forget_written() {')))
     env = {k: v for k, v in os.environ.items()
-           if k not in ('RX_VK_LATE_FIX', 'RX_VK_PARALLEL', 'RX_VK_NO_READBACK_WAIT', 'RX_VK_SHADOW_FOLLOWS_SYNC')}
+           if k not in ('RX_VK_LATE_FIX', 'RX_VK_PARALLEL')}
     with tempfile.TemporaryDirectory(prefix='late-fix-build-') as tmp:
         src = Path(tmp) / 'late_fix_build.cpp'
         exe = Path(tmp) / 'late_fix_build.exe'

@@ -138,12 +138,16 @@ static int log_queue(const char *line) { (void)line; return 0; }
 volatile int hos_control_on;
 void hos_control_log(const char *line) { (void)line; }
 void hos_log_flush(void) {}
+static void hos_ab_end(void) {}   /* (host/hos_ab.c: no A/B here) */
 static void log_flush(void) {}
 void hos_backtrace(void) {}
 void hos_hostcall_stats(void) {}
+/* (host/log_redact.c's, as it is for a run with no home folder in its lines) */
+static size_t hos_log_redact(char *out, size_t cap, const char *line) { snprintf(out, cap, "%s", line); return strlen(out); }
 /* HOS_LOG */
 /* HOS_FATAL */
 void rx_close_asked(void) {}
+void hos_fs_wait_writes(void) {}
 /* CLOSE_FINISH */
 /* CONTROL_QUIT */
 static int relaunch_asked = 1;

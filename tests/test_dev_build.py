@@ -85,6 +85,35 @@ class Linux(OnSystem):
         self.assertEqual(lib, "libnvsdk_ngx.a")
         self.assertEqual(db.shell_line("A", "b c'd"), "export A='b c'\"'\"'d'")
 
+    def test_vk_takes_the_exported_jobs(self):
+        """An exported LONGSHOT_JOBS goes through environment() to the renderer's --jobs and to the build's environment (the
+        game's build reads it there), while the queue's own LONGSHOT_JOB, LONGSHOT_JOB_* and an older queue's OOT_STATUS_*
+        are still dropped: a job that kept an outer job's LONGSHOT_JOB would take itself for that job"""
+        ran = []
+
+        class Queued(Exception):
+            pass
+
+        def queued(name, mode, cmd, env, cwd=None):
+            ran.append((cmd, env))
+            raise Queued
+
+        os.environ.update(LONGSHOT_JOB="4242", LONGSHOT_JOB_NAME="outer", LONGSHOT_JOB_MODE="build",
+                          OOT_STATUS_LOCK="older")
+        for jobs in ("1", "14"):
+            os.environ["LONGSHOT_JOBS"] = jobs
+            with mock.patch.object(db, "own_dir", return_value=self.tmp), mock.patch.object(db, "not_on_ram"), \
+                    mock.patch.object(db, "config", return_value={}), mock.patch.object(db, "toolchain", return_value={}), \
+                    mock.patch.object(db, "find_python", return_value="/the/python"), \
+                    mock.patch.object(db, "queued", queued), \
+                    mock.patch.object(db.os, "cpu_count", return_value=16), self.assertRaises(Queued):
+                db.cmd_vk(mock.Mock(copy_to=None))
+            cmd, env = ran[-1]
+            self.assertEqual(cmd[-2:], ["--jobs", jobs])
+            self.assertEqual(env.get("LONGSHOT_JOBS"), jobs)
+            for name in ("LONGSHOT_JOB", "LONGSHOT_JOB_NAME", "LONGSHOT_JOB_MODE", "OOT_STATUS_LOCK"):
+                self.assertNotIn(name, env)
+
 
 class Windows(OnSystem):
     windows = True
@@ -116,11 +145,11 @@ class Windows(OnSystem):
             self.assertEqual(dirs[t.name], os.path.join(db.builder_dir(), *t.dest.split("/")))
         # (every variable the Windows builder sets comes from a tool its setup requires)
         names = [n for n, _ in db.WINDOWS_TOOL_ENV]
-        self.assertEqual([v for _, v in db.WINDOWS_TOOL_ENV], ["LONGSHOT_MINGW", "EMSDK", "RX_CPM"])
+        self.assertEqual([v for _, v in db.WINDOWS_TOOL_ENV], ["LONGSHOT_MINGW", "RX_CPM"])
         self.assertTrue(set(names + ["python", "third-party"]) <= set(tools.REQUIRED["windows-x64"]))
         with open(os.path.join(ROOT, "builder", "LongshotBuilder", "Runner.cs"), encoding="utf-8") as f:
             runner = f.read()
-        self.assertIn('("EMSDK", "emsdk"), ("RX_CPM", "cpm")', runner)
+        self.assertIn('var sets = new[] { ("RX_CPM", "cpm") };', runner)
 
     def test_windows_toolchain_env(self):
         dirs = db.windows_tool_dirs()
@@ -129,7 +158,7 @@ class Windows(OnSystem):
         with mock.patch.object(tools, "install") as inst, mock.patch.dict(sys.modules, tools=tools):
             env, got = db.windows_toolchain()
         inst.assert_called_once()
-        self.assertEqual(env, {"LONGSHOT_MINGW": dirs["llvm-mingw"], "EMSDK": dirs["emsdk"], "RX_CPM": dirs["cpm"]})
+        self.assertEqual(env, {"LONGSHOT_MINGW": dirs["llvm-mingw"], "RX_CPM": dirs["cpm"]})
         self.assertEqual(got, dirs)
         self.assertEqual(db.python_candidates(dirs["python"]), [os.path.join(dirs["python"], "python.exe")])
         self.assertEqual(db.python_candidates(None), [])
@@ -191,6 +220,31 @@ class Both(unittest.TestCase):
             self.assertTrue(l.path.endswith(os.path.join("bases", "abc.lock")))
         with db.BaseLock(os.path.join(d, "bases", "abc") + os.sep):   # (again, after it was let go)
             pass
+
+    def test_vk_compiles_several_files(self):
+        """dev_build.py vk builds the renderer as a pack of it does: nx2/build.py run by itself compiles one file at a time, so
+        the command carries --jobs (LONGSHOT_JOBS, else one for every four CPU threads), run by the build's own Python"""
+        ran = []
+
+        class Queued(Exception):
+            pass
+
+        def queued(name, mode, cmd, env, cwd=None):
+            ran.append((mode, cmd))
+            raise Queued
+
+        d = tempfile.mkdtemp(prefix="dev_build_vk_")
+        self.addCleanup(shutil.rmtree, d, True)
+        for env, cpus, jobs in (({"LONGSHOT_JOBS": "6"}, 16, "6"), ({}, 16, "4"), ({}, 2, "1")):
+            with mock.patch.object(db, "own_dir", return_value=d), mock.patch.object(db, "not_on_ram"), \
+                    mock.patch.object(db, "queued", queued), \
+                    mock.patch.object(db, "environment", return_value=("/the/python", dict(env))), \
+                    mock.patch.object(db.os, "cpu_count", return_value=cpus), self.assertRaises(Queued):
+                db.cmd_vk(mock.Mock(copy_to=None))
+            mode, cmd = ran[-1]
+            self.assertEqual(mode, "light")
+            self.assertEqual(cmd[:4], ["/the/python", "-I", "nx2/build.py", "--standalone"])
+            self.assertEqual(cmd[-2:], ["--jobs", jobs])
 
 
 if __name__ == "__main__":

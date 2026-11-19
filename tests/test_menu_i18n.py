@@ -31,7 +31,8 @@ def tables():
     for name, body in re.findall(r'inline constexpr Entry (k\w+)\[\] = \{\n(.*?)\n\};', src, re.S):
         pairs = re.findall(r'^    \{"((?:[^"\\]|\\.)*)", "((?:[^"\\]|\\.)*)"\},$', body, re.M)
         out[name] = pairs
-    langs = re.findall(r'^    \{"([\w-]+)", "((?:[^"\\]|\\.)*)", (\w+), (\d+)\},$', src, re.M)
+    # (English's row {"en", "English", nullptr, 0}; the others lang(code, name, table), whose count is the table's length)
+    langs = re.findall(r'^    (?:\{|lang\()"([\w-]+)", "((?:[^"\\]|\\.)*)", (\w+)(?:, (\d+)\}|\)),$', src, re.M)
     return out, langs
 
 
@@ -42,12 +43,14 @@ class MenuI18nTests(unittest.TestCase):
         self.menu = set(c_strings(menu))
 
     def test_languages(self):
-        self.assertEqual(self.langs[0][:3], ("en", "English", "nullptr"))
+        self.assertEqual(self.langs[0], ("en", "English", "nullptr", "0"))
         codes = [code for code, _, _, _ in self.langs]
         self.assertEqual(len(codes), len(set(codes)), "a language listed twice")
         for code, _, table, count in self.langs[1:]:
             self.assertIn(table, self.tables, code)
-            self.assertEqual(len(self.tables[table]), int(count), "%s: its count is not its table's" % code)
+            # (tests/test_menu_i18n_count.py checks the counts as compiled)
+            self.assertEqual(count, "", "%s: a count written by hand, not lang()'s, its table's length" % code)
+        self.assertEqual(sorted(table for _, _, table, _ in self.langs[1:]), sorted(self.tables), "a table no language reads")
 
     def test_texts_are_the_menus(self):
         for table, pairs in self.tables.items():

@@ -1,7 +1,6 @@
 """A mesh fallback's depth-only draws are held while the colour draw of the same culled list waits for its build
-(gpu/vk/vk_draw.cpp): the draw roles, RX_VK_FALLBACK_DEPTH_HOLD=0, the hold's 120-frame release and draw()'s order."""
+(gpu/vk/vk_draw.cpp): the draw roles, the hold's 120-frame release and draw()'s order."""
 import argparse
-import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -33,14 +32,13 @@ static uint64_t frame = 10;
 uint64_t texture_frame_no() { return frame; }
 @HELPERS@
 #define CHECK(c) if (!(c)) return std::printf("FAIL line %d: %s\n", __LINE__, #c), 1
-int main(int argc, char**) {
+int main() {
     using R = FallbackRole;
     int t = 0;
     Program colour{0xf}, depth{0};
     NvnState writes{{true}}, tests{{false}};
     Targets both{1, {&t}, &t}, depth_only{0, {}, &t};
     DrawArgs listed{0x1000}, bare{0};
-    if (argc > 1) { CHECK(fallback_role_of(depth, writes, both, listed) == R::None); return 0; }   // switch off
     CHECK(fallback_role_of(colour, tests, both, listed) == R::Colour);
     CHECK(fallback_role_of(depth, writes, both, listed) == R::DepthOnly);
     CHECK(fallback_role_of(depth, writes, depth_only, listed) == R::DepthOnly);
@@ -94,9 +92,7 @@ def main():
         cpp, exe = Path(tmp) / "t.cpp", Path(tmp) / "t.exe"
         cpp.write_text(FIXTURE.replace("@HELPERS@", helpers), encoding="utf-8")
         subprocess.run([cxx, "-std=c++20", "-Wall", "-Wno-unused-function", str(cpp), "-o", str(exe)], check=True)
-        env = {k: v for k, v in os.environ.items() if k != "RX_VK_FALLBACK_DEPTH_HOLD"}
-        subprocess.run([str(exe)], check=True, timeout=10, env=env)
-        subprocess.run([str(exe), "off"], check=True, timeout=10, env=dict(env, RX_VK_FALLBACK_DEPTH_HOLD="0"))
+        subprocess.run([str(exe)], check=True, timeout=10)
     print("PASS: fallback depth hold")
 
 

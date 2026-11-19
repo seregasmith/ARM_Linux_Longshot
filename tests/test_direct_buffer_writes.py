@@ -13,7 +13,7 @@ ENV_ON_H = str(Path(__file__).resolve().parents[1] / "gpu" / "vk" / "compat" / "
 ROOT = Path(__file__).resolve().parents[1]
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 CASES = ("mirror_off", "upload_off", "refused", "virtual_write", "large_write", "no_recording",
-         "wait_disabled", "readonly", "mirror_pending", "mirror_on", "invalid_pool", "invalid_mapping")
+         "readonly", "mirror_pending", "mirror_on", "invalid_pool", "invalid_mapping")
 
 
 def block(source, signature, semicolon=False):
@@ -53,7 +53,9 @@ def main():
                              block(source, "struct TlPool {", True), block(source, "struct WriteBack {", True)])
     pages = source[source.index("std::mutex wb_pages_mu;"):source.index("void wb_pages_note(")]
     direct_note = block(source, "void note_direct_write(") if "void note_direct_write(" in source else ""
-    actual = "\n\n".join([pages, block(source, "void wb_pages_note("), block(source, "uint64_t memory_writeback_value("),
+    # (wb_ever, the marks wb_pages_note sets for invalidate_quick: gpu/vk/page_marks.h)
+    marks = '#include "%s"\nusing mkwvk::PageMarks;' % (ROOT / "gpu/vk/page_marks.h").as_posix()
+    actual = "\n\n".join([marks, pages, block(source, "void wb_pages_note("), block(source, "uint64_t memory_writeback_value("),
         block(source, "uint64_t gpu_bind_stamp("), block(source, "uint32_t bind_slot("), block(source, "bool bind_memo_hit("),
         block(source, "struct BindMemo {", True), "thread_local BindMemo bind_memo[256];", direct_note,
         block(source, "void shadow_forget(Pool& p, uint64_t at, uint64_t len) {"),

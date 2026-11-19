@@ -4,7 +4,7 @@ gpu/vk/guest_holes.h; no game/GPU).
 A hole of the guest window's memfd reads as zero, but a read of it through the window's shared mapping makes the kernel give
 it a page: the 288 MB shadow map, never written, became guest memory at each Hyrule Field load. Cuts upload_all_zero out of
 the source as it is, with stand-ins for the renderer around it over a real memfd window, and checks, each in a process of its
-own (the function keeps its switch and the memfd in statics):
+own (the function keeps the memfd in a static):
   allholes   a storage all holes: all zero, nothing read
   holes      a storage all holes but one page of zeros: all zero, and the memfd has no more pages than before
   data       a byte not zero past the holes: found, still no hole given a page
@@ -13,7 +13,6 @@ own (the function keeps its switch and the memfd in statics):
   outside    the storage's pointer not in the guest window: read whole (the memfd grows)
   nofd       no guest memfd (-1): read whole
   pipe       the extent search failing (an fd lseek can't seek): read whole
-  off        RX_VK_ZERO_HOLES=0: read whole, as before
 Then guest_holes.h on its own (tests/test_guest_holes.cpp). The memfd parts are Linux's: skipped elsewhere.
 
 python -I -B tests/test_guest_holes.py [--cxx g++]
@@ -29,6 +28,9 @@ from pathlib import Path
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests"))
+from srccut import block
+
 ENV_ON_H = ROOT / "gpu" / "vk" / "compat" / "longshot_env.h"
 
 FIXTURE = r'''#include <algorithm>
@@ -166,14 +168,12 @@ int main(int argc, char** argv) {
 }
 '''
 
-MODES = (("allholes", {}), ("holes", {}), ("data", {}), ("tail", {}), ("outside", {}), ("nofd", {}), ("pipe", {}), ("off", {"RX_VK_ZERO_HOLES": "0"}))
+MODES = ("allholes", "holes", "data", "tail", "outside", "nofd", "pipe")
 
 
 def cut_upload_all_zero():
     src = (ROOT / "gpu/vk/vk_texture.cpp").read_text(encoding="utf-8")
-    start = src.index("bool upload_all_zero(Texture& tex, uint64_t total, const Ranges* dirty, bool widened_format) {")
-    end = src.index("\nbool upload_inner(Texture& tex, const Ranges* dirty) {", start)
-    return src[start:end] + "\n"
+    return block(src, "bool upload_all_zero(Texture&", "gpu/vk/vk_texture.cpp") + "\n"
 
 
 def run_upload_all_zero(cxx, tmp):
@@ -184,10 +184,8 @@ def run_upload_all_zero(cxx, tmp):
                     "-Wno-unused-parameter", "-Wno-unused-function", "-Werror", "-pthread", "-rdynamic",
                     str(tmp / "f.cpp"), "-o", str(exe), "-ldl"], check=True)
     failed = []
-    for mode, extra in MODES:
-        env = {k: v for k, v in os.environ.items() if k not in ("RX_VK_ZERO_HOLES", "RX_VK_ZERO_UPLOAD")}
-        env.update(extra)
-        r = subprocess.run([str(exe), mode], env=env, capture_output=True, text=True)
+    for mode in MODES:
+        r = subprocess.run([str(exe), mode], capture_output=True, text=True)
         print(r.stdout.strip(), flush=True)
         if r.returncode:
             failed.append(mode)

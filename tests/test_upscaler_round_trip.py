@@ -92,6 +92,11 @@ int output_choice(int v) { return v; }
 int parse_output(const char*) { return 0; }
 int step_output_choice(int v, int dir) { return v + dir; }
 int output_for_aspect(int) { return opts.output_res; }
+// (the Frame generation rows in set_row: DLSS FG offered (framegen_by_dlss_offered); no DLSS FG top here (vk_dlss.cpp
+// dlss_fg_most, vk_framegen.cpp framegen_capped))
+bool framegen_by_dlss_offered() { return true; }
+int dlss_fg_most() { return 0; }
+int framegen_capped(int framegen, int) { return framegen; }
 int aspect_for_choice(int) { return opts.ultrawide; }
 int ultrawide_read = 0, aspect_started = 0;
 bool aspect_follows_host(int) { return false; }
@@ -144,6 +149,7 @@ bool gpu_card_missing = false;
 ::auto_settings::Choice auto_choice{};
 ::auto_settings::Tuning auto_tuning{};
 void logf(const char*, ...) {}
+bool env_on(const char*) { return false; }   // (save(): a --prepare-shaders run writes nothing; not one here)
 /* SAVE */
 void restart() {
     opts = Options{};

@@ -52,7 +52,6 @@ def main():
     check_source(text)
     helper = chr(10).join(block(text, marker) for marker in (
         'void shadow_free(Pool& p) {',
-        'bool shadow_rules_raw() {',
         'bool shadow_room(uint64_t n) {',
         'bool shadow_make(Pool& p) {',
         'void shadows_check_room() {'))

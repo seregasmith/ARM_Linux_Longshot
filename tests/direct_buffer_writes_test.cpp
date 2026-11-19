@@ -71,15 +71,10 @@ static Host* host = &interface;
 uint64_t memory_writeback_value(uint64_t guest, uint64_t size, bool* ever, uint64_t* part = nullptr, uint64_t* whole = nullptr);
 #include "direct_write_actual.inc"
 
-static void readback_disabled(bool off) {
+static void authored_environment() {
 #ifdef _WIN32
-    require(_putenv_s("RX_VK_NO_READBACK_WAIT", off ? "1" : "") == 0, "authored environment failed");
-    _putenv_s("RX_VK_MIRROR_DEFER", "");
     _putenv_s("RX_VK_ASYNC_IMPORT", "");
 #else
-    require((off ? setenv("RX_VK_NO_READBACK_WAIT", "1", 1) : unsetenv("RX_VK_NO_READBACK_WAIT")) == 0,
-            "authored environment failed");
-    unsetenv("RX_VK_MIRROR_DEFER");
     unsetenv("RX_VK_ASYNC_IMPORT");
 #endif
 }
@@ -109,9 +104,9 @@ int main(int argc, char** argv) {
         const uint64_t pages = (pool.hi - pool.lo) >> kPageShift;
         pool.shadow_known.assign((pages + 63) / 64, UINT64_MAX);
         uint64_t guest = pool.lo + 4092, gpu = guest, size = 16;
-        readback_disabled(mode == "wait_disabled");
+        authored_environment();
         if (mode == "mirror_off" || mode == "virtual_write" || mode == "large_write" ||
-            mode == "no_recording" || mode == "wait_disabled" || mode == "readonly") mirrors = false;
+            mode == "no_recording" || mode == "readonly") mirrors = false;
         else if (mode == "upload_off") mirror_upload = false;
         else if (mode == "refused") pool.mstate = Pool::MIRROR_REFUSED, size = 1u << 20;
         else if (mode == "mirror_pending") pool.mstate = Pool::MIRROR_WANTED;
@@ -150,7 +145,7 @@ int main(int argc, char** argv) {
                         !pool.direct_write_epoch, "readonly TLS shortcut changed write bookkeeping");
                 page_state(guest, size, false);
             } else {
-                page_state(guest, size, size <= (1u << 20) && mem_rec_value && mode != "wait_disabled");
+                page_state(guest, size, size <= (1u << 20) && mem_rec_value);
                 require(pool.direct_write_epoch == mirror_epoch, "direct write epoch missing");
                 require(writebacks.empty() && !synced, "direct binding entered mirror writeback path");
             }

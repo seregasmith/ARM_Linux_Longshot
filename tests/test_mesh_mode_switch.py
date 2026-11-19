@@ -75,9 +75,13 @@ def check_source():
         raise SystemExit("FAIL: create_device reads mesh_shaders= from longshot_options.ini other than to name it in the log")
     if 'logf("vk: mesh shaders: %s, from %s: %s"' not in device or "mesh_choice.why" not in device:
         raise SystemExit("FAIL: the log line does not say where the mesh mode came from")
-    # (the Linux AMD rule of Automatic is kept)
-    if "if (mesh_mode_used == 0 && dev.props.vendorID == 0x1002) mesh_mode_used = 2;" not in device:
-        raise SystemExit("FAIL: Automatic no longer picks Compute on Linux AMD")
+    # (Automatic's rule for RADV is kept. It asked for AMD off Windows; it asks the driver the deadlock is in, issue 2245,
+    # so AMDVLK is no longer taken with it: device_policy.h mesh_mode, tests/test_device_policy.py. The driver is asked first)
+    rule = "if (mesh_mode_used == 0 && fadd_driver.driverID == VK_DRIVER_ID_MESA_RADV) mesh_mode_used = 2;"
+    if rule not in device:
+        raise SystemExit("FAIL: Automatic no longer picks Compute with RADV")
+    if not device.index("p2.pNext = &fadd_driver;") < device.index(rule):
+        raise SystemExit("FAIL: Automatic's rule for RADV is decided before the driver is asked who it is")
 
     menu = (vk / "vk_menu.cpp").read_text(encoding="utf-8")
     table = menu[menu.index("Row rows[] = {"):]
