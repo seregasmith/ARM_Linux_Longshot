@@ -230,9 +230,9 @@
   },
   {
    "name": "libegl-mesa0",
-   "version": "25.2.8-0ubuntu0.24.04.4",
-   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/m/mesa/libegl-mesa0_25.2.8-0ubuntu0.24.04.4_arm64.deb",
-   "sha256": "c6177327a86067984bd7a68dea7ca1d1cf3d39e22df5ecc78b82ef93fe5867ac"
+   "version": "25.2.8-0ubuntu0.24.04.5",
+   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/m/mesa/libegl-mesa0_25.2.8-0ubuntu0.24.04.5_arm64.deb",
+   "sha256": "b9bd6b33f63975a33850d55b5dbebec01159700413ca5835f0cd01ce6a647f7d"
   },
   {
    "name": "libegl1",
@@ -272,15 +272,15 @@
   },
   {
    "name": "libgbm-dev",
-   "version": "25.2.8-0ubuntu0.24.04.4",
-   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/m/mesa/libgbm-dev_25.2.8-0ubuntu0.24.04.4_arm64.deb",
-   "sha256": "f0faf030f4dc8b78420dbdefd3aa764b855aa6ff7fbe1b0851ba851c43c2fa08"
+   "version": "25.2.8-0ubuntu0.24.04.5",
+   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/m/mesa/libgbm-dev_25.2.8-0ubuntu0.24.04.5_arm64.deb",
+   "sha256": "543fccb9a3d57d7c5a60f479d205e6451d6a115fbd9111df83717166cead815b"
   },
   {
    "name": "libgbm1",
-   "version": "25.2.8-0ubuntu0.24.04.4",
-   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/m/mesa/libgbm1_25.2.8-0ubuntu0.24.04.4_arm64.deb",
-   "sha256": "30b5fdfde03881869e6816865e5f718ab5a158bafdfcec2ef7dc67b369e1954c"
+   "version": "25.2.8-0ubuntu0.24.04.5",
+   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/m/mesa/libgbm1_25.2.8-0ubuntu0.24.04.5_arm64.deb",
+   "sha256": "40e1967e56bcc69bcb0443bb0f4e0fae9991a272b566c78364c712dcd9be0a26"
   },
   {
    "name": "libgcc-13-dev",
@@ -362,9 +362,9 @@
   },
   {
    "name": "libglx-mesa0",
-   "version": "25.2.8-0ubuntu0.24.04.4",
-   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/m/mesa/libglx-mesa0_25.2.8-0ubuntu0.24.04.4_arm64.deb",
-   "sha256": "5afe724ed80482592e4e40b12272111ba1e346a8b84374d9d4347a1a503db755"
+   "version": "25.2.8-0ubuntu0.24.04.5",
+   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/m/mesa/libglx-mesa0_25.2.8-0ubuntu0.24.04.5_arm64.deb",
+   "sha256": "95f5f888ccd6ada86b01ed30ed821bb3cb847c88f1ca79367da2f81c1c7b0512"
   },
   {
    "name": "libglx0",
@@ -938,9 +938,9 @@
   },
   {
    "name": "mesa-libgallium",
-   "version": "25.2.8-0ubuntu0.24.04.4",
-   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/m/mesa/mesa-libgallium_25.2.8-0ubuntu0.24.04.4_arm64.deb",
-   "sha256": "97bfd3fa3f12a6dbb36dacab7fb3c6fc514187fbe8c371106bea625e1b9a1c07"
+   "version": "25.2.8-0ubuntu0.24.04.5",
+   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/m/mesa/mesa-libgallium_25.2.8-0ubuntu0.24.04.5_arm64.deb",
+   "sha256": "8b7fd785eec5116b3e15bda0abc190c047873c45565eb93e00cd0b7bcf3fe9fc"
   },
   {
    "name": "rpcsvc-proto",
