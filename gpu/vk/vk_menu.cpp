@@ -2346,6 +2346,18 @@ void save() {
     // (one writer at a time: the present's thread, the game's (menu_option_set) and the control bridge's, menu_setting_set)
     static std::mutex save_mu;
     std::lock_guard lk(save_mu);
+    // (longshot) Nothing written by a --prepare-shaders run (the Builder's shader preparation, LONGSHOT_PREPARE_ONLY). It has
+    // no window, so the screen is 0 x 0 to it: its first start chose Auto (this PC) for that screen and saved the Output
+    // resolution as 2560x1440, which every start then took for the player's choice. A 1920 x 1080 AYN Odin 3 drew at 1440p
+    // and scaled down (2026-11-19). The game's own first start chooses with the screen it shows on, and saves then
+    static const bool preparing = env_on("LONGSHOT_PREPARE_ONLY");
+    if (preparing) {
+        static bool told = false;   // (under save_mu)
+        if (!told)
+            logf("vk: options: not saved by the shader preparation (no screen to choose for): the game's first start chooses");
+        told = true;
+        return;
+    }
     // (longshot) the lines that are not the menu's are kept: the controls, pad_ and key_ (host/nn_hid.c), and their toggle_ flags
     // (and every other line the menu does not write, such as discord_app_id=: they were dropped at the next save)
     std::string kept, others;

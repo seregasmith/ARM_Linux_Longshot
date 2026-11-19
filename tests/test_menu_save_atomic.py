@@ -88,6 +88,7 @@ void logf(const char* fmt, ...) {
     logged.push_back(b);
     std::fprintf(stderr, "log: %s\n", b);
 }
+bool env_on(const char* name) { const char* v = std::getenv(name); return v && *v && std::strcmp(v, "0") != 0; }   // (save(): a preparation writes nothing)
 bool no_file = false;   // (options_path() empty: no settings file this run)
 std::string ini_path() { return no_file ? std::string() : dir + "/longshot_options.ini"; }
 const char* ini_key(const Row& r) {
