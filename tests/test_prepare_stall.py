@@ -219,6 +219,7 @@ static bool left;
 int driver_faults() { return faults; }
 bool prepare_left_workers() { return left; }
 std::string skipped_path() { return std::getenv("FIXTURE_SKIPPED"); }
+std::string start_memory_words() { return "; memory: (a stand-in)"; }   // (vk_draw.cpp's: the progress lines' memory)
 '''
 
 WATCH_MAIN = r'''

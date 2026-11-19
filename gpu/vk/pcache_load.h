@@ -23,6 +23,13 @@
 //   counts: Mesa's, or another driver's, cannot answer NVIDIA's pipelines;
 // - not a --prepare-shaders run, which builds into the file and saves it.
 // RX_VK_PCACHE_LOAD=0 or 1 (or off/on): not read or read, whatever these say, a --prepare-shaders run included.
+//
+// (longshot) Turnip (Mesa's driver for Adreno) on such a PC too, its own cache standing for NVIDIA's (mesa_cache below: the game
+// folder's cache/driver, hos_main.c driver_cache_shared), and there the preparation builds into the driver's cache alone as
+// well, the file neither read nor written (kPreparingIntoDriver): on a 15 GB AYN Odin 3 the file read at the start (2.2 GB,
+// handed whole to the driver, which copies it) came on top of 1.5 GB left available, and the preparation, building into the
+// cache object every pipeline it then wrote out, was down to 86 MB available (2026-11-18). Turnip answered the notes from its
+// own cache alone (48 of 48, the cold check's sample). Mesa's other drivers keep reading the file until they are measured.
 #pragma once
 #include <cstdint>
 #include <filesystem>
@@ -38,30 +45,41 @@ constexpr uint64_t kWarmMb = 512;
 /// folder could not be walked through)
 enum class Cache { kMeasured, kOff, kUnknown };
 
-enum class Why { kSwitch, kPreparing, kStart, kNotLinuxNvidia, kRam, kDriverCacheOff, kDriverCacheUnknown, kColdDriverCache, kSmallPc };
+enum class Why { kSwitch, kPreparing, kStart, kNotLinuxNvidia, kRam, kDriverCacheOff, kDriverCacheUnknown, kColdDriverCache, kSmallPc,
+                 kPreparingIntoDriver, kSmallPcTurnip };
 struct Choice {
     bool load;
     Why why;
 };
 
-/// Whether everything but NVIDIA's own cache already says not to read the file: its folder is walked only then.
-/// sw: RX_VK_PCACHE_LOAD (-1 unset, 0 off, 1 on). linux_nvidia: Linux with NVIDIA's own driver. ram_mb: the PC's RAM (0: not known)
-constexpr bool needs_cache(int sw, bool preparing, bool load_at_create, bool linux_nvidia, uint32_t ram_mb) {
-    return sw < 0 && !preparing && load_at_create && linux_nvidia && ram_mb && ram_mb <= kSmallRamMb;
+/// Whether everything but the driver's own cache already says not to read the file: its folder is walked only then.
+/// sw: RX_VK_PCACHE_LOAD (-1 unset, 0 off, 1 on). linux_nvidia: Linux with NVIDIA's own driver. ram_mb: the PC's RAM (0: not
+/// known). linux_turnip: Linux with Turnip, whose preparation looks at Mesa's cache too
+constexpr bool needs_cache(int sw, bool preparing, bool load_at_create, bool linux_nvidia, uint32_t ram_mb, bool linux_turnip = false) {
+    return sw < 0 && (!preparing || linux_turnip) && load_at_create && (linux_nvidia || linux_turnip) && ram_mb &&
+           ram_mb <= kSmallRamMb;
 }
-/// cache, cache_mb: NVIDIA's own cache (nvidia_cache), looked at only where needs_cache()
+/// cache, cache_mb: the driver's own cache (nvidia_cache, or mesa_cache with Turnip), looked at only where needs_cache()
 constexpr Choice choose(int sw, bool preparing, bool load_at_create, bool linux_nvidia, uint32_t ram_mb, Cache cache,
-                        uint64_t cache_mb) {
+                        uint64_t cache_mb, bool linux_turnip = false) {
     if (sw >= 0) return {sw == 1, Why::kSwitch};
-    if (preparing) return {true, Why::kPreparing};
+    // (Turnip on a small PC: the preparation fills the driver's own cache, however empty it is now, as long as it is on)
+    if (preparing)
+        return linux_turnip && load_at_create && ram_mb && ram_mb <= kSmallRamMb && cache == Cache::kMeasured
+                   ? Choice{false, Why::kPreparingIntoDriver} : Choice{true, Why::kPreparing};
     if (!load_at_create) return {true, Why::kStart};
-    if (!linux_nvidia) return {true, Why::kNotLinuxNvidia};
+    if (!linux_nvidia && !linux_turnip) return {true, Why::kNotLinuxNvidia};
     if (!ram_mb || ram_mb > kSmallRamMb) return {true, Why::kRam};
     if (cache == Cache::kOff) return {true, Why::kDriverCacheOff};
     if (cache != Cache::kMeasured) return {true, Why::kDriverCacheUnknown};
     if (cache_mb < kWarmMb) return {true, Why::kColdDriverCache};
-    return {false, Why::kSmallPc};
+    return {false, linux_turnip ? Why::kSmallPcTurnip : Why::kSmallPc};
 }
+
+/// Whether what is built only for the driver's cache goes through a pipeline cache of its own, let go after it, instead of the
+/// one the file is read into (vk_draw.cpp DriverOnlyBuilds): where Turnip's own cache is the store, the file neither read nor
+/// written. Held in that one, every pipeline's shaders stayed for the whole process and were never written
+constexpr bool builds_into_driver(Why w) { return w == Why::kPreparingIntoDriver || w == Why::kSmallPcTurnip; }
 
 /// For the log line: why the file was or was not read
 constexpr const char* why_text(Why w) {
@@ -69,12 +87,17 @@ constexpr const char* why_text(Why w) {
         case Why::kSwitch: return "RX_VK_PCACHE_LOAD says so";
         case Why::kPreparing: return "a --prepare-shaders run builds into it";
         case Why::kStart: return "programs are loaded before the title";
-        case Why::kNotLinuxNvidia: return "not Linux with NVIDIA's own driver";
+        case Why::kNotLinuxNvidia: return "not Linux with NVIDIA's own driver or Turnip";
         case Why::kRam: return "more than 20 GB of RAM, or the RAM not known";
-        case Why::kDriverCacheOff: return "NVIDIA's own shader cache is off";
-        case Why::kDriverCacheUnknown: return "NVIDIA's own shader cache could not be measured";
-        case Why::kColdDriverCache: return "NVIDIA's own shader cache is nearly empty";
+        case Why::kDriverCacheOff: return "the driver's own shader cache is off";
+        case Why::kDriverCacheUnknown: return "the driver's own shader cache could not be measured";
+        case Why::kColdDriverCache: return "the driver's own shader cache is nearly empty";
         case Why::kSmallPc: return "20 GB of RAM or less, programs loaded at create: NVIDIA's own shader cache answers them";
+        case Why::kPreparingIntoDriver:
+            return "Turnip, 20 GB of RAM or less, programs loaded at create: the preparation builds into the driver's own shader "
+                   "cache alone";
+        case Why::kSmallPcTurnip:
+            return "Turnip, 20 GB of RAM or less, programs loaded at create: the driver's own shader cache answers them";
     }
     return "";
 }
@@ -131,6 +154,28 @@ inline Measured nvidia_cache(bool switched_off, const char* path, const char* xd
     if (d.empty()) return {Cache::kOff, 0};
     if (dir) *dir = d.string();
     return folder_bytes(d);
+}
+
+/// Mesa's own shader cache for the rule (with Turnip): off where MESA_SHADER_CACHE_DISABLE says so (switched_off); else the
+/// folder MESA_SHADER_CACHE_DIR names (dir: hos_main.c sets it to the game folder's cache/driver), or where Mesa keeps it
+/// without one, XDG_CACHE_HOME's or ~/.cache's mesa_shader_cache, _db and _sf folders together. where: the folder, for the log
+inline Measured mesa_cache(bool switched_off, const char* dir, const char* xdg, const char* home, std::string* where = nullptr) {
+    namespace fs = std::filesystem;
+    if (switched_off) return {Cache::kOff, 0};
+    if (dir && *dir) {
+        if (where) *where = dir;
+        return folder_bytes(fs::path(dir));
+    }
+    const fs::path base = xdg && *xdg ? fs::path(xdg) : home && *home ? fs::path(home) / ".cache" : fs::path();
+    if (base.empty()) return {Cache::kOff, 0};
+    if (where) *where = (base / "mesa_shader_cache").string();
+    uint64_t n = 0;
+    for (const char* sub : {"mesa_shader_cache", "mesa_shader_cache_db", "mesa_shader_cache_sf"}) {
+        const Measured m = folder_bytes(base / sub);
+        if (m.cache != Cache::kMeasured) return m;
+        n += m.bytes;
+    }
+    return {Cache::kMeasured, n};
 }
 
 } // namespace pcache_load

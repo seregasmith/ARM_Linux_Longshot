@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 namespace linux_pressure {
 
@@ -84,6 +85,57 @@ inline bool read_meminfo(uint64_t* avail_bytes, uint64_t* swap_free_bytes, const
     std::fclose(f);
     buf[n] = '\0';
     return parse_meminfo(buf, avail_bytes, swap_free_bytes, total_bytes, has_swap);
+}
+
+/// (longshot) This process's resident and swapped memory (VmRSS and VmSwap, in bytes) from /proc/self/status text. False when
+/// VmRSS is not there; VmSwap is 0 when absent (no swap)
+inline bool parse_self_status(const char* text, uint64_t* rss_bytes, uint64_t* swap_bytes) {
+    if (!text || !rss_bytes || !swap_bytes) return false;
+    *rss_bytes = *swap_bytes = 0;
+    bool have_rss = false;
+    for (const char* p = text; *p;) {
+        const char* end = std::strchr(p, '\n');
+        const size_t len = end ? (size_t)(end - p) : std::strlen(p);
+        unsigned long long kb = 0;
+        if (len >= 6 && !std::memcmp(p, "VmRSS:", 6) && std::sscanf(p + 6, "%llu", &kb) == 1) {
+            *rss_bytes = (uint64_t)kb << 10;
+            have_rss = true;
+        } else if (len >= 7 && !std::memcmp(p, "VmSwap:", 7) && std::sscanf(p + 7, "%llu", &kb) == 1) {
+            *swap_bytes = (uint64_t)kb << 10;
+        }
+        if (!end) break;
+        p = end + 1;
+    }
+    return have_rss;
+}
+
+/// The same read from path (or /proc/self/status on Linux; off Linux only an explicit path, for tests)
+inline bool read_self_status(uint64_t* rss_bytes, uint64_t* swap_bytes, const char* path = nullptr) {
+#if !defined(__linux__)
+    if (!path || !*path) return false;
+#endif
+    FILE* f = std::fopen(path && *path ? path : "/proc/self/status", "rb");
+    if (!f) return false;
+    char buf[8192];
+    const size_t n = std::fread(buf, 1, sizeof buf - 1, f);
+    std::fclose(f);
+    buf[n] = '\0';
+    return parse_self_status(buf, rss_bytes, swap_bytes);
+}
+
+/// The words a start-up log line ends with, from what the two files said: "; memory: this process 6210 MB (1180 MB more in swap),
+/// 1490 MB available, 13270 MB of swap free". Empty when meminfo was not read (Windows)
+inline std::string memory_words(bool have_meminfo, uint64_t avail, uint64_t swap_free, bool have_self, uint64_t rss, uint64_t swapped) {
+    if (!have_meminfo) return std::string();
+    char s[192];
+    if (have_self)
+        std::snprintf(s, sizeof s, "; memory: this process %llu MB (%llu MB more in swap), %llu MB available, %llu MB of swap free",
+                      (unsigned long long)(rss >> 20), (unsigned long long)(swapped >> 20), (unsigned long long)(avail >> 20),
+                      (unsigned long long)(swap_free >> 20));
+    else
+        std::snprintf(s, sizeof s, "; memory: %llu MB available, %llu MB of swap free", (unsigned long long)(avail >> 20),
+                      (unsigned long long)(swap_free >> 20));
+    return s;
 }
 
 /// How many bytes short of the reserves the system is: the larger of the physical-RAM shortfall (below avail_reserve_bytes) and,

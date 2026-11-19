@@ -268,6 +268,15 @@ Written 2026-11-17, not yet run (it needs Docker on the Mac):
     Both Steam entries must use the same driver and the same driver options (Armada Control): a preparation is for one
     driver, and a game started with another compiles everything again in play's process, which is what a 15 GB handheld
     can't hold.
+  - **Fifth run (2026-11-18, both entries on 27.0.0-devel):** the first start found the preparation's pipelines in the
+    caches and left the rebuild out (`the caches answer 257 of 257`), and the next start's sample of the driver's cache alone
+    had all 48. The game then sat in `precompile_at_create`, saying nothing, until the window was closed; the preparation
+    itself had been down to 86 MB available, 1.5 GB at the start of its pipelines with 5 GB in swap. Now on Turnip with 20 GB
+    of RAM or less the 2.2 GB pipeline cache file is neither read nor written (Mesa's own cache, which answered the samples, is
+    the store, `pcache_load.h`), what is built for the driver alone goes through caches let go after each program
+    (`DriverOnlyBuilds`), `precompile_at_create` is held while memory is short and logs every 10 s, and the progress lines say
+    the process's memory and the system's (`; memory: this process N MB (M MB more in swap), A MB available`). Details and
+    the open questions: `docs/shader-memory-plan.md`.
   - The game's own log under Steam: `logs/longshot_log.txt` in the game folder (`longshot-launch` gives the game no
     stderr when it isn't a terminal: Steam's pipe kept the game from writing it). Crash reports: `bug-reports/`.
 - The mesh fallback with indirect counts (hard problem 3).

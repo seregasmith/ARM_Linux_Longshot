@@ -1068,37 +1068,45 @@ bool play_cache_in_use() { return play_cache.load() != nullptr; }
 // not read either on a Linux PC with NVIDIA's own driver, 20 GB of RAM or less and programs loaded at their create calls,
 // where NVIDIA's own shader cache is on and not nearly empty: the driver's copy of the file was most of a gigabyte of a 16 GB
 // PC's swap (pcache_load.h). RX_VK_PCACHE_LOAD=1 reads it there too. One log line gives the answer and why, on every PC
+bool pcache_driver_builds = false;   // (pcache_load_off: builds for the driver's cache alone go through their own caches)
 bool pcache_load_off() {
     static const bool off = [] {
         const char* e = getenv("RX_VK_PCACHE_LOAD");
         const int sw = e && *e ? (env_value_off(e) ? 0 : 1) : -1;   // (longshot_env.h: 0/off/false/no)
         const bool preparing = env_on("LONGSHOT_PREPARE_ONLY"), at_create = programs_load_at_create();
 #ifdef _WIN32
-        const bool linux_nvidia = false;
+        const bool linux_nvidia = false, linux_turnip = false;
         const uint32_t ram_mb = 0;
 #else
         const bool linux_nvidia = dev.driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY;   // (not NVK: Mesa's, with Mesa's cache)
+        const bool linux_turnip = dev.driver_id == VK_DRIVER_ID_MESA_TURNIP;   // (Mesa's, with Mesa's cache: pcache_load.h)
         const long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGE_SIZE);
         const uint32_t ram_mb = pages > 0 && page > 0 ? (uint32_t)(((uint64_t)pages * (uint64_t)page) >> 20) : 0;
 #endif
-        // (NVIDIA's folder walked only where everything else says not to read the file; its size alone counts, not Mesa's)
+        // (the driver's own folder walked only where everything else says not to read the file: NVIDIA's, or Mesa's with Turnip)
         pcache_load::Measured cache{pcache_load::Cache::kUnknown, 0};
         std::string dir;
-        const bool looked = pcache_load::needs_cache(sw, preparing, at_create, linux_nvidia, ram_mb);
-        if (looked) {
+        const bool looked = pcache_load::needs_cache(sw, preparing, at_create, linux_nvidia, ram_mb, linux_turnip);
+        if (looked && linux_turnip) {
+            const char* c = getenv("MESA_SHADER_CACHE_DISABLE");
+            cache = pcache_load::mesa_cache(c && *c && !env_value_off(c), getenv("MESA_SHADER_CACHE_DIR"), getenv("XDG_CACHE_HOME"),
+                                            getenv("HOME"), &dir);
+        } else if (looked) {
             const char* c = getenv("__GL_SHADER_DISK_CACHE");
             cache = pcache_load::nvidia_cache(c && *c && env_value_off(c), getenv("__GL_SHADER_DISK_CACHE_PATH"),
                                               getenv("XDG_CACHE_HOME"), getenv("HOME"), &dir);
         }
         const pcache_load::Choice choice =
-            pcache_load::choose(sw, preparing, at_create, linux_nvidia, ram_mb, cache.cache, cache.bytes >> 20);
+            pcache_load::choose(sw, preparing, at_create, linux_nvidia, ram_mb, cache.cache, cache.bytes >> 20, linux_turnip);
+        pcache_driver_builds = !choice.load && pcache_load::builds_into_driver(choice.why);
         std::string seen;   // (what was looked at: the switch, or the RAM and NVIDIA's cache where they were)
         if (sw >= 0) seen = std::string("RX_VK_PCACHE_LOAD=") + e;
         else if (choice.why == pcache_load::Why::kRam || looked)
             seen = std::to_string(ram_mb) + " MB of RAM";
         if (looked) {
-            seen += ", NVIDIA's own shader cache ";
-            seen += cache.cache == pcache_load::Cache::kOff       ? std::string("off (__GL_SHADER_DISK_CACHE, or no folder for it)")
+            seen += linux_turnip ? ", Mesa's own shader cache " : ", NVIDIA's own shader cache ";
+            seen += cache.cache == pcache_load::Cache::kOff
+                        ? std::string(linux_turnip ? "off (MESA_SHADER_CACHE_DISABLE)" : "off (__GL_SHADER_DISK_CACHE, or no folder for it)")
                     : cache.cache == pcache_load::Cache::kUnknown ? "not measured: " + dir + " could not be walked through"
                                                                   : std::to_string(cache.bytes >> 20) + " MB in " + dir;
         }
@@ -1484,6 +1492,39 @@ VkResult cached_compute(const VkComputePipelineCreateInfo* ci, VkPipeline* pl) {
     if (gate.busy) return intel_gate_busy();
     return create_cached(guarded_compute_held, ci, pl);
 }
+/// (longshot) Builds made only for the driver's own shader cache, where Turnip's cache is the store (pcache_driver_builds,
+/// pcache_load.h builds_into_driver: the file neither read nor written): through a pipeline cache of their own, let go with
+/// this, and not pcache. Built into pcache, every pipeline's shaders stayed there, with what the driver keeps of each, for the
+/// whole process and were never written: the preparation's 36,449 pipelines left a 15 GB AYN Odin 3 86 MB available
+/// (2026-11-18). What they compile goes to the driver's cache as before. Elsewhere this does nothing: into pcache, as before
+struct DriverOnlyBuilds {
+    VkPipelineCache scratch = VK_NULL_HANDLE;
+    bool was_only = false;
+    VkPipelineCache was_ask = VK_NULL_HANDLE;
+    DriverOnlyBuilds() {
+        if (!pcache_driver_builds) return;
+        VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+        if (vkCreatePipelineCache(dev.device, &ci, nullptr, &scratch) != VK_SUCCESS) {
+            scratch = VK_NULL_HANDLE;
+            return;
+        }
+        // (build_graphics hands the driver driver_ask_cache with driver_cache_only, as predict_run's builds)
+        was_only = driver_cache_only, was_ask = driver_ask_cache;
+        driver_cache_only = true, driver_ask_cache = scratch;
+    }
+    ~DriverOnlyBuilds() {
+        if (!scratch) return;
+        driver_cache_only = was_only, driver_ask_cache = was_ask;
+        vkDestroyPipelineCache(dev.device, scratch, nullptr);
+    }
+    DriverOnlyBuilds(const DriverOnlyBuilds&) = delete;
+    DriverOnlyBuilds& operator=(const DriverOnlyBuilds&) = delete;
+    bool on() const { return scratch != VK_NULL_HANDLE; }
+    VkPipelineCache cache() const { return on() ? scratch : pcache; }
+    VkResult compute(const VkComputePipelineCreateInfo* ci, VkPipeline* pl) const {
+        return on() ? guarded_compute_held(scratch, ci, pl) : cached_compute(ci, pl);
+    }
+};
 /// (longshot) What a compute program's pipeline is made from: its one stage, pinned to 32 lanes where the GPU can, and its
 /// layout (ensure_layout first). noopt: RX_VK_NOOPT is followed, as play's builds follow it (the precompile's do not)
 VkComputePipelineCreateInfo compute_pipeline_info(const Program& q, bool noopt) {
@@ -9339,11 +9380,12 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
         VkPipeline pl = VK_NULL_HANDLE;
         // (into the app's pipeline cache, saved to longshot_vk_pipelines.bin: without it the next start compiled them again in play
         // where the driver's own cache missed them, AMD's 15 s culling compiles each time)
+        DriverOnlyBuilds own;   // (where Turnip's cache is the store: through a cache of its own, not held in pcache)
         IntelDriverGate gate;
-        if (guarded_compute_held(pcache, &ci, &pl) == VK_SUCCESS && pl) {
+        if (guarded_compute_held(own.cache(), &ci, &pl) == VK_SUCCESS && pl) {
             vkDestroyPipeline(dev.device, pl, nullptr);
             libs++;
-            pcache_built_since_save++;
+            pcache_built_since_save += !own.on();
         }
         if (p.layout) vkDestroyPipelineLayout(dev.device, p.layout, nullptr), p.layout = VK_NULL_HANDLE;
         if (p.set_layout) vkDestroyDescriptorSetLayout(dev.device, p.set_layout, nullptr), p.set_layout = VK_NULL_HANDLE;
@@ -9477,14 +9519,15 @@ struct WarmMemory {
 /// pipeline steps wrote nothing to the log for 10-30 minutes on some AMD cards, and players pasted a log whose last lines (the
 /// vertex formats) looked like a hang (Discord 2026-11-10, "stuck on preparing shaders"); the Builder's bar moved, the log did not
 void prepare_progress_log(const char* what, size_t done, size_t total, std::chrono::steady_clock::time_point t0,
-                          std::chrono::steady_clock::time_point& next) {
+                          std::chrono::steady_clock::time_point& next, const char* unit = "pipelines") {
     const auto now = std::chrono::steady_clock::now();
     if (now < next || !total) return;
     next = now + std::chrono::seconds(10);
     const double s = std::chrono::duration<double>(now - t0).count();
     const double left = done ? s * (double)(total - std::min(done, total)) / (double)done : 0.0;
-    if (done) logf("vk: %s: %zu of %zu pipelines in %.0f s, about %.0f s left", what, done, total, s, left);
-    else logf("vk: %s: 0 of %zu pipelines in %.0f s (the driver compiles the first ones)", what, total, s);
+    const std::string memory = start_memory_words();
+    if (done) logf("vk: %s: %zu of %zu %s in %.0f s, about %.0f s left%s", what, done, total, unit, s, left, memory.c_str());
+    else logf("vk: %s: 0 of %zu %s in %.0f s (the driver compiles the first ones)%s", what, total, unit, s, memory.c_str());
 }
 /// (longshot, RX_VK_LOAD=create) The first start after a preparation: every noted pipeline built into the pipeline cache and let
 /// go, so that the loads at the programs' create calls find each one there and never meet a pipeline the prepare should have
@@ -9549,6 +9592,7 @@ void precompile_warm(void (*progress)(size_t done, size_t total)) {
         size_t found = 0;
         program_cache_borrow(progs[i], [&](Program& p) {
             ensure_layout(p);
+            DriverOnlyBuilds own;   // (where Turnip's cache is the store: built through a cache of its own, not held in pcache)
             for (const NoteRef* r : list) {
                 if (r->variant != p.variant || prepare_stopped() || !pipe_note_at(in, r->at, note.get())) continue;
                 found++;
@@ -9578,7 +9622,8 @@ void precompile_warm(void (*progress)(size_t done, size_t total)) {
             VkComputePipelineCreateInfo ci = compute_pipeline_info(p, true);   // (as a dispatch and a load ask for it)
             precompile_compute_quick(ci);
             VkPipeline made = VK_NULL_HANDLE;
-            if (cached_compute(&ci, &made) == VK_SUCCESS && made) {
+            const DriverOnlyBuilds own;   // (into pcache, or where Turnip's cache is the store through a cache of its own)
+            if (own.compute(&ci, &made) == VK_SUCCESS && made) {
                 vkDestroyPipeline(dev.device, made, nullptr);
                 computes_built++;
             } else {
@@ -9653,23 +9698,43 @@ void precompile_at_create() {
     if (!kept.empty())
         for (const NoteRef& r : refs) notes_of[r.prog].push_back(&r);
     const std::string notes_path = pipe_notes_path();
-    std::atomic<size_t> next{0}, next_kept{0}, kept_pipes{0}, kept_cold{0};
-    const auto worker = [&] {
-        ub_thread_off();
-        for (size_t i; (i = next++) < fallbacks.size() && !prepare_stopped();) {
-            int none = 0;
-            if (fallbacks[i]->compute_state.compare_exchange_strong(none, 1)) {
-                fallback_compute_pipelines(*fallbacks[i]);
-                fallbacks[i]->compute_state.store(2, std::memory_order_release);
-            }
+    std::atomic<size_t> kept_pipes{0}, kept_cold{0}, fallbacks_done{0}, kept_done{0};
+    logf("vk: precompile: %zu programs read for the load at create, %zu of them mesh fallback programs, in %.0f ms%s", kept.size(),
+         fallbacks.size(), std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(),
+         start_memory_words().c_str());
+    // (longshot) The fallback programs' compute pipelines, made where no cache has them, then each kept program's noted
+    // pipelines from the caches, on every usable CPU as before, but below normal and one at a time while memory is short
+    // (warm_bounded.h hold, WarmMemory), with a line every 10 s: on a 15 GB AYN Odin 3 (Turnip) the start sat in here with
+    // nothing in its log until the window was closed (2026-11-18)
+    const unsigned threads = (unsigned)std::min<size_t>(usable_cpus(), std::max<size_t>(kept.size(), 1));
+    WarmMemory memory;
+    memory.sample();
+    const auto held_now = [&memory] { return memory.short_now.load(std::memory_order_relaxed); };
+    const auto t1 = std::chrono::steady_clock::now();
+    auto log_at = t1 + std::chrono::seconds(10);
+    warm_bounded::run(fallbacks.size(), threads, [&](size_t i) {
+        static thread_local bool off = (ub_thread_off(), SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL), true);
+        (void)off;
+        int none = 0;
+        if (fallbacks[i]->compute_state.compare_exchange_strong(none, 1)) {
+            fallback_compute_pipelines(*fallbacks[i]);
+            fallbacks[i]->compute_state.store(2, std::memory_order_release);
         }
-        FILE* in = nullptr;
-        const std::unique_ptr<PipeNote> note = std::make_unique<PipeNote>();
-        for (size_t i; (i = next_kept++) < kept.size() && !prepare_stopped();) {
-            const Program& p = *kept[i];
-            const auto list = notes_of.find(p.key);
-            if (p.compute || list == notes_of.end()) continue;
-            if (!in) in = fopen(notes_path.c_str(), "rb");
+        fallbacks_done++;
+    }, [] { return prepare_stopped(); }, held_now, [&](size_t) {
+        memory.sample();
+        prepare_progress_log("mesh fallback programs' compute pipelines", fallbacks_done.load(), fallbacks.size(), t1, log_at,
+                             "programs");
+    }, &memory.held);
+    const auto t2 = std::chrono::steady_clock::now();
+    warm_bounded::run(prepare_stopped() ? 0 : kept.size(), threads, [&](size_t i) {
+        static thread_local bool off = (ub_thread_off(), SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL), true);
+        (void)off;
+        const Program& p = *kept[i];
+        const auto list = notes_of.find(p.key);
+        if (!p.compute && list != notes_of.end()) {
+            FILE* in = fopen(notes_path.c_str(), "rb");
+            const std::unique_ptr<PipeNote> note = std::make_unique<PipeNote>();
             for (const NoteRef* r : list->second) {
                 if (r->variant != p.variant || !pipe_note_at(in, r->at, note.get())) continue;
                 bool cold = false;
@@ -9677,12 +9742,16 @@ void precompile_at_create() {
                 if (const VkPipeline pl = pipeline_from_caches(p, *note, &cold)) kept_pipes += pipeline_keep_ready(r->key, pl);
                 else kept_cold++;
             }
+            if (in) fclose(in);
         }
-        if (in) fclose(in);
-    };
-    std::vector<std::thread> threads;
-    for (unsigned i = 0; i < std::min<size_t>(usable_cpus(), kept.size()); i++) threads.emplace_back(worker);
-    for (std::thread& t : threads) t.join();
+        kept_done++;
+    }, [] { return prepare_stopped(); }, held_now, [&](size_t) {
+        memory.sample();
+        prepare_progress_log("kept programs' noted pipelines", kept_done.load(), kept.size(), t2, log_at, "programs");
+    }, &memory.held);
+    if (const size_t held = memory.held.load())
+        logf("vk: precompile: memory was short %zu times in the load at create (the least available %llu MB): one worker went on "
+             "while it was", held, (unsigned long long)(memory.least_avail >> 20));
     const size_t notes_n = refs.size();
     programs_index(std::move(refs), plan.none ? std::unordered_set<uint64_t>{} : plan.keys);
     logf("vk: precompile: load at create (RX_VK_LOAD=create): %zu noted pipelines found, none built; %zu compute programs "
@@ -9691,6 +9760,7 @@ void precompile_at_create() {
          "when the game makes it",
          notes_n, plan.keys.size(), plan.shipped, plan.learned, kept.size(), kept_pipes.load(), kept_cold.load(),
          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    if (const std::string memory = start_memory_words(); !memory.empty()) logf("vk: precompile: load at create done%s", memory.c_str());
     predicted_check();
 }
 
@@ -10399,6 +10469,15 @@ uint64_t driver_cache_bytes(std::string* where) {
         if (where) *where += (where->empty() ? "" : ", ") + d.string() + " " + std::to_string(n >> 20) + " MB";
     }
     return total;
+}
+/// (longshot) What this process and the system have of memory, for the start-up's progress lines (linux_pressure.h): the
+/// shaders' preparation and the first start went into swap and took a 15 GB handheld down, and their logs said nothing of
+/// memory, so where it went could only be guessed (2026-11-18). Empty off Linux
+std::string start_memory_words() {
+    uint64_t avail = 0, swap_free = 0, rss = 0, swapped = 0;
+    const bool meminfo = linux_pressure::read_meminfo(&avail, &swap_free);
+    const bool self = meminfo && linux_pressure::read_self_status(&rss, &swapped);
+    return linux_pressure::memory_words(meminfo, avail, swap_free, self, rss, swapped);
 }
 void driver_cache_log(const char* when) {
     std::string where;

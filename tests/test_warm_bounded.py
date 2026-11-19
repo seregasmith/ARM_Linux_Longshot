@@ -21,7 +21,7 @@ def check_source():
     for needle in ("warm_bounded::run(", "program_cache_borrow(", "vkDestroyPipeline(dev.device, made, nullptr);",
                    "warm_bounded::leaves_marker(prepare_only, all, prepare_stopped())) precompile_built_write(total);",
                    'static const bool prepare_only = env_on("LONGSHOT_PREPARE_ONLY");',
-                   "program_cache_compute_keys()", "cached_compute(&ci, &made)"):
+                   "program_cache_compute_keys()", "own.compute(&ci, &made)"):
         if needle not in warm:
             raise SystemExit("precompile_warm no longer has: " + needle)
     for kept in ("pipelines.emplace", "pipeline_keep_ready(", "programs[", "program_cache_load_some("):

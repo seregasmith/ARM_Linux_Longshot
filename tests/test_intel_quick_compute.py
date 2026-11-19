@@ -63,7 +63,7 @@ def main():
     warm = block(draw, "void precompile_warm(void (*progress)(size_t done, size_t total)) {")
     warm_computes = warm[warm.index("program_cache_borrow(computes[i]"):]
     need(warm_computes.index("compute_pipeline_info(p, true)") < warm_computes.index("precompile_compute_quick(ci);") <
-         warm_computes.index("cached_compute(&ci, &made)"), "the warm builds the optimized pipeline on Intel")
+         warm_computes.index("own.compute(&ci, &made)"), "the warm builds the optimized pipeline on Intel")
     run = block(draw, "void precompile_run(void (*progress)(size_t done, size_t total)) {")
     run_computes = run[run.index("Program& p = *computes[i];"):run.index("} else if (i < computes.size() + fallbacks.size()) {")]
     need(run_computes.index("VkPipeline made = compute_pipeline_cached(p, false);") <

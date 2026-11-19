@@ -1207,7 +1207,7 @@ void prepare_watchdog() {
                     logf("vk: preparation: waiting: nothing in %s has finished for %lld s (%zu of %zu), %s", what,
                          (long long)still, at.done, at.total, waiting_on);
             } else if (at.part == 0 && quiet) {
-                logf("vk: preparation: still working on %s: %zu of %zu", what, at.done, at.total);
+                logf("vk: preparation: still working on %s: %zu of %zu%s", what, at.done, at.total, start_memory_words().c_str());
             } else {
                 continue;
             }
