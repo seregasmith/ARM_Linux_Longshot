@@ -239,7 +239,8 @@ Written 2026-11-17, not yet run (it needs Docker on the Mac):
     So the other way round, all in the build: a pool the game makes gets memory of the GPU's own (host visible and
     coherent, cached where the device has such), exported as a dma-buf and mapped over the pool's guest pages
     (`MAP_FIXED`) once their contents are copied in; the game and the GPU then share those pages. Imports of the pool
-    are that memory imported again; at `nvnMemoryPoolFinalize` the contents go back into ordinary memory at the same
+    are buffers bound in that memory (no longer that memory imported again: see the sixth run); at
+    `nvnMemoryPoolFinalize` the contents go back into ordinary memory at the same
     addresses (`gpu/vk/placed_memory.h`, `vk_memory.cpp` `placed_*`, `tests/test_placed_memory.py`). It is tried at start
     on a few pages, and the log says what came of it: `vk: ... the guest's pools placed in the device's own memory (type
     N, cached ...)` or `vk: the guest's pools cannot be placed in the device's memory: <why>`, then a line per pool
@@ -277,6 +278,17 @@ Written 2026-11-17, not yet run (it needs Docker on the Mac):
     (`DriverOnlyBuilds`), `precompile_at_create` is held while memory is short and logs every 10 s, and the progress lines say
     the process's memory and the system's (`; memory: this process N MB (M MB more in swap), A MB available`). Details and
     the open questions: `docs/shader-memory-plan.md`.
+  - **Sixth run (2026-11-19, Kokiri Forest, Turnip 26.2.6):** the game played, and within seconds to minutes of the forest
+    images, placements and imports were refused (`image ... not made`, `no memory of the device's to place 576 KB of guest
+    memory in (VkResult -2)`, `the device's memory not imported again from its dma-buf (VkResult -2)`): textures missing,
+    stalls of 4 to 21 s, with swap still 9.5 GB free. Turnip counts every memory object at its buffer object's whole size
+    against its heap (75% of RAM, 11216 MB), an import of a buffer object it holds already too, and the imports were each
+    the placement's memory imported again: 3.5 GB of imports over 5.1 GB of placements, plus 1.2-1.6 GB of textures, took
+    the count (the log's `VRAM 11.0 of 9.9 GB`) to the heap with about 7.4 GB really held. An import is now a buffer bound
+    in the placement's own memory, which the placement and its imports hold (`placed_holders`, freed with the last of them:
+    `free_import_memory`); `tests/test_placed_import_memory.py` counts as Turnip does. Still open from that run: 5.5 GB in
+    swap, 100-800 ms to make a 16 MB staging buffer under that pressure, and the forest at 17-20 fps with the GPU at 40-70
+    ms a frame at half resolution.
   - The game's own log under Steam: `logs/longshot_log.txt` in the game folder (`longshot-launch` gives the game no
     stderr when it isn't a terminal: Steam's pipe kept the game from writing it). Crash reports: `bug-reports/`.
 - The mesh fallback with indirect counts (hard problem 3).

@@ -112,6 +112,7 @@ void vkDestroyBuffer(VkDevice, VkBuffer buffer, const VkAllocationCallbacks*) {
     destroyed_buffers++; destruction_order.push_back('B');
 }
 void vkFreeMemory(VkDevice, VkDeviceMemory, const VkAllocationCallbacks*) {}
+void free_import_memory(VkDeviceMemory m) { vkFreeMemory(dev.device, m, nullptr); }   // (no placements here)
 VkResult vkCreateBufferView(VkDevice, const VkBufferViewCreateInfo* ci, const VkAllocationCallbacks*, VkBufferView* out) {
     std::lock_guard lk(driver_mu);
     creates++;

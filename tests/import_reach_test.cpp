@@ -62,6 +62,7 @@ static void vkFreeMemory(VkDevice, VkDeviceMemory memory, const VkAllocationCall
     for (Allocation& a : allocations)
         if (a.live && a.memory == memory) a.live = false;
 }
+static void free_import_memory(VkDeviceMemory memory) { vkFreeMemory(dev.device, memory, nullptr); }   // (no placements here)
 static void destroy_import_buffer(VkBuffer) {}
 static std::vector<std::array<uint64_t, 3>> table_sets;   // (guest_pages_set calls: lo, hi, address)
 static void guest_pages_set(uint64_t lo, uint64_t hi, uint64_t address) { table_sets.push_back({lo, hi, address}); }

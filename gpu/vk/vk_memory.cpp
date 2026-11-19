@@ -457,16 +457,17 @@ std::atomic<bool> placed_on{false};
 // nvnMemoryPoolInitialize) gets memory of the device's own, host visible and coherent (cached where the device has such),
 // exported as a dma-buf and mapped over the pool's guest pages once their contents are copied in (placed_memory.h). The game
 // then reads and writes the device's memory at its pool's own addresses, and the GPU the same pages: nothing is copied after
-// that, as with the imports. Each import of the pool (import_pool) is that memory exported and imported again, a memory
-// object of its own over the same buffer object (the driver counts them), bound at the pool's offset in it: imports are made,
-// retired and freed as before. When the game finalizes the pool (memory_pool_finalized) its contents go back into ordinary
-// memory at the same addresses, and its imports are retired at the next lookup (placed_retire_gone). Pools over the same
-// memory share one placement; one across another's end makes one over both (placed_memory.h plan). An import covers a whole
-// pool here (import_chunk 0: a chunk could run past its placement). RX_VK_PLACED=0: not (no pool imported on such a device,
-// as before); RX_VK_PLACED=1: also where host pointers are taken, to try this path (not with dma-bufs of the window: a memfd's)
+// that, as with the imports. Each import of the pool (import_pool) is a buffer bound at the pool's offset in that memory,
+// which it then holds with the placement (placed_holders): imports are made, retired and freed as before, the memory with the
+// last of its holders (free_import_memory). When the game finalizes the pool (memory_pool_finalized) its contents go back
+// into ordinary memory at the same addresses, and its imports are retired at the next lookup (placed_retire_gone). Pools
+// over the same memory share one placement; one across another's end makes one over both (placed_memory.h plan). An import
+// covers a whole pool here (import_chunk 0: a chunk could run past its placement). RX_VK_PLACED=0: not (no pool imported on
+// such a device, as before); RX_VK_PLACED=1: also where host pointers are taken, to try this path (not with dma-bufs of the
+// window: a memfd's)
 struct Placement {
     uint64_t hi = 0;
-    VkDeviceMemory memory = VK_NULL_HANDLE;   // (the device's, exported again for each import)
+    VkDeviceMemory memory = VK_NULL_HANDLE;   // (the device's, its imports' buffers bound in it: placed_holders)
     uint64_t serial = 0;                      // (its imports carry it: Pool::placement)
     int pools = 0;                            // (the game's pools over it)
 };
@@ -480,6 +481,32 @@ struct PlacedGone {
 };
 std::vector<PlacedGone> placed_gone;   // (placed_mu) placements given back or taken into a larger one: their imports to retire
 std::atomic<bool> placed_gone_any{false};
+// (placed_holders_mu) What holds each placement's memory: the placement while it stands, and every import whose buffer is
+// bound in it, the GPU's until that import is freed. Turnip counts every memory object at its buffer object's whole size
+// against its heap (75% of RAM: 11216 MB on the Odin 3's 15 GB), and an import of a buffer object it holds already as well:
+// imports made as the placement's memory imported again counted it once more each. In Kokiri Forest 3.5 GB of imports over
+// 5.1 GB of placements took the count to 11 GB with about 7.4 GB really held, and images, placements and imports were refused
+// (VkResult -2): textures not made, stalls of 4 to 21 s. An import is now a buffer in the placement's own memory, freed with
+// the last holder. The lock is a leaf (taken alone, or after placed_mu or pools_mu, never before another): an import freed
+// under pools_mu does not wait for placed_mu, which the game's thread holds while it copies a whole pool in or out
+std::mutex placed_holders_mu;
+std::unordered_map<VkDeviceMemory, int> placed_holders;
+
+/// One more holder of a placement's memory: the placement when it is made, an import when its buffer is bound in it
+void placed_hold(VkDeviceMemory m) {
+    std::lock_guard lk(placed_holders_mu);
+    placed_holders[m]++;
+}
+/// One of the holders of a placement's memory gone: the memory freed with the last of them. False: not a placement's memory
+bool placed_let_go(VkDeviceMemory m) {
+    std::lock_guard lk(placed_holders_mu);
+    const auto h = placed_holders.find(m);
+    if (h == placed_holders.end()) return false;
+    if (--h->second > 0) return true;
+    placed_holders.erase(h);
+    vkFreeMemory(dev.device, m, nullptr);
+    return true;
+}
 
 /// New memory of the device's, size bytes, that can be exported as a dma-buf (VK_NULL_HANDLE: refused)
 VkDeviceMemory placed_allocate(uint64_t size) {
@@ -624,9 +651,9 @@ void placed_back(uint64_t lo, uint64_t hi) {
              (unsigned long long)plan.range.hi, err, olds.empty() ? "" : "; the placements there may be gone");
         return;
     }
-    for (const uint64_t a : plan.absorbed) {   // (their imports keep their buffer objects until they are retired)
+    for (const uint64_t a : plan.absorbed) {   // (their imports hold their memory until they are freed)
         auto o = placements.find(a);
-        vkFreeMemory(dev.device, o->second.memory, nullptr);
+        placed_let_go(o->second.memory);
         placed_gone.push_back({a, o->second.hi, o->second.serial});
         placed_bytes -= o->second.hi - a;
         placements.erase(o);
@@ -636,6 +663,7 @@ void placed_back(uint64_t lo, uint64_t hi) {
         pools_gen.fetch_add(1, std::memory_order_relaxed);   // (a recording thread's pool cache: looked up again)
     }
     placements[plan.range.lo] = Placement{plan.range.hi, memory, ++placed_serial, pools};
+    placed_hold(memory);   // (the placement; its imports add themselves)
     placed_bytes += n;
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     static int logged;
@@ -662,7 +690,7 @@ void placed_unback(uint64_t lo, uint64_t hi) {
                  (unsigned long long)it->second.hi, errno);
         return;
     }
-    vkFreeMemory(dev.device, it->second.memory, nullptr);   // (its imports keep the buffer object until they are retired)
+    placed_let_go(it->second.memory);   // (its imports hold the memory until they are freed)
     placed_gone.push_back({it->first, it->second.hi, it->second.serial});
     placed_gone_any.store(true, std::memory_order_release);
     pools_gen.fetch_add(1, std::memory_order_relaxed);
@@ -751,8 +779,9 @@ bool placed_find(uint64_t guest, uint64_t size, GuestPool& out) {
     return true;
 }
 
-/// An import of guest [lo, hi) from the placement holding it: the placement's memory imported again, with a buffer over the
-/// range bound at its offset in it. False: no placement holds the range, or the device refused (takes placed_mu)
+/// An import of guest [lo, hi) from the placement holding it: a buffer over the range bound at its offset in the placement's
+/// own memory, which the import then holds (placed_holders: no memory object of its own for the driver to count again).
+/// False: no placement holds the range, or the device refused (takes placed_mu)
 bool placed_import(uint64_t lo, uint64_t hi, Pool& p) {
     std::lock_guard lk(placed_mu);
     auto it = placements.upper_bound(lo);
@@ -772,16 +801,16 @@ bool placed_import(uint64_t lo, uint64_t hi, Pool& p) {
     vkGetBufferMemoryRequirements(dev.device, buffer, &req);
     const bool fits = (req.memoryTypeBits >> placed_type & 1) && off % std::max<VkDeviceSize>(req.alignment, 1) == 0 &&
                       req.size <= size - off;
-    const VkDeviceMemory memory = fits ? placed_reimport(it->second.memory, size) : VK_NULL_HANDLE;
-    if (!memory || vkBindBufferMemory(dev.device, buffer, memory, off) != VK_SUCCESS) {
+    const VkDeviceMemory memory = it->second.memory;
+    if (!fits || vkBindBufferMemory(dev.device, buffer, memory, off) != VK_SUCCESS) {
         destroy_import_buffer(buffer);
-        if (memory) vkFreeMemory(dev.device, memory, nullptr);
         if (!fits && placed_failures++ < 8)
             logf("vk: guest %#llx..%#llx: no buffer at offset %llu of its placement (alignment %llu, size %llu of %llu, types %#x)",
                  (unsigned long long)lo, (unsigned long long)hi, (unsigned long long)off, (unsigned long long)req.alignment,
                  (unsigned long long)req.size, (unsigned long long)(size - off), req.memoryTypeBits);
         return false;
     }
+    placed_hold(memory);
     p.lo = lo, p.hi = hi, p.buffer = buffer, p.memory = memory, p.placement = it->second.serial;
     VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
     da.buffer = buffer;
@@ -798,6 +827,15 @@ bool placed_import(uint64_t lo, uint64_t hi, Pool& p) {
 #else
 bool placed_find(uint64_t, uint64_t, GuestPool&) { return false; }
 #endif
+
+/// An import's memory freed, once its buffer is destroyed: a placed import's is its placement's, freed with the last that holds
+/// it (placed_let_go); any other import's is its own
+void free_import_memory(VkDeviceMemory m) {
+#ifdef __linux__
+    if (placed_on.load(std::memory_order_acquire) && placed_let_go(m)) return;
+#endif
+    vkFreeMemory(dev.device, m, nullptr);
+}
 
 bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
     import_cooling = false;
@@ -4134,7 +4172,7 @@ void bg_drain() {
         auto imp = imported.find(lo);
         if (imp != imported.end() && imp->second.hi >= p.hi) {
             destroy_import_buffer(p.buffer);
-            vkFreeMemory(dev.device, p.memory, nullptr);
+            free_import_memory(p.memory);
             for (VkDeviceMemory m : p.pieces) vkFreeMemory(dev.device, m, nullptr);
             continue;
         }
@@ -4152,7 +4190,7 @@ void bg_drain() {
         if (overlap) {
             st_prefetch_dropped++;
             destroy_import_buffer(p.buffer);
-            vkFreeMemory(dev.device, p.memory, nullptr);
+            free_import_memory(p.memory);
             for (VkDeviceMemory m : p.pieces) vkFreeMemory(dev.device, m, nullptr);
             continue;
         }
@@ -5845,7 +5883,7 @@ void reap_mirrors() {   // (pools_mu held)
     }
     while (!dead_imports.empty() && dead_imports.front().value <= mem_completed) {
         destroy_import_buffer(dead_imports.front().buffer);
-        vkFreeMemory(dev.device, dead_imports.front().memory, nullptr);
+        free_import_memory(dead_imports.front().memory);
         for (VkDeviceMemory m : dead_imports.front().pieces) vkFreeMemory(dev.device, m, nullptr);
         st_retired_imports_freed++, st_retired_import_bytes_freed += dead_imports.front().bytes;
         dead_import_bytes -= std::min(dead_import_bytes, dead_imports.front().bytes);
@@ -6134,7 +6172,7 @@ void imports_give_back() {   // (pools_mu held)
         Pool& p = evicted_pools.front().mapped();
         evicted_import_bytes -= std::min(evicted_import_bytes, p.hi - p.lo);
         destroy_import_buffer(p.buffer);
-        vkFreeMemory(dev.device, p.memory, nullptr);
+        free_import_memory(p.memory);
         for (VkDeviceMemory m : p.pieces) vkFreeMemory(dev.device, m, nullptr);   // (a pool imported as several dma-bufs)
         evicted_pools.pop_front();
     }
@@ -6315,7 +6353,7 @@ bool mirrors_trim() {   // (pools_mu held; true when one was trimmed: its parts 
         if (!import_pool(r.lo, r.hi, np)) {
             for (Pool& m : made) {
                 destroy_import_buffer(m.buffer);
-                vkFreeMemory(dev.device, m.memory, nullptr);
+                free_import_memory(m.memory);
                 for (VkDeviceMemory piece : m.pieces) vkFreeMemory(dev.device, piece, nullptr);
             }
             pick->dead_since = mirror_epoch;   // (not again for a while)
