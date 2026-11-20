@@ -144,7 +144,8 @@ static void destroy_buffer(VkBuffer, VmaAllocation) {}
 static void watch_tex(const Texture*, const char*) {}
 static bool remade_log_on() { return false; }
 static uint64_t evicted_key(uint64_t gpu, uint32_t, uint32_t, uint32_t) { return gpu; }
-struct Evicted { uint64_t frame; bool rendered; };
+struct Evicted { uint64_t frame; bool rendered; int64_t ms = 0; bool budget = false; };
+static int64_t frame_clock_ms() { return 0; }   // (when a texture went: the budget's evictions made again)
 static std::mutex from_memory_mu, evicted_mu;
 static std::unordered_map<uint64_t, uint64_t> evicted_from_memory;
 static std::unordered_map<uint64_t, Evicted> evicted_at;

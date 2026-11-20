@@ -48,6 +48,7 @@ void memory_written_runs(uint64_t guest, uint64_t size, uint32_t gen, Ranges& ou
     if (it != written_since_release.end() && it->second) out.push_back({0, it->second});
 }
 uint64_t dead_min_unused_presents() { return 1; }
+uint64_t linux_keep_presents = 0;   // (vk_texture.cpp's Linux hold keep window, RX_VK_PRESSURE_KEEP_S: none here)
 void logf(const char*, ...) {}
 
 #include OBSOLETE   // (finalized_obsolete, as the source has it)

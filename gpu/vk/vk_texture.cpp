@@ -253,12 +253,25 @@ template <class Set> void rendered_forget(const Set& gone) {   // (before the te
 uint64_t frame_no = 1;
 uint64_t total_bytes = 0;
 
+/// (longshot) Milliseconds on a steady clock: when a texture went and came back, and the presents' times (RX_VK_PRESSURE_KEEP_S)
+int64_t frame_clock_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 // (RX_VK_LOG_REMADE=1) Textures evicted and made again within 600 frames, and those of them that were then sampled
-// empty (storage the GPU rendered, not uploaded): what the eviction's minimum age below is measured by
+// empty (storage the GPU rendered, not uploaded): what the eviction's minimum age below is measured by. (longshot) And, always,
+// the ones the budget let go that were made again, by how long they were gone (remade_gone; the line every 600 presents):
+// what RX_VK_PRESSURE_KEEP_S's window is measured by
 struct Evicted {
     uint64_t frame;
     bool rendered;
+    int64_t ms = 0;        // (when it went: frame_clock_ms)
+    bool budget = false;   // (let go for the budget: evict_reason BUDGET)
 };
+struct RemadeGone {   // (evicted_mu) since the last line: made again, and how long after the budget let them go
+    uint64_t n[5] = {}, bytes = 0;   // (under 3 s, 3-10 s, 10-30 s, 30-60 s, longer)
+};
+RemadeGone remade_gone;
 std::mutex evicted_mu;
 std::unordered_map<uint64_t, Evicted> evicted_at;   // (storage, size and format -> when it went)
 std::unordered_map<const Texture*, uint64_t> remade;   // (made again: how many frames after it went)
@@ -383,6 +396,9 @@ static uint64_t linux_avail_reserve() {
 }
 static bool linux_pressed = false;
 static bool linux_entered_pressure = false;
+// (longshot, RX_VK_PRESSURE_KEEP_S) while the Linux hold keeps what the frames drew: the window in presents, which the eviction
+// leaves alone whatever the budget (need_unused); 0: none
+static uint64_t linux_keep_presents = 0;
 static std::atomic<uint64_t> linux_shortfall_bytes{0}, linux_shortfall_seq{0};
 uint64_t pool_cap() {
     // (longshot) RX_VK_TARGET_POOL_MB=<MB>, else a twelfth of what the driver allows, 256 to 768 MB (target_pool.h)
@@ -2656,12 +2672,17 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
         gpu_wrote.watch(p->id, p->gpu, p->gpu + p->guest_size);
     }
     watch_tex(p, "made");
-    if (remade_log_on()) {   // (one evicted not long ago, made again)
+    {   // (one evicted not long ago, made again: counted when the budget let it go, logged with RX_VK_LOG_REMADE=1)
         std::lock_guard lk(evicted_mu);
         auto ev = evicted_at.find(evicted_key(p->gpu, p->width, p->height, p->nvn_format));
         if (ev != evicted_at.end()) {
+            if (ev->second.budget) {
+                const int64_t gone = frame_clock_ms() - ev->second.ms;
+                remade_gone.n[gone < 3000 ? 0 : gone < 10000 ? 1 : gone < 30000 ? 2 : gone < 60000 ? 3 : 4]++;
+                remade_gone.bytes += p->bytes;
+            }
             const uint64_t ago = frame_no - ev->second.frame;
-            if (ago < 600) {
+            if (remade_log_on() && ago < 600) {
                 remade[p] = ago;
                 static int told;
                 if (told++ < 300)
@@ -5399,12 +5420,28 @@ void texture_frame(uint64_t completed) {
     // (1536 MB) of MemAvailable or RX_VK_COMMIT_RESERVE_MB (2560 MB) of MemAvailable + SwapFree, PressureHold cuts the texture
     // budget on an integrated GPU (where VRAM is system RAM) from the texture total at entry (with a 512 MB floor) and steps it
     // back up once both reserves clear by 256 MB (kClearMargin), while the RAM-side valves (staging arenas, capture spares,
-    // idle imports, malloc_trim) run on every GPU
+    // idle imports, malloc_trim) run on every GPU. (longshot) Where swap can take the rest, the budget keeps what the frames
+    // drew in the last RX_VK_PRESSURE_KEEP_S seconds (20; linux_pressure.h keep_floor): on the AYN Odin 3 the hold began at the
+    // title screen with 47 MB of textures, held the 512 MB floor all session, and in Kokiri Forest (1.1-1.3 GB drawn every few
+    // frames) each pass let go of what had not been drawn for 3 s, made again at once: 16,177 textures, freezes of 1.2-3.7 s
     {
         static linux_pressure::PressureHold hold;
-        static uint64_t cached_avail = 0, cached_swap = 0, held_cached = UINT64_MAX;
-        static bool cached_has_swap = true, have_meminfo = false;
+        static linux_pressure::PresentClock clock;   // (the presents' times: the keep window's seconds as presents)
+        static const uint32_t keep_s = linux_pressure::keep_seconds(getenv("RX_VK_PRESSURE_KEEP_S"));
+        static uint64_t cached_avail = 0, cached_swap = 0, held_cached = UINT64_MAX, keep_window = 0;
+        static bool cached_has_swap = true, have_meminfo = false, swap_low = false;
+        static const char* keep_why = "";   // (the pressure line's: what of the drawn textures the budget keeps, and why)
+        // (the bytes of the textures the frames drew in the last `seconds`, their padding as total_bytes counts it: their last
+        // frame drawn within that many presents)
+        const auto drawn_in = [&](uint32_t seconds) {
+            const uint64_t window = clock.presents_since(frame_no, frame_clock_ms(), seconds);
+            uint64_t bytes = 0;
+            for (const auto& kv : textures)
+                if (kv.second->last_frame + window >= frame_no) bytes += kv.second->bytes + kv.second->pad;
+            return bytes;
+        };
         const uint64_t avail_res = linux_avail_reserve(), commit_res = commit_reserve();
+        linux_keep_presents = 0;   // (set below while the hold is on an integrated GPU and keeps)
         if (!avail_res && !commit_res) {
             hold = {};
             held_cached = UINT64_MAX;
@@ -5416,18 +5453,32 @@ void texture_frame(uint64_t completed) {
                 have_meminfo = linux_pressure::read_meminfo(&cached_avail, &cached_swap, nullptr, nullptr, &cached_has_swap);
             if (have_meminfo) {
                 const bool was_active = hold.active;
+                const bool igpu = dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
                 const uint64_t over = linux_pressure::shortfall(cached_avail, cached_swap, avail_res, commit_res, cached_has_swap);
                 if (sampled_now) {
                     linux_shortfall_bytes.store(over, std::memory_order_relaxed);
                     linux_shortfall_seq.fetch_add(1, std::memory_order_release);
+                    clock.note(frame_no, frame_clock_ms());
+                    // (what the keep window drew, kept under the budget and from the eviction; only the floor, as before, where
+                    // swap is short too or there is none, or where swap has no room for as much as would be kept)
+                    swap_low = linux_pressure::swap_short(swap_low, cached_avail, cached_swap, commit_res, cached_has_swap);
+                    uint64_t kept = 0;
+                    if (!keep_s) keep_why = "RX_VK_PRESSURE_KEEP_S=0: the floor alone kept, as before";
+                    else if (swap_low) keep_why = "swap short too, or none: the floor alone kept";
+                    else if (igpu && (over || hold.active)) {   // (a discrete GPU's budget is not cut: nothing to keep)
+                        kept = linux_pressure::keep_floor(drawn_in(keep_s));
+                        if (cached_swap < kept) kept = 0, keep_why = "swap has no room for what would be kept: the floor alone kept";
+                        else keep_why = "what the window drew kept, and a quarter more (RX_VK_PRESSURE_KEEP_S)";
+                    }
+                    keep_window = kept ? clock.presents_since(frame_no, frame_clock_ms(), keep_s) : 0;
                     held_cached = hold.step(total_bytes, cached_avail, cached_swap, avail_res, commit_res,
-                                            linux_pressure::kClearMargin, linux_pressure::kBudgetFloor, cached_has_swap);
+                                            linux_pressure::kClearMargin, linux_pressure::kBudgetFloor, cached_has_swap, kept);
                 }
                 const uint64_t held = held_cached;
                 linux_pressed = hold.active;
                 if (hold.active && !was_active) linux_entered_pressure = true;
                 if (hold.active) {
-                    const bool igpu = dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+                    linux_keep_presents = igpu ? keep_window : 0;   // (and the eviction leaves what the window drew: need_unused)
                     if (igpu) {
                         budget = std::min(budget, held);
                         rule_budget = std::min(rule_budget, held);
@@ -5439,14 +5490,19 @@ void texture_frame(uint64_t completed) {
                     static uint64_t said_at;
                     if (!said_at || frame_no - said_at >= 600) {
                         said_at = frame_no;
-                        if (igpu)
+                        if (igpu) {
                             logf("vk: memory pressure on Linux: %llu MB available, %llu MB swap free (reserves %llu / %llu MB); the "
                                  "textures' budget %s %llu MB of their %llu MB (RX_VK_AVAIL_RESERVE_MB, RX_VK_COMMIT_RESERVE_MB)",
                                  (unsigned long long)(cached_avail >> 20), (unsigned long long)(cached_swap >> 20),
                                  (unsigned long long)(avail_res >> 20), (unsigned long long)(commit_res >> 20),
                                  budget < total_bytes ? "down to" : "held at",
                                  (unsigned long long)(budget >> 20), (unsigned long long)(total_bytes >> 20));
-                        else
+                            // (what the frames drew, and what of it the budget keeps)
+                            logf("vk: memory pressure on Linux: textures drawn in the last 3 s %llu MB, 10 s %llu MB, 30 s %llu MB; %s "
+                                 "(window %u s, %llu presents)",
+                                 (unsigned long long)(drawn_in(3) >> 20), (unsigned long long)(drawn_in(10) >> 20),
+                                 (unsigned long long)(drawn_in(30) >> 20), keep_why, keep_s, (unsigned long long)keep_window);
+                        } else
                             logf("vk: memory pressure on Linux: %llu MB available, %llu MB swap free (reserves %llu / %llu MB); the "
                                  "textures' budget is not cut on a discrete GPU (%llu MB, %llu MB in use) (RX_VK_AVAIL_RESERVE_MB, "
                                  "RX_VK_COMMIT_RESERVE_MB)",
@@ -5533,6 +5589,21 @@ void texture_frame(uint64_t completed) {
              "those retired, %zu listed; %lld MB of blocks hashed in %lld ms", (long long)st_reused.load(),
              (long long)(st_reused_bytes.load() >> 20), (long long)st_reuse_retired.load(), freed.size(),
              (long long)(st_reuse_hash_bytes.load() >> 20), (long long)(st_reuse_hash_ns.load() / 1000000));
+        {   // (longshot) the budget's evictions made again since the last line, by how long they were gone (RX_VK_PRESSURE_KEEP_S)
+            std::lock_guard lk(evicted_mu);
+            const RemadeGone& r = remade_gone;
+            const uint64_t made = r.n[0] + r.n[1] + r.n[2] + r.n[3] + r.n[4];
+            if (made)
+                logf("vk: textures made again after the budget let them go, in the last 600 presents: %llu (%llu MB); gone under "
+                     "3 s %llu, 3-10 s %llu, 10-30 s %llu, 30-60 s %llu, longer %llu", (unsigned long long)made,
+                     (unsigned long long)(r.bytes >> 20), (unsigned long long)r.n[0], (unsigned long long)r.n[1],
+                     (unsigned long long)r.n[2], (unsigned long long)r.n[3], (unsigned long long)r.n[4]);
+            remade_gone = {};
+            const int64_t now = frame_clock_ms();   // (those gone over 2 minutes are looked for no more: "longer" is up to that)
+            for (auto it = evicted_at.begin(); it != evicted_at.end();)
+                if (it->second.budget && !remade_log_on() && now - it->second.ms > 120000) it = evicted_at.erase(it);
+                else ++it;
+        }
         for (size_t i = 0; i < big.size() && i < 8; i++)
             logf("vk:   %llu MB: %#llx %ux%ux%u x%u levels %u NVN %#x%s%s, last used %llu presents ago",
                  (unsigned long long)(big[i]->bytes >> 20), (unsigned long long)big[i]->gpu, big[i]->width, big[i]->height,
@@ -5671,7 +5742,9 @@ void texture_frame(uint64_t completed) {
         logf("vk: finalized textures the GPU drew once, kept for being made again: %zu (%llu KB):%s", finalized_kept_n,
              (unsigned long long)(finalized_kept >> 10), n ? line : "");
     }
-    const uint64_t need_unused = sweep ? std::max<uint64_t>(120, min_unused) : min_unused;
+    // (longshot, RX_VK_PRESSURE_KEEP_S) and nothing the frames drew in the Linux hold's keep window: what the budget's arithmetic
+    // let go of it (its 7/8 target, the allocations' padding, textures made again before the next sample) came back within seconds
+    const uint64_t need_unused = std::max(sweep ? std::max<uint64_t>(120, min_unused) : min_unused, linux_keep_presents);
     const uint64_t need_dead = std::min(need_unused, dead_min_unused);
     static uint64_t n_dead, b_dead, dead_logged_at;
     // (longshot) the textures to go are chosen first and destroyed after; the write-backs among them go to the GPU in a few
@@ -5833,10 +5906,12 @@ void texture_frame(uint64_t completed) {
             if (evicted_from_memory.size() > 50000) evicted_from_memory.clear();   // (a bound)
             evicted_from_memory[evicted_key(tex->gpu, tex->width, tex->height, tex->nvn_format)] = tex->guest_size;
         }
-        if (remade_log_on()) {
+        const bool for_budget = evict_reason::classify(e.shifted, e.overwritten) == evict_reason::BUDGET;
+        if (for_budget || remade_log_on()) {   // (the budget's always: remade_gone)
             std::lock_guard lk(evicted_mu);
             if (evicted_at.size() > 20000) evicted_at.clear();   // (a bound: only the recent ones matter)
-            evicted_at[evicted_key(tex->gpu, tex->width, tex->height, tex->nvn_format)] = {frame_no, tex->gpu_written};
+            evicted_at[evicted_key(tex->gpu, tex->width, tex->height, tex->nvn_format)] = {frame_no, tex->gpu_written,
+                                                                                            frame_clock_ms(), for_budget};
             remade.erase(tex);
         }
         destroy_later(*tex, completed);

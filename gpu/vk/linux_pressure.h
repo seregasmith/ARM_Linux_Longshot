@@ -151,6 +151,67 @@ constexpr uint64_t shortfall(uint64_t avail_bytes, uint64_t swap_free_bytes,
     return avail_over > commit_over ? avail_over : commit_over;
 }
 
+/// (longshot) RX_VK_PRESSURE_KEEP_S: while the hold below is on, the textures the frames drew in the last this many seconds are
+/// kept (keep_floor), where swap can take what they hold (swap_short is false). On the AYN Odin 3 (15 GB of RAM, 15 GB of zram)
+/// memory was short from the title screen on, the budget sat at the 512 MB floor all session while Kokiri Forest drew 1.1-1.3 GB
+/// every few frames, and every pass over it let go of what had not been drawn for 60 frames (3 s at 20 fps): 16,177 textures
+/// let go and made again within seconds, 2-15 a frame, freezes of 1.2-3.7 s, the cache at 1.4 GB all the same. Default 20 s;
+/// 0: off (the floor alone, as before); at most 120 (and at most what PresentClock's notes span: 64 s at 60 fps)
+constexpr uint32_t kDefaultKeepSeconds = 20;
+inline uint32_t keep_seconds(const char* env) {
+    if (!env || !*env) return kDefaultKeepSeconds;
+    const int v = std::atoi(env);
+    return v <= 0 ? 0u : (uint32_t)std::min(v, 120);
+}
+
+/// Whether memory and swap together are short (below the commit reserve, MemAvailable + SwapFree), or there is no swap at all:
+/// then nothing takes what kept textures hold, earlyoom is near (the Steam Deck OLED the hold was made for), and the hold keeps
+/// only its floor, as before. Once short it stays short until the reserve is cleared by margin_bytes (as the hold itself leaves),
+/// so a total hovering at the reserve does not flip the budget between the keep and the floor at every sample. The reserve
+/// turned off (RX_VK_COMMIT_RESERVE_MB=0) is the default here: the keep's own emergency does not go with that rule
+constexpr bool swap_short(bool was_short, uint64_t avail_bytes, uint64_t swap_free_bytes, uint64_t commit_reserve_bytes,
+                          bool has_swap, uint64_t margin_bytes = kClearMargin) {
+    if (!has_swap) return true;
+    const uint64_t reserve = commit_reserve_bytes ? commit_reserve_bytes : kDefaultCommitReserve;
+    const uint64_t total = avail_bytes <= UINT64_MAX - swap_free_bytes ? avail_bytes + swap_free_bytes : UINT64_MAX;
+    return total < (was_short ? reserve + margin_bytes : reserve);
+}
+
+/// What the hold keeps under the textures' budget: the bytes the frames drew in the keep window (with their allocations' padding,
+/// as total_bytes counts them) and a quarter more, at least floor_bytes. A pass over the budget lets go down to 7/8 of it (1/7
+/// more), and the window grows between samples (a tenth): under that, the eviction ate into the window again. The eviction
+/// itself also leaves what was drawn in the window (linux_keep_presents in vk_texture.cpp)
+constexpr uint64_t keep_floor(uint64_t drawn_bytes, uint64_t floor_bytes = kBudgetFloor) {
+    const uint64_t keep = drawn_bytes + drawn_bytes / 4;
+    return keep > floor_bytes ? keep : floor_bytes;
+}
+
+/// The presents' times, noted at each of the hold's samples (every 30 presents): how many presents the last `seconds` took, so
+/// a window in seconds reads the textures' last frame drawn. 128 notes: 64 s of history at 60 fps, 192 s at 20 fps
+struct PresentClock {
+    static constexpr int kNotes = 128;
+    uint64_t frame[kNotes] = {};
+    int64_t ms[kNotes] = {};
+    int count = 0, next = 0;
+    constexpr void note(uint64_t frame_no, int64_t now_ms) {
+        frame[next] = frame_no, ms[next] = now_ms;
+        next = (next + 1) % kNotes;
+        if (count < kNotes) count++;
+    }
+    /// The presents since `seconds` ago: back to the newest note at least that old; with none that old, to the oldest note
+    /// (all that is known); with no note yet, every present
+    constexpr uint64_t presents_since(uint64_t frame_no, int64_t now_ms, uint32_t seconds) const {
+        if (!count) return frame_no;
+        uint64_t since = frame_no;
+        for (int i = 0; i < count; i++) {   // (newest first)
+            const int k = (next - 1 - i + kNotes) % kNotes;
+            since = frame[k];
+            if (now_ms - ms[k] >= (int64_t)seconds * 1000) break;
+        }
+        return frame_no > since ? frame_no - since : 0;
+    }
+};
+
 /// Whether post-precompile VkShaderModules should be let go at pipeline_cache_play(): off when keep_env (RX_VK_KEEP_MODULES) is
 /// on or drop_env (RX_VK_DROP_MODULES) is explicitly off ("0", "off", "false", "no"); on when drop_env is on or when the machine
 /// has <= kModuleDropMaxRam (20 GB) of physical RAM (16 GB handhelds and PCs) or already has a memory shortfall at start-up.
@@ -176,6 +237,8 @@ inline bool should_drop_modules(uint64_t total_ram_bytes, uint64_t current_short
 ///   never ratcheting off the already-shrunk total_bytes on each frame while VMA compaction is still freeing blocks.
 /// - Once both reserves are cleared by kClearMargin (256 MB), steps held_budget back up by margin_bytes per sample and leaves
 ///   active once it reaches baseline_total, preventing flapping or an immediate full-cut regrowth spike.
+/// - (longshot) keep_bytes (keep_floor, RX_VK_PRESSURE_KEEP_S): while active, the budget given is never under it. It is not
+///   kept in held_budget: as the frames draw less (another area), what they no longer draw may go again
 struct PressureHold {
     bool active = false;
     uint64_t baseline_total = 0;
@@ -185,7 +248,7 @@ struct PressureHold {
     constexpr uint64_t step(uint64_t total_bytes, uint64_t avail_bytes, uint64_t swap_free_bytes,
                             uint64_t avail_res = kDefaultAvailReserve, uint64_t commit_res = kDefaultCommitReserve,
                             uint64_t margin_bytes = kClearMargin, uint64_t floor_bytes = kBudgetFloor,
-                            bool has_swap = true) {
+                            bool has_swap = true, uint64_t keep_bytes = 0) {
         const uint64_t over = shortfall(avail_bytes, swap_free_bytes, avail_res, commit_res, has_swap);
         if (!active) {
             if (!over) {
@@ -197,7 +260,7 @@ struct PressureHold {
             last_over = over;
             const uint64_t cut = baseline_total > over ? baseline_total - over : 0;
             held_budget = std::max(cut, floor_bytes);
-            return held_budget;
+            return std::max(held_budget, keep_bytes);
         }
         const uint64_t clear_avail = avail_res ? avail_res + margin_bytes : 0;
         const uint64_t clear_commit = commit_res ? commit_res + margin_bytes : 0;
@@ -205,7 +268,7 @@ struct PressureHold {
             if (margin_bytes && held_budget <= UINT64_MAX - margin_bytes && held_budget + margin_bytes < baseline_total) {
                 held_budget += margin_bytes;
                 last_over = baseline_total > held_budget ? baseline_total - held_budget : 0;
-                return held_budget;
+                return std::max(held_budget, keep_bytes);
             }
             active = false;
             baseline_total = 0;
@@ -218,7 +281,7 @@ struct PressureHold {
             const uint64_t cut = baseline_total > over ? baseline_total - over : 0;
             held_budget = std::min(held_budget, std::max(cut, floor_bytes));
         }
-        return held_budget;
+        return std::max(held_budget, keep_bytes);
     }
 };
 
