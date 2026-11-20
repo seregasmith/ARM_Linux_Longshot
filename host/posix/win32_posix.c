@@ -934,18 +934,36 @@ HANDLE CreateFileA(LPCSTR name, DWORD access, DWORD share, void *attr, DWORD dis
     f->h.type = H_FILE, f->fd = fd;
     return f;
 }
+/* (ReadFile) Whether p's page is mapped at all: mincore refuses (ENOMEM) a page nothing maps */
+static int page_mapped(const void *p) {
+    const long page = sysconf(_SC_PAGESIZE);
+    unsigned char v;
+    return mincore((void *)((uintptr_t)p & ~(uintptr_t)(page > 0 ? page - 1 : 4095)), 1, &v) == 0;
+}
 BOOL ReadFile(HANDLE h, void *buf, DWORD n, DWORD *got, OVERLAPPED *ov) {
     if (got) *got = 0;
     if (!is(h, H_FILE)) { last_error = ERROR_INVALID_HANDLE; return FALSE; }
     const int fd = ((HFile *)h)->fd;
     off_t at = ov ? (off_t)((uint64_t)ov->OffsetHigh << 32 | ov->Offset) : 0;
     DWORD done = 0;
+    unsigned held = 0;   /* (the tries of a buffer read-only for a moment, below) */
     while (done < n) {
         const ssize_t r = ov ? pread(fd, (char *)buf + done, n - done, at + done) : read(fd, (char *)buf + done, n - done);
         if (r < 0 && errno == EINTR) continue;
+        /* (arm64 port) the buffer mapped but read-only: the renderer is placing the pool it is in in the device's memory and holds
+           writes back while it copies the pool (gpu/vk/placed_memory.h Barrier, RX_VK_PLACED_LATER_MB). The CPU's writes wait in
+           its fault handler; the kernel's fails instead, so the read is tried again, every millisecond for up to 30 s from its
+           last progress (a pool with gigabytes in it, some in swap, can take seconds to copy). A buffer nothing maps fails at
+           once, as before */
+        if (r < 0 && errno == EFAULT && held < 30000 && page_mapped((char *)buf + done)) {
+            held++;
+            usleep(1000);
+            continue;
+        }
         if (r < 0) { if (got) *got = done; return fail_errno(); }
         if (!r) break;
         done += (DWORD)r;
+        held = 0;
     }
     if (got) *got = done;
     if (ov && !done && n) { last_error = ERROR_HANDLE_EOF; return FALSE; }

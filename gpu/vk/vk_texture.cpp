@@ -1365,6 +1365,9 @@ bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
     default: return false;
     }
     if (!unswizzle_ready()) return false;
+    // (arm64 port) a texture in a pool left in ordinary memory until the GPU binds it (RX_VK_PLACED_LATER_MB): on the CPU, as
+    // most are. The GPU would read it through a binding, which places the whole pool: on the Odin 3, the textures' 2.4 GB
+    if (memory_placed_later(tex.gpu, total)) return false;
     const BufferRef src = gpu_buffer(tex.gpu, total);
     const uint64_t align = std::max<uint64_t>(dev.props.limits.minStorageBufferOffsetAlignment, 16);
     if (!src || (src.offset % align)) return false;

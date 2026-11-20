@@ -2,8 +2,10 @@
 driver takes neither host pointers nor dma-bufs of the guest window: Turnip, Mesa's Adreno driver, on a kernel without
 /dev/udmabuf (the AYN Odin 3's Armada OS), where no pool reached the GPU and nothing was drawn. Compiles and runs
 tests/placed_memory_test.cpp, which places a memfd standing in for the device's dma-buf over a pool in a window made as
-host/hos_main.c makes it, and gives it back; and checks that vk_memory.cpp, the host and the API between them are wired to
-it. No game, no GPU; Linux only (mmap, memfd, /proc/self/pagemap).
+host/hos_main.c makes it, and gives it back; places one while threads write into it without pause, as a pool left in
+ordinary memory is placed at its first GPU binding (RX_VK_PLACED_LATER_MB), and finds every write in the placement
+(place_live), and makes one write meet a held range for sure (hold); and picks the pools left in ordinary memory a binding places (later_range). Then checks that vk_memory.cpp,
+the host and the API between them are wired to it. No game, no GPU; Linux only (mmap, memfd, /proc/self/pagemap).
 
     python -I tests/test_placed_memory.py [--cxx g++]
 """
@@ -60,6 +62,52 @@ def check_source():
         raise SystemExit("memory_pool_created no longer places the game's pools")
     if "placed_unback(" not in body(src, "void memory_pool_finalized(uint64_t gpu, uint64_t size) {"):
         raise SystemExit("memory_pool_finalized no longer gives the placements back")
+    # (RX_VK_PLACED_LATER_MB: a big pool left in ordinary memory when made, placed at its first GPU binding with the game's
+    # writes held back, forgotten when let go before; a large texture in one unswizzled on the CPU, not through a binding)
+    # (what a pool made becomes is placed::made's, which tests/placed_memory_test.cpp runs: none left in ordinary memory ever
+    # runs into a placement, so placing one at a binding takes in no placement the GPU may be writing; a refused one is
+    # remembered, so that letting it go takes nothing off a placement made over it since)
+    back = body(src, "void placed_back(uint64_t lo, uint64_t hi) {")
+    for needle in ("switch (placed::made(plan, placed_later, lo, hi, placed_later_min)) {",
+                   "placed_later.add(lo, hi);",
+                   'if (!placed_wake(lo, hi, "as a pool made runs into it")) {\n            placed_refused.emplace_back(lo, hi);',
+                   "if (!placed_make(lo, hi, 1, false)) placed_refused.emplace_back(lo, hi);"):
+        if needle not in back:
+            raise SystemExit("placed_back no longer does as placed::made says: " + needle)
+    make = body(src, 'bool placed_make(uint64_t lo, uint64_t hi, int pools_over, bool live, const char* why = "at its first GPU binding") {')
+    if "if (live || !plan.absorbed.empty()) {" not in make:
+        raise SystemExit("placed_make no longer holds the game's writes back while it takes placements in")
+    if "if (placed && placed_gone_any.load(std::memory_order_acquire)) placed_retire_gone();" not in \
+            body(src, "Pool* pool_lookup(uint64_t guest, uint64_t size) {"):
+        raise SystemExit("pool_lookup no longer retires the imports of placements a placement at its lookup took in")
+    if "placed_later_min = mb > 0 && !forced ?" not in body(src, "bool placed_setup(bool forced) {"):
+        raise SystemExit("placed_setup leaves pools in ordinary memory where host pointers work (RX_VK_PLACED=1)")
+    if 'if (woke || !placed_wake(guest, guest + size, "at its first GPU binding")) return false;' not in \
+            body(src, "bool placed_find(uint64_t guest, uint64_t size, GuestPool& out) {"):
+        raise SystemExit("placed_find no longer places a pool left in ordinary memory at its first GPU binding")
+    if "if (placed_make(r.lo, r.hi, pools, true, why)) return true;" not in body(src, "bool placed_wake(uint64_t lo, uint64_t hi, const char* why) {"):
+        raise SystemExit("placed_wake no longer places what the binding runs into as a pool the game may be writing")
+    if "ok = placed::place_live(placed_barrier, at, n, fd, fresh, placed_page, placed_pagemap, olds, &copied, &err);" not in make:
+        raise SystemExit("placed_make no longer holds the game's writes back while it places a pool it may be writing")
+    if "return placed_barrier.held((uintptr_t)r->ExceptionInformation[1]) ? EXCEPTION_CONTINUE_EXECUTION" not in \
+            body(src, "LONG CALLBACK placed_held(EXCEPTION_POINTERS* e) {"):
+        raise SystemExit("placed_held no longer lets a held-back write run again")
+    setup = body(src, "bool placed_setup(bool forced) {")
+    # (whatever RX_VK_PLACED_LATER_MB says: a placement that takes in others holds the game's writes back too)
+    lines = setup.splitlines()
+    at = [i for i, line in enumerate(lines) if "AddVectoredExceptionHandler(1, placed_held);" in line]
+    if len(at) != 1 or lines[at[0]] != "        AddVectoredExceptionHandler(1, placed_held);" or \
+            lines[at[0] - 1].strip().startswith(("if", "else")) or not setup.find(lines[at[0]]) < setup.find("placed_on = true;"):
+        raise SystemExit("placed_setup no longer registers the handler always, before any pool is placed")
+    unback = body(src, "void placed_unback(uint64_t lo, uint64_t hi) {")
+    if unback.find("placed_refused.erase(r);") < 0 or not unback.find("placed_refused.erase(r);") < unback.find("placements.upper_bound(lo)"):
+        raise SystemExit("placed_unback no longer takes a refused pool off before it looks at the placements")
+    if "return placed_later_let_go(lo, hi);" not in unback or \
+            "if (!placed_later.let_go(lo, hi)) return;" not in body(src, "void placed_later_let_go(uint64_t lo, uint64_t hi) {"):
+        raise SystemExit("placed_unback no longer forgets a pool let go while in ordinary memory")
+    tex = body(need("gpu/vk/vk_texture.cpp"), "bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {")
+    if not 0 <= tex.find("if (memory_placed_later(tex.gpu, total)) return false;") < tex.find("gpu_buffer(tex.gpu, total)"):
+        raise SystemExit("upload_unswizzle_gpu would bind, and so place, a pool left in ordinary memory for one texture")
     if "if (placed_gone_any.load(std::memory_order_acquire)) placed_retire_gone();" not in body(src, "Pool* pool_of(uint64_t guest, uint64_t size) {"):
         raise SystemExit("pool_of no longer retires the imports of placements given back: the GPU would keep the old memory")
     # (a placed page given back with madvise would not read as zero: the host zeroes it instead, as an imported one)
@@ -138,9 +186,9 @@ def main():
     check_source()
     with tempfile.TemporaryDirectory(prefix="placed-memory-") as tmp:
         exe = Path(tmp) / "placed-memory"
-        subprocess.run([args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror",
+        subprocess.run([args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-pthread",
                         str(ROOT / "tests/placed_memory_test.cpp"), "-o", str(exe)], check=True)
-        subprocess.run([str(exe)], check=True)
+        subprocess.run([str(exe)], check=True, timeout=120)
         check_told_while_starting(args.cxx, tmp)
 
 

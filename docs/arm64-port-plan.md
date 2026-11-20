@@ -289,13 +289,13 @@ Written 2026-11-17, not yet run (it needs Docker on the Mac):
     `free_import_memory`); `tests/test_placed_import_memory.py` counts as Turnip does. Still open from that run: 5.5 GB in
     swap, 100-800 ms to make a 16 MB staging buffer under that pressure, and the forest at 17-20 fps with the GPU at 40-70
     ms a frame at half resolution.
-  - **The placements' cost (being measured):** after the sixth run's fix the forest still held 5.5 GB of placements in
-    about 4500, 2.4 GB of it one pool (`0x109c1b0000`) placed at boot with 8 KB copied in, and each placement seems to
-    cost its whole size in RAM (the kernel's msm driver takes a buffer object's pages all at once and keeps them).
-    Keeping more textures under that pressure made it worse (a keep window, tried and reverted: stalls of up to 20 s).
-    `RX_VK_LOG_BIG_POOLS=1` logs for each placement of 64 MB or more what MemAvailable did as it was made, what the GPU
-    reaches of it and which parts hold data, to choose between placing a big pool at its first GPU use, in parts, or
-    as now.
+  - **The placements' cost (2026-11-20, `RX_VK_LOG_BIG_POOLS=1`, Kokiri Forest):** after the sixth run's fix the forest
+    still held 5.5 GB of placements, and a placement takes its whole size in RAM when its memory is allocated (the 2.4 GB
+    textures' pool took MemAvailable from 6976 to 4557 MB with 8 KB in it), pages the driver holds and the kernel never
+    swaps. Of the 4.3 GB in pools of 64 MB or more, 3.5 GB was never bound by the GPU in 5 minutes, the textures' pool
+    among it (its textures are uploaded from the CPU). Keeping more textures under that pressure made it worse (a keep
+    window, tried and reverted: stalls of up to 20 s). Now such pools stay in ordinary memory until the GPU first binds
+    them (`RX_VK_PLACED_LATER_MB`, [placed-later-plan.md](placed-later-plan.md)).
   - The game's own log under Steam: `logs/longshot_log.txt` in the game folder (`longshot-launch` gives the game no
     stderr when it isn't a terminal: Steam's pipe kept the game from writing it). Crash reports: `bug-reports/`.
 - The mesh fallback with indirect counts (hard problem 3).

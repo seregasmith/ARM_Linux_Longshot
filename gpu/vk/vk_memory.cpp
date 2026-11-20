@@ -625,6 +625,19 @@ std::atomic<bool> placed_gone_any{false};
 // under pools_mu does not wait for placed_mu, which the game's thread holds while it copies a whole pool in or out
 std::mutex placed_holders_mu;
 std::unordered_map<VkDeviceMemory, int> placed_holders;
+// (placed_mu) RX_VK_PLACED_LATER_MB: the game's pools of placed_later_min or more left in ordinary memory when it makes them,
+// placed at their first GPU binding (placed_wake). On the Odin 3 a placement takes its whole size in RAM when its memory is
+// allocated, the driver's pages, never swapped: in Kokiri Forest 3.5 GB of the 4.3 GB in pools of 64 MB or more were never
+// bound by the GPU in 5 minutes, 2.4 GB of it the textures' pool, which only the CPU reads (docs/placed-later-plan.md). By
+// start, each pool's own end (placed::Later). They never run into a placement: a pool made over one of them places it
+// first (placed_back), so that placing one at a binding takes in no placement the GPU may be writing, and no import
+// (placed_wake)
+placed::Later placed_later;
+// (placed_mu) The game's pools whose placement was refused when they were made (bindings of them go without): when one is let
+// go it is taken off here, never from a placement made over it since, which did not count it
+std::vector<std::pair<uint64_t, uint64_t>> placed_refused;
+uint64_t placed_later_min = 0;   // (placed_setup; 0: every pool placed when the game makes it)
+placed::Barrier placed_barrier;   // (the game's writes held back while a pool it may be writing is placed: placed_held)
 
 /// One more holder of a placement's memory: the placement when it is made, an import when its buffer is bound in it
 void placed_hold(VkDeviceMemory m) {
@@ -736,21 +749,22 @@ const char* placed_try() {
     return why;
 }
 
-/// The game's pool over guest [lo, hi) (page aligned) placed: in the placement that holds it already, or in a new one over it
-/// and every placement it runs into, which the new one replaces (placed_mu held)
-void placed_back(uint64_t lo, uint64_t hi) {
-    if (hi <= lo || hi > host->guest_size()) return;
+/// Guest [lo, hi) (page aligned) placed, with `pools` of the game's pools over it: in the placement that holds it already, or
+/// in a new one over it and every placement it runs into, which the new one replaces. live: the game may be writing it (a
+/// pool left in ordinary memory, at its first GPU binding): its writes are held back while it is copied (place_live). False:
+/// refused, nothing changed (placed_mu held)
+bool placed_make(uint64_t lo, uint64_t hi, int pools_over, bool live, const char* why = "at its first GPU binding") {
     const placed::Plan plan = placed::plan(placements, lo, hi);
     if (plan.inside) {
-        placements[plan.inside_lo].pools++;
-        return;
+        placements[plan.inside_lo].pools += pools_over;
+        return true;
     }
     const uint64_t n = plan.range.hi - plan.range.lo;
     if (n > max_import_size) {
         if (placed_failures++ < 8)
             logf("vk: guest %#llx..%#llx not placed: larger than the device's allocations", (unsigned long long)plan.range.lo,
                  (unsigned long long)plan.range.hi);
-        return;
+        return false;
     }
     const auto t0 = std::chrono::steady_clock::now();
     const bool big = n >= kBigMin && big_active.load(std::memory_order_relaxed);   // (RX_VK_LOG_BIG_POOLS)
@@ -767,26 +781,41 @@ void placed_back(uint64_t lo, uint64_t hi) {
             close(fd);
         }
         if (memory) vkFreeMemory(dev.device, memory, nullptr);
-        return;
+        return false;
     }
     uint8_t* const at = host->guest_base() + plan.range.lo;
     std::vector<placed::Range> olds;   // (the placements it replaces, from its start: copied whole)
-    int pools = 1;
+    int pools = pools_over;
     for (const uint64_t a : plan.absorbed) {
         const Placement& o = placements.at(a);
         olds.push_back({a - plan.range.lo, o.hi - plan.range.lo});
         pools += o.pools;
     }
-    const uint64_t copied = placed::copy_in(fresh, at, n, placed_page, placed_pagemap, olds);
-    munmap(fresh, n);
-    const bool ok = placed::place(at, n, fd);
-    const int err = errno;
+    uint64_t copied = 0;
+    int err = 0;
+    bool ok;
+    if (live && !plan.absorbed.empty()) {   // (none should: those left in ordinary memory never run into a placement)
+        static int told;
+        if (told++ < 4)
+            logf("vk: guest %#llx..%#llx placed at a GPU binding over %zu placements: the GPU's writes to them under way may be lost",
+                 (unsigned long long)plan.range.lo, (unsigned long long)plan.range.hi, plan.absorbed.size());
+    }
+    if (live || !plan.absorbed.empty()) {   // (made read-only while copied: a write meanwhile waits in placed_held, then lands
+                                            // in the placement. Also when it takes in placements: the game may be writing them)
+        ok = placed::place_live(placed_barrier, at, n, fd, fresh, placed_page, placed_pagemap, olds, &copied, &err);
+        munmap(fresh, n);
+    } else {
+        copied = placed::copy_in(fresh, at, n, placed_page, placed_pagemap, olds);
+        munmap(fresh, n);
+        ok = placed::place(at, n, fd);
+        err = errno;
+    }
     close(fd);   // (the mapping keeps the dma-buf)
     if (!ok) {
         vkFreeMemory(dev.device, memory, nullptr);
         logf("vk: guest %#llx..%#llx: the device's memory not mapped there (errno %d)%s", (unsigned long long)plan.range.lo,
              (unsigned long long)plan.range.hi, err, olds.empty() ? "" : "; the placements there may be gone");
-        return;
+        return false;
     }
     for (const uint64_t a : plan.absorbed) {   // (their imports hold their memory until they are freed)
         auto o = placements.find(a);
@@ -806,20 +835,102 @@ void placed_back(uint64_t lo, uint64_t hi) {
     if (big) avail_mb[2] = big_avail_mb(), big_take(plan.range.lo, plan.range.hi, placed_serial, avail_mb);
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     static int logged;
-    if (logged++ < 8 || !plan.absorbed.empty() || ms >= 20.0 || placements.size() % 64 == 0)
+    if (live)
+        logf("vk: pool %#llx..%#llx placed in the device's memory %s%s in %.1f ms (%llu MB copied in; the game's writes held "
+             "back %llu times so far; %zu placements, %llu MB)", (unsigned long long)lo, (unsigned long long)hi, why,
+             plan.absorbed.empty() ? "" : (" with " + std::to_string(plan.absorbed.size()) + " placed before, as one").c_str(), ms,
+             (unsigned long long)(copied >> 20), (unsigned long long)placed_barrier.waits.load(std::memory_order_relaxed),
+             placements.size(), (unsigned long long)(placed_bytes >> 20));
+    else if (logged++ < 8 || !plan.absorbed.empty() || ms >= 20.0 || placements.size() % 64 == 0)
         logf("vk: pool %#llx..%#llx placed in the device's memory%s in %.1f ms (%llu KB copied in; %zu placements, %llu MB)",
              (unsigned long long)lo, (unsigned long long)hi,
              plan.absorbed.empty() ? "" : (" with " + std::to_string(plan.absorbed.size()) + " placed before, as one").c_str(), ms,
              (unsigned long long)(copied >> 10), placements.size(), (unsigned long long)(placed_bytes >> 20));
+    return true;
+}
+
+bool placed_wake(uint64_t lo, uint64_t hi, const char* why);   // (below)
+
+/// The game's pool over guest [lo, hi) (page aligned) made: counted in the placement that holds it, left in ordinary memory
+/// until the GPU binds it, or placed, as placed::made says. Refused, it is remembered (placed_refused) (placed_mu held)
+void placed_back(uint64_t lo, uint64_t hi) {
+    if (hi <= lo || hi > host->guest_size()) return;
+    const placed::Plan plan = placed::plan(placements, lo, hi);
+    switch (placed::made(plan, placed_later, lo, hi, placed_later_min)) {
+    case placed::Made::inside:
+        placements[plan.inside_lo].pools++;
+        return;
+    case placed::Made::later:
+        placed_later.add(lo, hi);
+        if (hi - lo >= placed_later_min)
+            logf("vk: pool %#llx..%#llx (%llu MB) left in ordinary memory until the GPU binds it (%zu such, %llu MB)",
+                 (unsigned long long)lo, (unsigned long long)hi, (unsigned long long)((hi - lo) >> 20), placed_later.pools.size(),
+                 (unsigned long long)(placed_later.bytes() >> 20));
+        return;
+    case placed::Made::wake_first:   // (the game's writes to them held back meanwhile)
+        if (!placed_wake(lo, hi, "as a pool made runs into it")) {
+            placed_refused.emplace_back(lo, hi);
+            static int logged;
+            if (logged++ < 8)
+                logf("vk: pool %#llx..%#llx not placed: the pools left in ordinary memory it runs into could not be (its "
+                     "bindings go without)", (unsigned long long)lo, (unsigned long long)hi);
+            return;
+        }
+        break;
+    case placed::Made::place:
+        break;
+    }
+    if (!placed_make(lo, hi, 1, false)) placed_refused.emplace_back(lo, hi);
+}
+
+/// Guest [lo, hi) about to be bound by the GPU (or a pool made over it): the pools left in ordinary memory that it runs into
+/// placed now, with every other such pool they run into (placed::later_range), the game's writes held back while they are
+/// copied. False: none there, or refused (then left as they were, not tried again for 30 s) (placed_mu held)
+bool placed_wake(uint64_t lo, uint64_t hi, const char* why) {
+    if (placed_later.pools.empty()) return false;
+    int pools = 0;
+    std::vector<std::pair<uint64_t, placed::Later::Entry>> taken;
+    const int64_t now = placed::Barrier::now_ns();
+    const placed::Range r = placed_later.take(lo, hi, now, &pools, taken);
+    if (taken.empty()) return false;
+    if (placed_make(r.lo, r.hi, pools, true, why)) return true;
+    placed_later.put_back(taken, now + 30 * 1000000000ll);
+    static int logged;
+    if (logged++ < 8 || logged % 64 == 0)
+        logf("vk: guest %#llx..%#llx left in ordinary memory: its placement refused (%d so; tried again in 30 s at the next "
+             "binding, which goes without until then)", (unsigned long long)r.lo, (unsigned long long)r.hi, logged);
+    return false;
+}
+
+/// The game's pool over guest [lo, hi) let go while left in ordinary memory: forgotten, nothing to copy (placed_mu held)
+void placed_later_let_go(uint64_t lo, uint64_t hi) {
+    if (!placed_later.let_go(lo, hi)) return;   // (only that pool: another one never left here takes off none)
+    static int logged;
+    if (logged++ < 16)
+        logf("vk: pool %#llx..%#llx let go, never placed (%zu left in ordinary memory)", (unsigned long long)lo,
+             (unsigned long long)hi, placed_later.pools.size());
+}
+
+/// (arm64 port) A fault in a range being placed while the game may write it (placed_make, live): the write waits for the
+/// placement, then runs again, into it. First among the host's vectored handlers (placed_setup)
+LONG CALLBACK placed_held(EXCEPTION_POINTERS* e) {
+    const EXCEPTION_RECORD* r = e->ExceptionRecord;
+    if (r->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || r->NumberParameters < 2) return EXCEPTION_CONTINUE_SEARCH;
+    return placed_barrier.held((uintptr_t)r->ExceptionInformation[1]) ? EXCEPTION_CONTINUE_EXECUTION : EXCEPTION_CONTINUE_SEARCH;
 }
 
 /// The game's pool over guest [lo, hi) let go: its placement back into ordinary memory when it was the last pool over it
 /// (placed_mu held)
 void placed_unback(uint64_t lo, uint64_t hi) {
+    for (auto r = placed_refused.begin(); r != placed_refused.end(); ++r)   // (never counted anywhere)
+        if (r->first == lo && r->second == hi) {
+            placed_refused.erase(r);
+            return;
+        }
     auto it = placements.upper_bound(lo);
-    if (it == placements.begin()) return;
+    if (it == placements.begin() || std::prev(it)->second.hi < hi) return placed_later_let_go(lo, hi);   // (or none)
     --it;
-    if (it->second.hi < hi || --it->second.pools > 0) return;
+    if (--it->second.pools > 0) return;
     const uint64_t n = it->second.hi - it->first;
     uint64_t copied = 0;
     if (!placed::unplace(host->guest_base() + it->first, n, placed_page, &copied)) {
@@ -891,6 +1002,19 @@ bool placed_setup(bool forced) {
          f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ? ", device local" : "", (unsigned long long)align,
          placed_pagemap < 0 ? "; no /proc/self/pagemap: every page copied in" : "");
     big_start();   // (RX_VK_LOG_BIG_POOLS)
+    {   // (RX_VK_PLACED_LATER_MB: the pools of that size or more wait for their first GPU binding; 0: placed when made)
+        const char* e = getenv("RX_VK_PLACED_LATER_MB");
+        const long mb = e && *e ? std::strtol(e, nullptr, 10) : 64;
+        // (not where host pointers work, RX_VK_PLACED=1's test of this path: a binding refused there would be imported from
+        // ordinary memory, and the placement made later would leave that import on the old pages)
+        placed_later_min = mb > 0 && !forced ? (uint64_t)mb << 20 : 0;
+        // (before any placement, placed_on is set below; with none left in ordinary memory too: a placement that takes in
+        // others holds the game's writes back as well)
+        AddVectoredExceptionHandler(1, placed_held);
+        if (placed_later_min)
+            logf("vk: the game's pools of %ld MB or more left in ordinary memory until the GPU binds them (RX_VK_PLACED_LATER_MB)",
+                 mb);
+    }
     // (the pools the game made before now: on first, then the list read, both under the lock. A pool made after the list was
     // read is told by its memory_pool_created, which waits for the lock and finds placed_on set; one whose memory_pool_created
     // came before that is in the list, as the host lists a pool before it tells the renderer (host/nvn_native.c). One both
@@ -979,12 +1103,16 @@ void big_stop() {
 bool placed_find(uint64_t guest, uint64_t size, GuestPool& out) {
     if (!size || size > UINT64_MAX - guest) return false;
     std::lock_guard lk(placed_mu);
-    auto it = placements.upper_bound(guest);
-    if (it == placements.begin()) return false;
-    --it;
-    if (guest + size > it->second.hi) return false;
-    out.lo = it->first, out.hi = it->second.hi;
-    return true;
+    for (bool woke = false;; woke = true) {
+        auto it = placements.upper_bound(guest);
+        if (it != placements.begin() && guest + size <= std::prev(it)->second.hi) {
+            --it;
+            out.lo = it->first, out.hi = it->second.hi;
+            return true;
+        }
+        // (RX_VK_PLACED_LATER_MB: the GPU binds a pool left in ordinary memory: placed now, then found)
+        if (woke || !placed_wake(guest, guest + size, "at its first GPU binding")) return false;
+    }
 }
 
 /// An import of guest [lo, hi) from the placement holding it: a buffer over the range bound at its offset in the placement's
@@ -4504,6 +4632,11 @@ Pool* pool_lookup(uint64_t guest, uint64_t size) {
     --it;
     GuestPool placement;   // (arm64 port: placed, an import is the whole placement holding the range: placed_find)
     const bool placed = placed_on && placed_find(guest, size, placement);
+#ifdef __linux__
+    // (a pool left in ordinary memory placed by that lookup: it took in no placement (placed_back), but were one gone, its
+    // imports are retired before this one is looked for, as pool_of does before every lookup)
+    if (placed && placed_gone_any.load(std::memory_order_acquire)) placed_retire_gone();
+#endif
     if (!placed && (guest < it->lo || guest >= it->hi || !size || size > it->hi - guest)) return nullptr;
     const uint64_t chunk = import_chunk();
     const GuestPool range = placed ? placement : chunk ? GuestPool{guest, guest + size} : *it;
@@ -5745,6 +5878,24 @@ void memory_pool_finalized(uint64_t gpu, uint64_t size) {
     placed_unback(gpu & ~(align - 1), (gpu + size + align - 1) & ~(align - 1));
 #else
     (void)gpu, (void)size;
+#endif
+}
+
+bool memory_placed_later(uint64_t gpu, uint64_t size) {
+#ifdef __linux__
+    if (!placed_on.load(std::memory_order_acquire) || !size) return false;
+    uint64_t guest = gpu;
+    if (gpu >= (1ull << 40)) {   // (a virtual pool's address: where the host maps it)
+        uint64_t avail = 0;
+        if (!host->gpu_ptr(gpu, &avail) || avail < size) return false;
+        guest = host->gpu_guest(gpu);
+    }
+    if (size > UINT64_MAX - guest) return false;
+    std::lock_guard lk(placed_mu);
+    return placed_later.overlaps(guest, guest + size);   // (never over a placement: placed_back)
+#else
+    (void)gpu, (void)size;
+    return false;
 #endif
 }
 
