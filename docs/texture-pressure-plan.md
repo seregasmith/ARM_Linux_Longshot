@@ -2,16 +2,7 @@
 
 The run of 2026-11-20 (build v3.0.0-52-g104045b3, Turnip 26.2.6, Kokiri Forest) had no refused allocations and no missing
 textures after the placed-import fix (104045b3), but it still froze for 1.2 to 3.7 s six times. This is the plan for the
-cause of those freezes.
-
-**Status (2026-11-20):** built, steps 1 to 5 in one change, with the window's default (20 s) chosen before step 1's
-measurement: a Kokiri Forest run with `RX_VK_PRESSURE_KEEP_S=0` is the measurement before, one without it the measurement
-after, and the `made again` line of the first sets the default. Step 1 counts megabytes, not milliseconds. Test:
-`tests/test_pressure_keep.py`. Changed after a review of the first version: the floor is what the window drew with the
-allocations' padding and a quarter more (a pass over the budget goes down to 7/8 of it, which ate into the window); the
-eviction itself leaves every texture drawn in the window (its minimum age is the window's presents); "swap short" holds until
-the reserve clears by 256 MB, uses the default reserve when `RX_VK_COMMIT_RESERVE_MB=0`, and the keep needs at least as
-much swap free as it keeps.
+cause of those freezes. Nothing here is built yet.
 
 ## What the log and the code show
 

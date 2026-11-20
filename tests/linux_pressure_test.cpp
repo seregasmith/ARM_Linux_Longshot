@@ -276,46 +276,6 @@ void test_meminfo_and_shortfall(const std::string& dir) {
     // Entering pressure when total_bytes < 512 MB still honors the 512 MB floor
     PressureHold low_entry;
     CHECK(low_entry.step(300 * kMB, 850 * kMB, 6000 * kMB) == 512 * kMB && low_entry.active);
-
-    // 5. (RX_VK_PRESSURE_KEEP_S) what the frames drew, kept under the hold's budget: entered at a title screen's 50 MB, the
-    // forest's 1500 MB kept while it lasts (1200 drawn, a quarter more), never stored (the next area drawing less lets the rest
-    // go), off when not active
-    PressureHold keep;
-    CHECK(keep.step(50 * kMB, 1279 * kMB, 14791 * kMB) == 512 * kMB && keep.active);
-    CHECK(keep.step(1400 * kMB, 250 * kMB, 9800 * kMB, kDefaultAvailReserve, kDefaultCommitReserve, kClearMargin, kBudgetFloor,
-                    true, 1500 * kMB) == 1500 * kMB && keep.active);
-    CHECK(keep.step(1400 * kMB, 250 * kMB, 9800 * kMB, kDefaultAvailReserve, kDefaultCommitReserve, kClearMargin, kBudgetFloor,
-                    true, 600 * kMB) == 600 * kMB && keep.held_budget == 512 * kMB);
-    CHECK(keep.step(1400 * kMB, 2200 * kMB, 9800 * kMB, kDefaultAvailReserve, kDefaultCommitReserve, kClearMargin, kBudgetFloor,
-                    true, 1500 * kMB) == UINT64_MAX && !keep.active);
-    // (entered with the keep, and stepping back up under it: the keep on every path out of step while active)
-    PressureHold entry;
-    CHECK(entry.step(1800 * kMB, 250 * kMB, 9800 * kMB, kDefaultAvailReserve, kDefaultCommitReserve, kClearMargin, kBudgetFloor,
-                     true, 1500 * kMB) == 1500 * kMB && entry.held_budget == 514 * kMB);
-    CHECK(entry.step(1800 * kMB, 1900 * kMB, 9800 * kMB, kDefaultAvailReserve, kDefaultCommitReserve, kClearMargin, kBudgetFloor,
-                     true, 1500 * kMB) == 1500 * kMB && entry.held_budget == 770 * kMB && entry.active);
-    CHECK(keep_floor(1200 * kMB) == 1500 * kMB && keep_floor(100 * kMB) == 512 * kMB && keep_floor(0) == kBudgetFloor);
-    CHECK(keep_seconds(nullptr) == kDefaultKeepSeconds && keep_seconds("") == kDefaultKeepSeconds);
-    CHECK(keep_seconds("0") == 0 && keep_seconds("-5") == 0 && keep_seconds("45") == 45 && keep_seconds("999") == 120);
-    // swap can take the rest (9.8 GB free); swap nearly gone (the commit reserve, 2560 MB); none at all; the reserve turned off
-    // (RX_VK_COMMIT_RESERVE_MB=0) is the default here; once short, short until the reserve is cleared by 256 MB
-    CHECK(!swap_short(false, 250 * kMB, 9800 * kMB, kDefaultCommitReserve, true));
-    CHECK(swap_short(false, 180 * kMB, 60 * kMB, kDefaultCommitReserve, true));
-    CHECK(swap_short(false, 250 * kMB, 0, kDefaultCommitReserve, false));
-    CHECK(swap_short(false, 180 * kMB, 60 * kMB, 0, true));
-    CHECK(!swap_short(false, 250 * kMB, 2400 * kMB, kDefaultCommitReserve, true));   // (2650 MB: over the reserve)
-    CHECK(swap_short(true, 250 * kMB, 2400 * kMB, kDefaultCommitReserve, true));     // (short before: 2650 < 2816)
-    CHECK(!swap_short(true, 250 * kMB, 2600 * kMB, kDefaultCommitReserve, true));    // (2850: cleared)
-
-    // 6. PresentClock: seconds as presents, at 20 fps (a note every 30 presents, 1.5 s)
-    PresentClock clock;
-    CHECK(clock.presents_since(100, 5000, 20) == 100);   // (no note yet: every present)
-    for (uint64_t f = 30, ms = 1500; f <= 1200; f += 30, ms += 1500) clock.note(f, (int64_t)ms);
-    CHECK(clock.presents_since(1200, 60000, 20) == 420);   // (back to the note 21 s old: 1200 - 780)
-    CHECK(clock.presents_since(1200, 60000, 3) == 60);     // (the note 3 s old: 1200 - 1140)
-    CHECK(clock.presents_since(1200, 60000, 100) == 1170); // (older than every note: back to the oldest, 30)
-    for (uint64_t f = 1230, ms = 61500; f <= 12000; f += 30, ms += 1500) clock.note(f, (int64_t)ms);
-    CHECK(clock.count == PresentClock::kNotes && clock.presents_since(12000, 600000, 20) == 420);
 }
 
 void test_module_drop_and_reload(const std::string& dir) {
