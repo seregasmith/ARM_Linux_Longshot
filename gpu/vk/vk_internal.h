@@ -239,6 +239,13 @@ extern std::atomic<int64_t> memsync_part_ns[3];       // (longshot, diagnostics:
 BufferRef gpu_buffer(uint64_t gpu, uint64_t size);   // (empty when no pool holds the range)
 // (arm64 port) [gpu, gpu + size) in a pool left in ordinary memory until the GPU binds it (RX_VK_PLACED_LATER_MB, vk_memory.cpp)
 bool memory_placed_later(uint64_t gpu, uint64_t size);
+/// (vk_memory.cpp, Linux) The DRM driver's own count of this process's memory now (fdinfo of its device files), in bytes;
+/// -1 where the kernel gives none (or not Linux)
+int64_t driver_memory_now();
+/// (vk_memory.cpp, Linux) driver_memory_now less the device heap's use (the driver's own count, VK_EXT_memory_budget):
+/// what the driver holds outside the memory the process allocated (pipelines, descriptor pools, private memory); -1 when
+/// either is not known
+int64_t driver_outside_heap_now();
 /// A range as a binding of the replay sees it: the pool's VRAM mirror when it has one (vk_memory.cpp), else the
 /// imported pool. written: the GPU may write it (copied back to guest memory at the submission's end).
 BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written);

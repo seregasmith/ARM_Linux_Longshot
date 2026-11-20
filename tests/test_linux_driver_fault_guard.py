@@ -25,6 +25,7 @@ END = "\n#endif\nVkPipeline build_graphics"
 HEAD = r"""
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <setjmp.h>
@@ -49,6 +50,20 @@ void logf(const char *, ...) { ++logged; }
 static int faults_noted;
 void note_driver_fault() { ++faults_noted; }   /* (vk_draw.cpp: the preparation's watchdog counts them) */
 static void fault_now() { *(volatile int *)0x40 = 1; }
+/* (vk_draw.cpp's RX_VK_LOG_PIPELINE_RAM weighing: its lock held from before the driver to after it, and let go in the fault
+   branch, as siglongjmp skips destructors: a fault that kept it would leave every later pipeline waiting) */
+static std::mutex ram_mu;
+static bool ram_held;
+static int ram_begun, ram_ended, ram_released;
+static bool pipeline_ram_begin() {   /* (a lock still held here is a weighing never let go: said, not waited on) */
+    if (!ram_mu.try_lock()) { std::printf("fail: the weighing's lock still held at the next pipeline\n"); std::exit(12); }
+    ram_held = true;
+    ++ram_begun;
+    return true;
+}
+static void pipeline_ram_end(const VkGraphicsPipelineCreateInfo *, VkResult) { ram_held = false; ++ram_ended; ram_mu.unlock(); }
+static void pipeline_ram_end(const VkComputePipelineCreateInfo *, VkResult) { ram_held = false; ++ram_ended; ram_mu.unlock(); }
+static void pipeline_ram_fault() { if (ram_held) { ram_held = false; ++ram_released; ram_mu.unlock(); } }
 VkResult vkCreateComputePipelines(uintptr_t device, VkPipelineCache cache, unsigned count,
                                   const VkComputePipelineCreateInfo *ci, const void *allocator, VkPipeline *out) {
     if (device != dev.device || cache != 0 || count != 1 || !ci || allocator || !out) return -1;
@@ -80,6 +95,7 @@ int main(int argc, char **argv) {
     if (!std::strcmp(what, "ok")) {
         if (guarded_compute(0, &ci, &pl) != VK_SUCCESS || pl != 0xcafe) { std::printf("fail: compute\n"); return 3; }
         if (guarded_graphics(0, &gci, &gpl) != VK_SUCCESS || gpl != 0xbeef) { std::printf("fail: graphics\n"); return 4; }
+        if (ram_begun != 2 || ram_ended != 2 || ram_released) { std::printf("fail: the weighing not begun and ended once each\n"); return 10; }
         std::printf("ok: both compiled\n");
         return 0;
     }
@@ -98,6 +114,8 @@ int main(int argc, char **argv) {
     mode = 0;
     calls = 0;
     pl = gpl = 0;
+    if (ram_released != 1 || !ram_mu.try_lock()) { std::printf("fail: the weighing's lock kept after the fault\n"); return 11; }
+    ram_mu.unlock();
     if (guarded_compute(0, &ci, &pl) != VK_SUCCESS || pl != 0xcafe || calls != 1) {
         std::printf("fail: the next compile after the fault did not reach the driver\n");
         return 7;

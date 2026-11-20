@@ -41,6 +41,7 @@
 #include "vk_progress.h"   // (PrepareWork: prepare_run's count of the programs, each at its cost)
 #include "pipeline_cache_file.h"
 #include "vk_draw.h"
+#include "spirv_shape.h"   // (RX_VK_LOG_PIPELINE_RAM: what a shader asks of private memory)
 #ifdef TRACY_ENABLE
 #include "../../host/hos_tracy.h"   // (LONGSHOT_TRACY: the profiler's zones; nothing in any other build)
 #endif
@@ -1249,6 +1250,188 @@ void driver_fault_note(uint64_t key) {
     fclose(f);
 }
 
+// (longshot, RX_VK_LOG_PIPELINE_RAM=1, Linux) What each pipeline costs the driver in memory of its own, outside its device heap:
+// the DRM driver's count (fdinfo) less the heap's (driver_outside_heap_now), read before and after the pipeline is made, one
+// pipeline at a time meanwhile so that the two reads are its own (the heap left out, the textures and buffers another thread
+// makes meanwhile are too). On the AYN Odin 3 the driver held 2.8 GB outside the heap: 1.5 GiB of it one compute pipeline of the
+// title screen (a 4.2 MB SPIR-V; a near twin made after it took 2.5 MB), 373 MB another, 48 MB a third: Turnip's private memory,
+// one buffer for the device sized for the hungriest shader so far (spirv_shape.h). A line for each pipeline of 1 MB or more (the
+// first 300, and every one of 8 MB or more), with the program it is of (pipeline_ram_name: compute_pipeline_info, the mesh
+// fallback's stages) and its shaders (stage, SPIR-V size and hash, what an invocation asks of private memory, shared memory and
+// the workgroup: pipeline_ram_module, from guarded_shader_module); every 1000 a summary by size; and the first draw or dispatch
+// of a program whose pipeline took 8 MB or more (pipeline_ram_used): whether play needed it at all. The guards below call
+// pipeline_ram_begin before the driver and pipeline_ram_end after it; a fault in the driver lets the weighing go
+// (pipeline_ram_fault: siglongjmp skips destructors, so the lock is a plain one). A test: pipelines are made one at a time
+bool pipeline_ram_on() {
+#ifdef __linux__
+    static const bool on = env_on("RX_VK_LOG_PIPELINE_RAM");
+    return on;
+#else
+    return false;
+#endif
+}
+std::mutex pipeline_ram_mu;
+thread_local bool pipeline_ram_held = false;
+thread_local int64_t pipeline_ram_before = -1;
+std::atomic<int64_t> pipeline_ram_bytes{-1};   // (what the pipelines weighed took, in all; -1: none weighed)
+struct ModuleNote {
+    uint64_t bytes;
+    uint32_t hash;
+    spirv_shape::Shape shape;
+};
+std::mutex module_notes_mu;
+std::unordered_map<VkShaderModule, ModuleNote> module_notes;   // (kept after a module is freed: a handle the driver gives
+                                                               // again to a module made elsewhere shows the old note)
+struct PipelineRam {
+    int64_t n = 0, logged = 0, count[6] = {}, sum[6] = {};
+} pipeline_ram;   // (pipeline_ram_mu)
+/// The program the compute pipeline this thread makes next is of (pipeline_ram_name); its module tells a stale name apart
+struct PipelineName {
+    uint64_t key = 0;
+    VkShaderModule module = VK_NULL_HANDLE;
+    const char* kind = nullptr;
+};
+thread_local PipelineName pipeline_ram_named;
+/// The programs whose pipeline took 8 MB or more (the first 32), for the line at their first draw or dispatch
+constexpr int64_t kPipelineRamHeavy = 8 << 20;
+struct HeavyPipeline {
+    std::atomic<uint64_t> key{0};
+    int64_t no = 0, bytes = 0;   // (written before pipeline_ram_heavy_n counts it)
+    const char* kind = nullptr;
+    std::atomic<bool> used{false};
+};
+HeavyPipeline pipeline_ram_heavy[32];
+std::atomic<int> pipeline_ram_heavy_n{0};   // (0 unless the switch is on and a pipeline took 8 MB: a draw's one load)
+
+/// (guarded_shader_module) A module made: its SPIR-V's size, hash and shape, for the lines of the pipelines that use it
+void pipeline_ram_module(const VkShaderModuleCreateInfo* ci, VkShaderModule m) {
+    if (!pipeline_ram_on() || !m || !ci || !ci->pCode) return;
+    uint32_t h = 2166136261u;
+    const uint8_t* p = reinterpret_cast<const uint8_t*>(ci->pCode);
+    for (size_t i = 0; i < ci->codeSize; i++) h = (h ^ p[i]) * 16777619u;
+    const spirv_shape::Shape shape = spirv_shape::read(ci->pCode, ci->codeSize / 4);
+    std::lock_guard lk(module_notes_mu);
+    module_notes[m] = {(uint64_t)ci->codeSize, h, shape};
+}
+/// (compute_pipeline_info, compute_pipeline_by_module_id, the mesh fallback's compute stages) The program the compute pipeline
+/// this thread makes next is of, and what kind of program: named in its line
+void pipeline_ram_name(uint64_t key, VkShaderModule module, const char* kind) {
+    if (pipeline_ram_on()) pipeline_ram_named = {key, module, kind};
+}
+/// (a draw, a dispatch, when a pipeline took 8 MB or more) The game's first draw or dispatch with one of those programs
+void pipeline_ram_used(uint64_t key, const char* how) {
+    const int n = pipeline_ram_heavy_n.load(std::memory_order_acquire);
+    for (int i = 0; i < n; i++) {
+        HeavyPipeline& h = pipeline_ram_heavy[i];
+        if (h.key.load(std::memory_order_relaxed) != key || h.used.load(std::memory_order_relaxed) || h.used.exchange(true))
+            continue;
+        logf("vk: RAM, program %016llx: the game's first %s with it (its pipeline, #%lld weighed, took %lld MB of the driver's "
+             "memory outside its heap; %s)", (unsigned long long)key, how, (long long)h.no, (long long)(h.bytes >> 20), h.kind);
+    }
+}
+/// Before the driver makes a pipeline: true when weighing (the lock taken, the driver's count read)
+bool pipeline_ram_begin() {
+    if (!pipeline_ram_on()) return false;
+    pipeline_ram_mu.lock();
+    pipeline_ram_held = true;
+    pipeline_ram_before = driver_outside_heap_now();
+    return true;
+}
+/// (a guard's fault branch) The driver faulted while the pipeline was weighed: the weighing let go
+void pipeline_ram_fault() {
+    if (pipeline_ram_held) pipeline_ram_held = false, pipeline_ram_mu.unlock();
+}
+std::string pipeline_ram_stages(const VkPipelineShaderStageCreateInfo* st, uint32_t n) {
+    std::string out;
+    std::lock_guard lk(module_notes_mu);
+    for (uint32_t i = 0; i < n; i++) {
+        const VkShaderStageFlagBits f = st[i].stage;
+        const char* name = f == VK_SHADER_STAGE_VERTEX_BIT ? "vs" : f == VK_SHADER_STAGE_FRAGMENT_BIT ? "fs"
+                           : f == VK_SHADER_STAGE_COMPUTE_BIT ? "cs" : f == VK_SHADER_STAGE_GEOMETRY_BIT ? "gs"
+                           : f == VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT ? "tcs" : f == VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT ? "tes"
+                           : f == VK_SHADER_STAGE_MESH_BIT_EXT ? "ms" : f == VK_SHADER_STAGE_TASK_BIT_EXT ? "ts" : "?";
+        char one[200];
+        const auto it = module_notes.find(st[i].module);
+        if (it == module_notes.end()) {
+            std::snprintf(one, sizeof one, "%s%s (%s)", out.empty() ? "" : ", ", name,
+                          st[i].module ? "its module made before the weighing" : "no module: an identifier or inline code");
+        } else {
+            const ModuleNote& m = it->second;
+            int k = std::snprintf(one, sizeof one, "%s%s %llu KB %08x", out.empty() ? "" : ", ", name,
+                                  (unsigned long long)(m.bytes >> 10), m.hash);
+            if (!m.shape.ok)
+                k += std::snprintf(one + k, sizeof one - k, " (its SPIR-V not read)");
+            else {
+                k += std::snprintf(one + k, sizeof one - k, ", private %llu bytes an invocation",
+                                   (unsigned long long)m.shape.private_bytes);
+                if (m.shape.shared_bytes)
+                    k += std::snprintf(one + k, sizeof one - k, ", shared %llu bytes", (unsigned long long)m.shape.shared_bytes);
+                if (m.shape.local[0])
+                    std::snprintf(one + k, sizeof one - k, ", workgroup %ux%ux%u", m.shape.local[0], m.shape.local[1],
+                                  m.shape.local[2]);
+            }
+        }
+        out += one;
+    }
+    return out.empty() ? std::string("none: linked from libraries") : out;
+}
+/// After the driver made it (or refused): what it took, counted, a line when 1 MB or more; the weighing let go
+void pipeline_ram_note(const char* kind, VkResult r, const VkPipelineShaderStageCreateInfo* st, uint32_t n,
+                       const PipelineName* name) {
+    const int64_t after = r == VK_SUCCESS ? driver_outside_heap_now() : -1;
+    if (after >= 0 && pipeline_ram_before >= 0) {
+        const int64_t d = after - pipeline_ram_before;
+        const int b = d <= 0 ? 0 : d < (64 << 10) ? 1 : d < (256 << 10) ? 2 : d < (1 << 20) ? 3 : d < (8 << 20) ? 4 : 5;
+        PipelineRam& s = pipeline_ram;
+        s.n++, s.count[b]++, s.sum[b] += d;
+        const int64_t was = pipeline_ram_bytes.load(std::memory_order_relaxed);
+        pipeline_ram_bytes.store((was < 0 ? 0 : was) + d, std::memory_order_relaxed);
+        if (d >= (1 << 20) && (s.logged++ < 300 || d >= kPipelineRamHeavy)) {
+            char tn[32] = "?";
+#ifdef __linux__
+            pthread_getname_np(pthread_self(), tn, sizeof tn);
+#endif
+            char program[160];
+            if (name)
+                std::snprintf(program, sizeof program, "program %016llx, %s", (unsigned long long)name->key, name->kind);
+            else
+                std::snprintf(program, sizeof program, "no program named: the renderer's own, or made elsewhere");
+            logf("vk: RAM, a %s pipeline took %lld KB of the driver's memory outside its heap (#%lld weighed, on %s; %s; its "
+                 "shaders: %s)", kind, (long long)(d >> 10), (long long)s.n, tn, program, pipeline_ram_stages(st, n).c_str());
+        }
+        const int heavy = pipeline_ram_heavy_n.load(std::memory_order_relaxed);
+        if (d >= kPipelineRamHeavy && name && heavy < (int)(sizeof pipeline_ram_heavy / sizeof pipeline_ram_heavy[0])) {
+            bool kept = false;
+            for (int i = 0; i < heavy; i++) kept |= pipeline_ram_heavy[i].key.load(std::memory_order_relaxed) == name->key;
+            if (!kept) {
+                HeavyPipeline& h = pipeline_ram_heavy[heavy];
+                h.no = s.n, h.bytes = d, h.kind = name->kind;
+                h.key.store(name->key, std::memory_order_relaxed);
+                pipeline_ram_heavy_n.store(heavy + 1, std::memory_order_release);
+            }
+        }
+        if (s.n % 1000 == 0) {
+            auto mb = [](int64_t v) { return (long long)(v / (1 << 20)); };   // (toward 0: the noise below 0 as 0 MB)
+            logf("vk: RAM, pipelines weighed: %lld, %lld MB of the driver's memory outside its heap in all: none or less %lld "
+                 "(%lld MB), under 64 KB %lld (%lld MB), 64-256 KB %lld (%lld MB), 256 KB-1 MB %lld (%lld MB), 1-8 MB %lld "
+                 "(%lld MB), 8 MB or more %lld (%lld MB)", (long long)s.n, mb(pipeline_ram_bytes.load()), (long long)s.count[0],
+                 mb(s.sum[0]), (long long)s.count[1], mb(s.sum[1]), (long long)s.count[2], mb(s.sum[2]), (long long)s.count[3],
+                 mb(s.sum[3]), (long long)s.count[4], mb(s.sum[4]), (long long)s.count[5], mb(s.sum[5]));
+        }
+    }
+    pipeline_ram_held = false;
+    pipeline_ram_mu.unlock();
+}
+void pipeline_ram_end(const VkGraphicsPipelineCreateInfo* ci, VkResult r) {
+    pipeline_ram_note("graphics", r, ci->pStages, ci->stageCount, nullptr);
+}
+void pipeline_ram_end(const VkComputePipelineCreateInfo* ci, VkResult r) {
+    const PipelineName name = pipeline_ram_named;   // (this pipeline's, if named for it: its module the same)
+    pipeline_ram_named = {};
+    const bool named = name.kind && name.module == ci->stage.module;
+    pipeline_ram_note("compute", r, &ci->stage, 1, named ? &name : nullptr);
+}
+
 // (longshot) A driver's compiler that faults on a shader (amdvlk64.dll on a mesh program, Longshot issue 26) costs that one draw, not the game
 std::atomic<int> st_driver_faults{0};
 /// (the faults caught below, counted: a driver can stop answering after one, and the preparation's watchdog says so, vk_main.cpp
@@ -1317,26 +1500,32 @@ VkResult guarded_graphics(VkPipelineCache cache, const VkGraphicsPipelineCreateI
     install_driver_fault_guard();
     if (sigsetjmp(fault_jmp, 1) != 0) {
         *pl = VK_NULL_HANDLE;   // (whatever the driver wrote before it faulted is not a pipeline)
+        pipeline_ram_fault();   // (RX_VK_LOG_PIPELINE_RAM: the weighing let go)
         note_driver_fault();
         logf("vk: the driver faulted compiling a graphics pipeline: that one is left out");
         return (VkResult)-77;
     }
+    const bool weigh = pipeline_ram_begin();   // (RX_VK_LOG_PIPELINE_RAM)
     fault_armed = 1;
     const VkResult r = vkCreateGraphicsPipelines(dev.device, cache, 1, ci, nullptr, pl);
     fault_armed = 0;
+    if (weigh) pipeline_ram_end(ci, r);
     return r;
 }
 VkResult guarded_compute(VkPipelineCache cache, const VkComputePipelineCreateInfo* ci, VkPipeline* pl) {
     install_driver_fault_guard();
     if (sigsetjmp(fault_jmp, 1) != 0) {
         *pl = VK_NULL_HANDLE;   // (whatever the driver wrote before it faulted is not a pipeline)
+        pipeline_ram_fault();   // (RX_VK_LOG_PIPELINE_RAM: the weighing let go)
         note_driver_fault();
         logf("vk: the driver faulted compiling a compute pipeline: that one is left out");
         return (VkResult)-77;
     }
+    const bool weigh = pipeline_ram_begin();   // (RX_VK_LOG_PIPELINE_RAM)
     fault_armed = 1;
     const VkResult r = vkCreateComputePipelines(dev.device, cache, 1, ci, nullptr, pl);
     fault_armed = 0;
+    if (weigh) pipeline_ram_end(ci, r);
     return r;
 }
 #endif
@@ -1373,6 +1562,7 @@ VkResult guarded_shader_module(const VkShaderModuleCreateInfo* ci, VkShaderModul
     fault_armed = 1;
     const VkResult r = vkCreateShaderModule(dev.device, ci, nullptr, m);
     fault_armed = 0;
+    if (r == VK_SUCCESS) pipeline_ram_module(ci, *m);   // (RX_VK_LOG_PIPELINE_RAM: its size and hash)
     return r;
 }
 #endif
@@ -1716,6 +1906,7 @@ VkComputePipelineCreateInfo compute_pipeline_info(const Program& q, bool noopt) 
     ci.layout = q.layout;
     static const bool noopt_on = env_on("RX_VK_NOOPT");
     if (noopt && noopt_on) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+    pipeline_ram_name(q.key, ci.stage.module, "the game's compute program");   // (RX_VK_LOG_PIPELINE_RAM)
     return ci;
 }
 /// (longshot) Before play on Intel's one-at-a-time builds (precompile_run, precompile_warm): ci asked without the optimizer, the
@@ -4705,6 +4896,7 @@ std::atomic<int64_t> st_driver_out_of_memory{0};
 VkResult extern_guarded_graphics(VkPipelineCache cache, const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl) {
     return guarded_graphics(cache, ci, pl);
 }
+int64_t pipeline_ram_total() { return pipeline_ram_bytes.load(std::memory_order_relaxed); }
 VkResult extern_guarded_compute(VkPipelineCache cache, const VkComputePipelineCreateInfo* ci, VkPipeline* pl) {
     return guarded_compute(cache, ci, pl);
 }
@@ -7449,6 +7641,7 @@ bool fallback_compute_pipelines(Program& p) {
         ci.layout = p.layout;
         if (dev.task_mesh_fallback || env_on("RX_VK_NOOPT"))
             ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+        pipeline_ram_name(p.key, si.module, "a task or mesh program's compute fallback");   // (RX_VK_LOG_PIPELINE_RAM)
         if (const VkResult r = cached_compute(&ci, &made[i]); r != VK_SUCCESS) {
             {
                 std::lock_guard lk(mu);
@@ -8128,6 +8321,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     }
     // (ultrawide's menu sides: the world's lighting composite was asked for, even if a skip or a pipeline not yet made leaves this
     // draw out below: the world is drawn, it is no menu. vk_framegen.cpp wide_sides)
+    if (pipeline_ram_heavy_n.load(std::memory_order_relaxed)) pipeline_ram_used(cp->key, "draw");   // (RX_VK_LOG_PIPELINE_RAM)
     if (cp->key == 0x1a7482c0ec9991eaULL) world_drawn_at.store(presents_now, std::memory_order_relaxed);
     if (cp->key == 0x02ff9920c2571cc2ULL) wheel_drawn_at.store(presents_now, std::memory_order_relaxed);
     if (skip_live(cp->key)) return;   // (EvilOOT, RX_VK_SKIP_FILE)
@@ -11391,6 +11585,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     ProgramUse use(s.prog, s.has_prog, true);   // (the program's first dispatch, for the census: vk_programs.h)
     const Program* cp = program_for(s, ProgramKind::Compute, types);
     if (use.on) use.program(cp, cp && cp->ready.load(std::memory_order_acquire));
+    if (cp && pipeline_ram_heavy_n.load(std::memory_order_relaxed)) pipeline_ram_used(cp->key, "dispatch");   // (RX_VK_LOG_PIPELINE_RAM)
     dclock.t_prog = slow_dispatch_timing() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     // (a program still being translated is waited for, as a draw's is: a dispatch left out is work never done again.
     // MKW updates its terrain height clipmaps a region at a time as the camera moves, and makes its sky's tables
@@ -12044,6 +12239,7 @@ VkPipeline compute_pipeline_by_module_id(const Program& p, const uint8_t* id, ui
     VkPipelineShaderStageModuleIdentifierCreateInfoEXT by{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_MODULE_IDENTIFIER_CREATE_INFO_EXT};
     by.identifierSize = size, by.pIdentifier = id;
     by.pNext = ci.stage.pNext, ci.stage.pNext = &by, ci.stage.module = VK_NULL_HANDLE;
+    pipeline_ram_name(p.key, VK_NULL_HANDLE, "the game's compute program, from its module's identifier");
     ci.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
     VkPipeline pl = VK_NULL_HANDLE;
     ask_start_first = true;

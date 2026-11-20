@@ -65,6 +65,8 @@
 #include <sys/syscall.h>
 #include <cstdlib>
 #include "big_pools.h"   // (RX_VK_LOG_BIG_POOLS: the big placements measured)
+#include <dirent.h>
+#include "ram_census.h"   // (RX_VK_LOG_RAM: where the RAM goes)
 #endif
 #include "vk_builtin_spv.h"   // (RX_VK_SHADER_DIR)
 #include "shaders/wb_diff_comp_spv.h"
@@ -1098,6 +1100,193 @@ void big_stop() {
     big_quit = true;
 }
 
+// (longshot, RX_VK_LOG_RAM=1) Where the RAM goes, log lines only, every kRamEvery seconds from a thread of its own at the
+// lowest priority (ram_census.h). In Kokiri Forest on the AYN Odin 3 (15 GB, zram) 340-540 MB stayed available with 6 GB in
+// swap, and the renderer's own lines leave out the game's memory as against the rest of the process, what is in swap, what
+// zram's compressed pages take, and the other programs. Three lines: the machine (/proc/meminfo, zram's mm_stat); this
+// process (status; smaps split at the guest window: the game's memory, the device's memory placed under its pools, and the
+// rest; the DRM driver's own count of its memory in fdinfo, and the device heap's as the renderer sees it); the other
+// programs by name. Reading smaps walks every mapping, and takes the kernel's lock of them for reading: on the Odin 3, with
+// the guest window's 512 GB and some 4500 placements, 20 to 36 s a read; only RX_VK_LOG_RAM=2 asks it. That run found the
+// driver holding 7.4 GB the kernel cannot swap, 3.1 GB of it outside the device heap and constant once 11,780 pipelines were
+// made: every kDriverEvery seconds a line of the driver's memory (fdinfo, by client) against the pipelines made, when either
+// moved (ram_driver_log)
+constexpr int kRamEvery = 30, kDriverEvery = 2;
+std::atomic<bool> ram_quit{false};
+int ram_mode = 0;   // (RX_VK_LOG_RAM: 1, or 2 with the process's memory split at the game's)
+
+/// A file of the kernel's whole (its size reads as 0: read to the end), at most max bytes; empty when it cannot be read
+std::string ram_slurp(const char* path, size_t max = 256u << 20) {
+    std::string s;
+    const int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return s;
+    char buf[1 << 16];
+    for (ssize_t r; s.size() < max && (r = read(fd, buf, sizeof buf)) > 0;) s.append(buf, (size_t)r);
+    close(fd);
+    return s;
+}
+
+/// The DRM driver's memory for this process (fdinfo of its device files)
+ram_census::Drm ram_drm() {
+    ram_census::Drm d;
+    if (DIR* dir = opendir("/proc/self/fdinfo")) {
+        while (const dirent* e = readdir(dir)) {
+            if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+            const std::string t = ram_slurp(("/proc/self/fdinfo/" + std::string(e->d_name)).c_str(), 1 << 16);
+            if (t.find("drm-driver:") != std::string::npos) ram_census::add_fdinfo(d, t.c_str());
+        }
+        closedir(dir);
+    }
+    return d;
+}
+
+/// (every kDriverEvery seconds) The driver's memory against what the renderer made, a line when it moved: the driver's count
+/// by 32 MB, the pipelines made by 250, or a minute gone. What is outside the device heap (the driver's own: pipelines' code
+/// and state, command streams, descriptor pools) per pipeline made since the last line, while pipelines are being made
+void ram_driver_log() {
+    static uint64_t l_total = 0, l_outside = 0;
+    static int64_t l_pipes = -1;
+    static auto l_at = std::chrono::steady_clock::now();
+    const ram_census::Drm d = ram_drm();
+    if (!d.any) return;
+    uint64_t heap_used = 0, heap_budget = 0;
+    if (!vram_usage(&heap_used, &heap_budget)) return;   // (the device heap not made yet)
+    int64_t draws = 0, skipped = 0, dispatches = 0, pipes = 0, links = 0, lib_hits = 0, lib_cold = 0, lib_built = 0;
+    double link_ms = 0, lib_ms = 0;
+    draw_stats(&draws, &skipped, &dispatches, &pipes);
+    const bool gpl = draw_stats4(&links, &link_ms, &lib_hits, &lib_cold, &lib_built, &lib_ms);
+    const uint64_t outside = d.total - std::min(d.total, heap_used);
+    const auto now = std::chrono::steady_clock::now();
+    const uint64_t moved = d.total > l_total ? d.total - l_total : l_total - d.total;
+    if (l_pipes >= 0 && moved < (32ull << 20) && pipes - l_pipes < 250 && pipes - l_pipes > -250 && now - l_at < std::chrono::seconds(60))
+        return;
+    auto mb = [](uint64_t b) { return (unsigned long long)(b >> 20); };
+    std::string clients;
+    for (const ram_census::Drm::Client& c : d.each) {
+        char one[80];
+        std::snprintf(one, sizeof one, "%s%llu: %llu MB", clients.empty() ? "" : ", ", c.id, mb(c.total));
+        clients += one;
+    }
+    char per[120] = "";
+    if (l_pipes >= 0 && pipes > l_pipes)
+        std::snprintf(per, sizeof per, "; since the last line %lld pipelines made and %+lld MB outside the heap: %.0f KB each",
+                      (long long)(pipes - l_pipes), (long long)mb(outside) - (long long)mb(l_outside),
+                      ((double)outside - (double)l_outside) / 1024.0 / (double)(pipes - l_pipes));
+    const int64_t weighed = pipeline_ram_total();   // (RX_VK_LOG_PIPELINE_RAM)
+    char wg[96] = "";
+    if (weighed >= 0) std::snprintf(wg, sizeof wg, "; the pipelines weighed took %lld MB of that", (long long)(weighed / (1 << 20)));
+    logf("vk: RAM, the driver: %llu MB (%llu resident; clients %s); its device heap %llu MB used, %llu MB outside it%s; "
+         "%lld pipelines made, %lld linked from libraries%s (%lld libraries built); %zu textures (%llu MB)%s",
+         mb(d.total), mb(d.resident), clients.c_str(), mb(heap_used), mb(outside), wg, (long long)pipes, (long long)links,
+         gpl ? "" : " (no pipeline libraries)", (long long)lib_built, texture_count(), mb(texture_bytes()), per);
+    l_total = d.total, l_outside = outside, l_pipes = pipes, l_at = now;
+}
+
+void ram_census_log() {
+    const auto t0 = std::chrono::steady_clock::now();
+    auto mb = [](uint64_t b) { return (unsigned long long)(b >> 20); };
+    const ram_census::System s = ram_census::system(ram_slurp("/proc/meminfo").c_str());
+    ram_census::Zram z;
+    for (int i = 0; i < 8; i++) {
+        char p[64];
+        std::snprintf(p, sizeof p, "/sys/block/zram%d/mm_stat", i);
+        const std::string t = ram_slurp(p, 4096);
+        if (!t.empty()) ram_census::add_mm_stat(z, t.c_str());
+    }
+    const ram_census::Process self = ram_census::process(ram_slurp("/proc/self/status", 1 << 16).c_str());
+    const uint64_t lo = (uint64_t)(uintptr_t)host->guest_base(), hi = lo + host->guest_size();
+    const bool split = ram_mode == 2;   // (smaps: tens of seconds a read on the Odin 3)
+    const ram_census::Maps m = split ? ram_census::maps(ram_slurp("/proc/self/smaps").c_str(), lo, hi) : ram_census::Maps{};
+    const ram_census::Drm d = ram_drm();
+    std::vector<ram_census::Process> others;
+    const long self_pid = (long)getpid();
+    if (DIR* dir = opendir("/proc")) {
+        while (const dirent* e = readdir(dir)) {
+            if (e->d_name[0] < '0' || e->d_name[0] > '9' || std::atol(e->d_name) == self_pid) continue;
+            const std::string t = ram_slurp(("/proc/" + std::string(e->d_name) + "/status").c_str(), 1 << 16);
+            if (!t.empty()) others.push_back(ram_census::process(t.c_str()));
+        }
+        closedir(dir);
+    }
+    uint64_t heap_used = 0, heap_budget = 0;
+    const bool heap = vram_usage(&heap_used, &heap_budget);
+    uint64_t placed = 0, later = 0;
+    if (placed_on.load(std::memory_order_acquire)) {
+        std::lock_guard lk(placed_mu);
+        placed = placed_bytes, later = placed_later.bytes();
+    }
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (ram_quit.load()) return;
+
+    char zr[160];
+    if (z.devices)
+        std::snprintf(zr, sizeof zr, "zram: %llu MB swapped there, compressed to %llu MB, taking %llu MB of RAM", mb(z.data),
+                      mb(z.compressed), mb(z.ram));
+    else
+        std::snprintf(zr, sizeof zr, "no zram");
+    logf("vk: RAM: %llu MB in all, %llu available (%llu free); page cache %llu MB (shared memory %llu of it), anonymous %llu, "
+         "the kernel's %llu reclaimable and %llu not, unevictable %llu; swap %llu of %llu MB used (%llu of it read back and "
+         "kept); %s", mb(s.total), mb(s.avail), mb(s.free), mb(s.cached), mb(s.shmem), mb(s.anon), mb(s.kreclaim),
+         mb(s.sunreclaim), mb(s.unevictable), mb(s.swap_total - std::min(s.swap_total, s.swap_free)), mb(s.swap_total),
+         mb(s.swap_cached), zr);
+
+    char drv[200];
+    if (d.any)
+        std::snprintf(drv, sizeof drv, "%s, %llu MB (%llu resident, %llu shared, %llu it may drop; %zu clients)", d.driver.c_str(),
+                      mb(d.total), mb(d.resident), mb(d.shared), mb(d.purgeable), d.clients.size());
+    else
+        std::snprintf(drv, sizeof drv, "%s", d.driver.empty() ? "no DRM file with memory statistics" : "no memory statistics given");
+    char hp[64];
+    if (heap) std::snprintf(hp, sizeof hp, "%llu of %llu MB used", mb(heap_used), mb(heap_budget));
+    else std::snprintf(hp, sizeof hp, "not known");
+    char sp[400];
+    if (split)
+        std::snprintf(sp, sizeof sp, "the game's memory %llu MB resident and %llu MB in swap; the rest %llu MB anonymous, %llu MB "
+                      "files, %llu MB in swap, %llu MB of the driver's device files mapped; ", mb(m.guest_rss), mb(m.guest_swap),
+                      mb(m.other_anon), mb(m.other_file), mb(m.other_swap), mb(m.dri));
+    else
+        std::snprintf(sp, sizeof sp, "(RX_VK_LOG_RAM=2 splits it at the game's memory: slow); ");
+    logf("vk: RAM, this process: %llu MB resident (anonymous %llu, files %llu, shared %llu), %llu MB in swap; %sthe device's "
+         "memory placed under its pools %llu MB (%llu MB of pools left in ordinary memory); the driver: %s; its device heap %s; "
+         "read in %.0f ms", mb(self.rss), mb(self.anon), mb(self.file), mb(self.shmem), mb(self.swap), sp, mb(placed), mb(later),
+         drv, hp, ms);
+
+    uint64_t all_rss = 0, all_swap = 0;
+    size_t n = 0;
+    for (const ram_census::Process& p : others)
+        if (p.ok) all_rss += p.rss, all_swap += p.swap, n++;
+    std::string list;
+    for (const ram_census::Group& g : ram_census::top(others, 8)) {
+        char one[128];
+        std::snprintf(one, sizeof one, "%s%s %llu MB (+%llu in swap)%s", list.empty() ? "" : ", ", g.name.c_str(), mb(g.rss),
+                      mb(g.swap), g.count > 1 ? (" x" + std::to_string(g.count)).c_str() : "");
+        list += one;
+    }
+    logf("vk: RAM, the other programs (%zu, %llu MB resident and %llu MB in swap in all): %s", n, mb(all_rss), mb(all_swap),
+         list.c_str());
+}
+
+void ram_census_stop() { ram_quit = true; }
+
+/// (memory_init) RX_VK_LOG_RAM=1: the thread that says where the RAM goes, every kRamEvery seconds
+void ram_census_start() {
+    if (!env_on("RX_VK_LOG_RAM")) return;
+    ram_mode = std::atoi(getenv("RX_VK_LOG_RAM")) == 2 ? 2 : 1;
+    logf("vk: RX_VK_LOG_RAM=%d: where the RAM goes, every %d s (the machine, this process%s, the other programs), and the "
+         "driver's memory against the pipelines made, every %d s when either moved", ram_mode, kRamEvery,
+         ram_mode == 2 ? " split at the game's memory" : "", kDriverEvery);
+    std::atexit(ram_census_stop);
+    std::thread([] {
+        setpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid), 19);   // (Linux: this thread's own nice value)
+        for (int t = kDriverEvery; !ram_quit.load(); t += kDriverEvery) {
+            std::this_thread::sleep_for(std::chrono::seconds(kDriverEvery));
+            if (ram_quit.load()) return;
+            ram_driver_log();
+            if (t % kRamEvery == 0) ram_census_log();
+        }
+    }).detach();
+}
+
 /// The placement holding guest [guest, guest + size), as the range to import: an import is a whole placement, so the pools
 /// in one another's memory, and those a placement took in together, are one import (takes placed_mu)
 bool placed_find(uint64_t guest, uint64_t size, GuestPool& out) {
@@ -1443,6 +1632,9 @@ uint64_t memory_guest_pages() {
 }
 
 bool memory_init() {
+#ifdef __linux__
+    ram_census_start();   // (RX_VK_LOG_RAM)
+#endif
     if (!dev.external_memory_host) {
 #ifdef __linux__
         // (arm64 port) Mesa's Adreno driver, Turnip, has no VK_EXT_external_memory_host: the guest memory goes to the GPU as
@@ -5878,6 +6070,58 @@ void memory_pool_finalized(uint64_t gpu, uint64_t size) {
     placed_unback(gpu & ~(align - 1), (gpu + size + align - 1) & ~(align - 1));
 #else
     (void)gpu, (void)size;
+#endif
+}
+
+int64_t driver_memory_now() {
+#ifdef __linux__
+    // (this process's DRM files, found once and again every 1000 reads or when one is no longer one: a read is then of
+    // those alone, cheap enough for RX_VK_LOG_PIPELINE_RAM's two a pipeline)
+    static std::mutex mu;
+    static std::vector<int> fds;
+    static unsigned reads = 0;
+    std::lock_guard lk(mu);
+    if (fds.empty() || ++reads % 1000 == 0) {
+        fds.clear();
+        if (DIR* dir = opendir("/proc/self/fdinfo")) {
+            while (const dirent* e = readdir(dir))
+                if (e->d_name[0] >= '0' && e->d_name[0] <= '9' &&
+                    ram_slurp(("/proc/self/fdinfo/" + std::string(e->d_name)).c_str(), 1 << 16).find("drm-driver:") != std::string::npos)
+                    fds.push_back(std::atoi(e->d_name));
+            closedir(dir);
+        }
+    }
+    ram_census::Drm d;
+    for (const int fd : fds) {
+        const std::string t = ram_slurp(("/proc/self/fdinfo/" + std::to_string(fd)).c_str(), 1 << 16);
+        if (t.find("drm-driver:") == std::string::npos) {
+            fds.clear();   // (closed, or another file now: found again at the next read)
+            return -1;
+        }
+        ram_census::add_fdinfo(d, t.c_str());
+    }
+    return d.any ? (int64_t)d.total : -1;
+#else
+    return -1;
+#endif
+}
+
+int64_t driver_outside_heap_now() {
+#ifdef __linux__
+    // (the heap read fresh around the driver's count, VMA asking the driver again: a heap that moved meanwhile, another thread's
+    // texture or buffer, is read again, at most four times)
+    uint64_t h0 = 0, h1 = 0, budget = 0;
+    if (!vram_usage(&h0, &budget)) return -1;   // (the device heap not made yet)
+    for (int i = 0; i < 4; i++) {
+        vram_usage_now(&h0, &budget);
+        const int64_t total = driver_memory_now();
+        vram_usage_now(&h1, &budget);
+        if (total < 0) return -1;
+        if (h0 == h1) return total - (int64_t)h0;
+    }
+    return -1;
+#else
+    return -1;
 #endif
 }
 

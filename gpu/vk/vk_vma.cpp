@@ -473,6 +473,11 @@ void vma_log_heaps() {
     logf("%s", line);
 }
 bool vram_usage(uint64_t* used, uint64_t* budget, uint64_t* block_free) {
+    if (!vma) {   // (not made yet: memory_init, which can start RX_VK_LOG_RAM's thread, runs before vma_init)
+        *used = *budget = 0;
+        if (block_free) *block_free = 0;
+        return false;
+    }
     VmaBudget b[VK_MAX_MEMORY_HEAPS]{};
     vmaGetHeapBudgets(vma, b);
     uint64_t u = 0, t = 0, f = 0;

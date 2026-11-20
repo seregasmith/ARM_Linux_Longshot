@@ -124,6 +124,9 @@ bool ub_read(uint64_t addr, void* dst, uint64_t n);
 VkResult extern_guarded_graphics(VkPipelineCache cache, const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl);
 VkResult extern_guarded_compute(VkPipelineCache cache, const VkComputePipelineCreateInfo* ci, VkPipeline* pl);
 VkResult extern_guarded_shader_module(const VkShaderModuleCreateInfo* ci, VkShaderModule* m);
+/// (RX_VK_LOG_PIPELINE_RAM, Linux) What the pipelines weighed took of the driver's memory outside its heap, in all, in bytes;
+/// -1: none weighed
+int64_t pipeline_ram_total();
 /// (longshot) The programs the driver faulted on (driver_faults.h): asked before a program's modules are made, and noted
 /// when making one faulted (vk_shader.cpp make_module)
 bool driver_faulted_program(uint64_t key);

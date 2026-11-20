@@ -597,6 +597,7 @@ struct VkComputePipelineCreateInfo {
 struct { uintptr_t device = 0x1234; struct { bool pipelineCreationCacheControl = true; } vk13; } dev;
 struct Program {
     struct Stage { uintptr_t module; };
+    uint64_t key = 0x1234;
     std::vector<Stage> stages{{0x2468}};
     unsigned workgroup[3]{32, 1, 1};
     uintptr_t layout = 0x1357;
@@ -616,6 +617,7 @@ static bool serial = false, quick_row = false;
 static bool serial_builds_on() { return serial; }
 static bool intel_quick_compute() { return quick_row; }
 static void pin_subgroup(decltype(VkComputePipelineCreateInfo::stage)&, unsigned, unsigned long long) {}
+static void pipeline_ram_name(uint64_t, uintptr_t, const char*) {}   // (vk_draw.cpp: RX_VK_LOG_PIPELINE_RAM's name, off)
 static void pin_compute(decltype(VkComputePipelineCreateInfo::stage)& st, const Program& p) { pin_subgroup(st, p.workgroup[0], 1ull * p.workgroup[0] * p.workgroup[1] * p.workgroup[2]); }
 static VkResult cached_compute(const VkComputePipelineCreateInfo* ci, VkPipeline* pl) {
     CHECK(ci->stage.module == 0x2468 && ci->layout == 0x1357);
