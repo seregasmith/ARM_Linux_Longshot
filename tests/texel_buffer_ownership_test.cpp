@@ -113,6 +113,7 @@ void vkDestroyBuffer(VkDevice, VkBuffer buffer, const VkAllocationCallbacks*) {
 }
 void vkFreeMemory(VkDevice, VkDeviceMemory, const VkAllocationCallbacks*) {}
 void free_import_memory(VkDeviceMemory m) { vkFreeMemory(dev.device, m, nullptr); }   // (no placements here)
+void big_note(uint64_t, uint64_t, int) {}   // (RX_VK_LOG_BIG_POOLS: tests/test_big_pools.py)
 VkResult vkCreateBufferView(VkDevice, const VkBufferViewCreateInfo* ci, const VkAllocationCallbacks*, VkBufferView* out) {
     std::lock_guard lk(driver_mu);
     creates++;

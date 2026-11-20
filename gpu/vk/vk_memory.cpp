@@ -61,6 +61,10 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include "placed_memory.h"   // (arm64 port: the pools placed in the device's memory)
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <cstdlib>
+#include "big_pools.h"   // (RX_VK_LOG_BIG_POOLS: the big placements measured)
 #endif
 #include "vk_builtin_spv.h"   // (RX_VK_SHADER_DIR)
 #include "shaders/wb_diff_comp_spv.h"
@@ -450,6 +454,136 @@ bool import_dma_buf(uint64_t lo, uint64_t hi, Pool& p) {
 // memory_pool_created while the renderer starts)
 std::atomic<bool> placed_on{false};
 #ifdef __linux__
+// (arm64 port, RX_VK_LOG_BIG_POOLS=1) The big placements measured, log lines only. In Kokiri Forest 5.5 GB of the guest's
+// pools were placed, 2.4 GB of it one pool placed at boot with 8 KB copied in, and each placement seems to cost its whole
+// size in RAM. For each placement of kBigMin or more: MemAvailable before its memory is allocated, once it is, and once it
+// is placed; the GPU's bindings in it (gpu_buffer_bind: read, written) and the textures' GPU reads (gpu_buffer), with the
+// stretches of it they reach (big_pools.h); and every kBigEvery seconds, from a thread of its own at the lowest priority,
+// which of its blocks hold data (big_scan, after placed_setup). Before the placements' block: the code cut out of it
+// for tests/test_placed_import_memory.py has stand-ins for big_take, big_drop and big_avail_mb. A note racing a slot's
+// reuse can count for the next placement in it: a measurement
+constexpr uint64_t kBigMin = 64ull << 20;
+constexpr int kBigSlots = 32, kBigEvery = 60;
+struct BigSlot {
+    std::atomic<uint64_t> lo{0}, hi{0};   // (hi 0: free. Set under placed_mu, hi last)
+    std::atomic<int> shift{20};
+    uint64_t serial = 0;                  // (placed_mu, as the next two)
+    uint64_t avail_mb[3] = {};            // (MemAvailable before its memory, once allocated, once placed)
+    std::chrono::steady_clock::time_point placed_at{};
+    std::atomic<uint64_t> count[3], bytes[3];   // (bindings read, bindings written, the textures' GPU reads)
+    std::atomic<uint64_t> bits[3][big_pools::kWords];
+};
+BigSlot big_slots[kBigSlots];
+std::atomic<bool> big_active{false}, big_quit{false};
+std::atomic<int> big_used{0};
+
+uint64_t big_avail_mb() {
+    uint64_t avail = 0, swap = 0;
+    return linux_pressure::read_meminfo(&avail, &swap) ? avail >> 20 : 0;
+}
+
+/// The GPU reaching guest [guest, guest + size): kind 0 a binding it reads, 1 one it writes, 2 a texture's read (gpu_buffer)
+void big_note(uint64_t guest, uint64_t size, int kind) {
+    if (!big_active.load(std::memory_order_relaxed) || !size) return;
+    int left = big_used.load(std::memory_order_relaxed);
+    for (BigSlot& s : big_slots) {
+        if (left <= 0) return;
+        const uint64_t hi = s.hi.load(std::memory_order_acquire);
+        if (!hi) continue;
+        left--;
+        const uint64_t lo = s.lo.load(std::memory_order_relaxed);
+        if (guest < lo || guest >= hi) continue;
+        s.count[kind].fetch_add(1, std::memory_order_relaxed);
+        s.bytes[kind].fetch_add(std::min(size, hi - guest), std::memory_order_relaxed);
+        big_pools::mark(s.bits[kind], s.shift.load(std::memory_order_relaxed), lo, hi - lo, guest, size);
+        return;
+    }
+}
+
+/// A big placement's part of a line: what the GPU reached of it, and with data (null: not read through) which of its
+/// stretches hold some, then its map (big_pools::map_line)
+std::string big_line(const BigSlot& s, uint64_t lo, uint64_t hi, const uint64_t* data, uint64_t blocks, uint64_t top) {
+    const int shift = s.shift.load(std::memory_order_relaxed), n = big_pools::stretches(hi - lo, shift);
+    uint64_t b[3][big_pools::kWords], any[big_pools::kWords];
+    for (int k = 0; k < 3; k++) big_pools::snapshot(s.bits[k], b[k]);
+    for (int i = 0; i < big_pools::kWords; i++) any[i] = b[0][i] | b[1][i] | b[2][i];
+    auto c = [&](int k) { return (unsigned long long)s.count[k].load(std::memory_order_relaxed); };
+    auto mb = [&](int k) { return (unsigned long long)(s.bytes[k].load(std::memory_order_relaxed) >> 20); };
+    char t[640];
+    int len = std::snprintf(t, sizeof t,
+                            "%llu MB in %d stretches of %llu MB; the GPU: %llu bindings read (%llu MB) over %d stretches, %llu "
+                            "written (%llu MB) over %d, %llu texture reads (%llu MB) over %d; %d reached in all",
+                            (unsigned long long)((hi - lo) >> 20), n, 1ull << (shift - 20), c(0), mb(0), big_pools::count(b[0]),
+                            c(1), mb(1), big_pools::count(b[1]), c(2), mb(2), big_pools::count(b[2]), big_pools::count(any));
+    if (data && len > 0 && len < (int)sizeof t)
+        len += std::snprintf(t + len, sizeof t - (size_t)len, "; data in %llu MB (%d stretches, %d of them not reached; up to %llu MB in)",
+                             (unsigned long long)((blocks * big_pools::kBlock) >> 20), big_pools::count(data),
+                             big_pools::count(data) - big_pools::count_both(data, any), (unsigned long long)(top >> 20));
+    return std::string(t) + "; map " + big_pools::map_line(b[1], b[0], b[2], data, n, 64);
+}
+
+/// (placed_mu) A placement of kBigMin or more made: its MemAvailable logged, and a slot of its own
+void big_take(uint64_t lo, uint64_t hi, uint64_t serial, const uint64_t avail_mb[3]) {
+    logf("vk: big placement %#llx..%#llx (%llu MB): MemAvailable %llu MB before its memory, %llu MB once allocated, %llu MB "
+         "once copied in and placed", (unsigned long long)lo, (unsigned long long)hi, (unsigned long long)((hi - lo) >> 20),
+         (unsigned long long)avail_mb[0], (unsigned long long)avail_mb[1], (unsigned long long)avail_mb[2]);
+    for (BigSlot& s : big_slots) {
+        if (s.hi.load(std::memory_order_relaxed)) continue;
+        for (int k = 0; k < 3; k++) {
+            s.count[k].store(0, std::memory_order_relaxed), s.bytes[k].store(0, std::memory_order_relaxed);
+            for (auto& w : s.bits[k]) w.store(0, std::memory_order_relaxed);
+        }
+        s.serial = serial, s.placed_at = std::chrono::steady_clock::now();
+        std::memcpy(s.avail_mb, avail_mb, sizeof s.avail_mb);
+        s.lo.store(lo, std::memory_order_relaxed);
+        s.shift.store(big_pools::stretch_shift(hi - lo), std::memory_order_relaxed);
+        s.hi.store(hi, std::memory_order_release);
+        big_used.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    static bool told;
+    if (!told) told = true, logf("vk: big placement %#llx..%#llx not followed: all %d slots taken", (unsigned long long)lo,
+                                 (unsigned long long)hi, kBigSlots);
+}
+
+/// (placed_mu) A placement given back or taken into a larger one: its slot's line, and the slot freed
+void big_drop(uint64_t lo, uint64_t serial, const char* why) {
+    if (!big_active.load(std::memory_order_relaxed)) return;
+    for (BigSlot& s : big_slots) {
+        const uint64_t hi = s.hi.load(std::memory_order_relaxed);
+        if (!hi || s.lo.load(std::memory_order_relaxed) != lo || s.serial != serial) continue;
+        const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - s.placed_at).count();
+        logf("vk: big placement %#llx..%#llx %s after %.0f s: %s", (unsigned long long)lo, (unsigned long long)hi, why, sec,
+             big_line(s, lo, hi, nullptr, 0, 0).c_str());
+        s.hi.store(0, std::memory_order_release);
+        big_used.fetch_sub(1, std::memory_order_relaxed);
+        return;
+    }
+}
+
+void big_scan();   // (after placed_setup, below: they read the placements)
+void big_stop();
+
+/// (placed_setup) RX_VK_LOG_BIG_POOLS=1: the big placements measured from now on, and the thread that reads them through
+void big_start() {
+    if (!env_on("RX_VK_LOG_BIG_POOLS")) return;
+    big_active = true;
+    logf("vk: RX_VK_LOG_BIG_POOLS: placements of %llu MB or more followed (MemAvailable as each is made, what the GPU reaches "
+         "of it, and every %d s which parts hold data)", (unsigned long long)(kBigMin >> 20), kBigEvery);
+    std::atexit(big_stop);
+    std::thread([] {
+        setpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid), 19);   // (Linux: this thread's own nice value)
+        while (!big_quit.load()) {
+            for (int i = 0; i < kBigEvery && !big_quit.load(); i++) std::this_thread::sleep_for(std::chrono::seconds(1));
+            if (!big_quit.load()) big_scan();
+        }
+    }).detach();
+}
+#else
+void big_note(uint64_t, uint64_t, int) {}   // (RX_VK_LOG_BIG_POOLS: placements are Linux's)
+#endif
+
+#ifdef __linux__
 // ---- (arm64 port) the guest's pools placed in the device's own memory ----
 // Turnip (Mesa's Adreno driver) takes no host pointers, and a kernel without /dev/udmabuf (Armada OS on the AYN Odin 3) makes
 // no dma-bufs of the guest window: neither way above hands the game's memory to the GPU, and nothing was drawn (a black
@@ -619,9 +753,12 @@ void placed_back(uint64_t lo, uint64_t hi) {
         return;
     }
     const auto t0 = std::chrono::steady_clock::now();
+    const bool big = n >= kBigMin && big_active.load(std::memory_order_relaxed);   // (RX_VK_LOG_BIG_POOLS)
+    uint64_t avail_mb[3] = {big ? big_avail_mb() : 0, 0, 0};
     const VkDeviceMemory memory = placed_allocate(n);
     const int fd = memory ? placed_export(memory) : -1;
     uint8_t* const fresh = fd >= 0 ? placed::map(fd, n) : nullptr;
+    if (big) avail_mb[1] = big_avail_mb();
     if (!fresh) {
         if (fd >= 0) {
             if (placed_failures++ < 8)
@@ -655,6 +792,7 @@ void placed_back(uint64_t lo, uint64_t hi) {
         auto o = placements.find(a);
         placed_let_go(o->second.memory);
         placed_gone.push_back({a, o->second.hi, o->second.serial});
+        big_drop(a, o->second.serial, "taken into a larger placement");
         placed_bytes -= o->second.hi - a;
         placements.erase(o);
     }
@@ -665,6 +803,7 @@ void placed_back(uint64_t lo, uint64_t hi) {
     placements[plan.range.lo] = Placement{plan.range.hi, memory, ++placed_serial, pools};
     placed_hold(memory);   // (the placement; its imports add themselves)
     placed_bytes += n;
+    if (big) avail_mb[2] = big_avail_mb(), big_take(plan.range.lo, plan.range.hi, placed_serial, avail_mb);
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     static int logged;
     if (logged++ < 8 || !plan.absorbed.empty() || ms >= 20.0 || placements.size() % 64 == 0)
@@ -692,6 +831,7 @@ void placed_unback(uint64_t lo, uint64_t hi) {
     }
     placed_let_go(it->second.memory);   // (its imports hold the memory until they are freed)
     placed_gone.push_back({it->first, it->second.hi, it->second.serial});
+    big_drop(it->first, it->second.serial, "given back to ordinary memory");
     placed_gone_any.store(true, std::memory_order_release);
     pools_gen.fetch_add(1, std::memory_order_relaxed);
     placed_bytes -= n;
@@ -750,6 +890,7 @@ bool placed_setup(bool forced) {
          f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT ? ", cached" : ", not cached: the game's reads of its pools are slow",
          f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ? ", device local" : "", (unsigned long long)align,
          placed_pagemap < 0 ? "; no /proc/self/pagemap: every page copied in" : "");
+    big_start();   // (RX_VK_LOG_BIG_POOLS)
     // (the pools the game made before now: on first, then the list read, both under the lock. A pool made after the list was
     // read is told by its memory_pool_created, which waits for the lock and finds placed_on set; one whose memory_pool_created
     // came before that is in the list, as the host lists a pool before it tells the renderer (host/nvn_native.c). One both
@@ -764,6 +905,73 @@ bool placed_setup(bool forced) {
             placed_back(list[i][0] & ~(align - 1), (list[i][0] + list[i][1] + align - 1) & ~(align - 1)), made++;
     if (made) logf("vk: %d pools made before the renderer started, placed (%zu placements)", made, placements.size());
     return true;
+}
+
+/// (the scanner's thread) Every big placement read through for data, kBigChunk at a time under placed_mu (the game's
+/// thread waits that long at most to make or let go of a pool) with a millisecond's rest between: a line each, then the sum
+void big_scan() {
+    struct Snap {
+        BigSlot* slot;
+        uint64_t lo, hi, serial;
+    };
+    constexpr uint64_t kBigChunk = 8ull << 20;
+    std::vector<Snap> snaps;
+    {
+        std::lock_guard lk(placed_mu);
+        if (big_quit.load()) return;
+        for (BigSlot& s : big_slots)
+            if (const uint64_t hi = s.hi.load(std::memory_order_relaxed))
+                snaps.push_back({&s, s.lo.load(std::memory_order_relaxed), hi, s.serial});
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    uint64_t followed = 0, data = 0;
+    for (const Snap& sn : snaps) {
+        const uint64_t n = sn.hi - sn.lo;
+        const int shift = big_pools::stretch_shift(n);
+        uint64_t bits[big_pools::kWords] = {}, blocks = 0, top = 0;
+        const int64_t mapped = big_pools::resident_bytes(host->guest_base() + sn.lo, n, placed_page);   // (before the reads)
+        const uint64_t before = big_avail_mb();
+        bool gone = false;
+        for (uint64_t off = 0; off < n && !gone; off += kBigChunk) {
+            {
+                std::lock_guard lk(placed_mu);
+                const auto it = placements.find(sn.lo);
+                gone = big_quit.load() || it == placements.end() || it->second.serial != sn.serial;
+                if (!gone)
+                    blocks += big_pools::data_blocks(host->guest_base() + sn.lo + off, off, std::min(kBigChunk, n - off), shift,
+                                                     bits, &top);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        if (big_quit.load()) return;
+        if (gone) continue;
+        std::lock_guard lk(placed_mu);
+        BigSlot& s = *sn.slot;
+        if (big_quit.load() || s.hi.load(std::memory_order_relaxed) != sn.hi || s.lo.load(std::memory_order_relaxed) != sn.lo ||
+            s.serial != sn.serial)
+            continue;
+        followed += n, data += blocks * big_pools::kBlock;
+        logf("vk: big placement %#llx..%#llx at %.0f s: %s; %lld MB mapped in by the CPU before this read, MemAvailable %llu -> "
+             "%llu MB over it", (unsigned long long)sn.lo, (unsigned long long)sn.hi,
+             std::chrono::duration<double>(std::chrono::steady_clock::now() - s.placed_at).count(),
+             big_line(s, sn.lo, sn.hi, bits, blocks, top).c_str(), mapped < 0 ? -1ll : (long long)(mapped >> 20),
+             (unsigned long long)before, (unsigned long long)big_avail_mb());
+    }
+    uint64_t avail = 0, swap = 0;
+    linux_pressure::read_meminfo(&avail, &swap);
+    std::lock_guard lk(placed_mu);
+    if (big_quit.load()) return;
+    logf("vk: big placements: %zu, %llu MB, %llu MB of it holding data (all placements: %zu, %llu MB); MemAvailable %llu MB, "
+         "swap free %llu MB; read through in %.0f ms", snaps.size(), (unsigned long long)(followed >> 20),
+         (unsigned long long)(data >> 20), placements.size(), (unsigned long long)(placed_bytes >> 20),
+         (unsigned long long)(avail >> 20), (unsigned long long)(swap >> 20),
+         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+}
+
+/// (at exit) The scanner stops reading the placements, which go with the process's statics
+void big_stop() {
+    std::lock_guard lk(placed_mu);
+    big_quit = true;
 }
 
 /// The placement holding guest [guest, guest + size), as the range to import: an import is a whole placement, so the pools
@@ -5500,6 +5708,7 @@ BufferRef gpu_buffer(uint64_t gpu, uint64_t size) {
     std::lock_guard lk(pools_mu);
     Pool* p = pool_of(guest, size);
     if (!p) return {};
+    big_note(guest, size, 2);   // (RX_VK_LOG_BIG_POOLS: a texture's read)
     if (p->last_value < mem_rec_value) p->last_value = mem_rec_value;   // (in use: not given back under it, imports_give_back)
     note_in_place_read();   // (the pool itself, read by the GPU where the caller's work runs)
     return {p->buffer, guest - p->lo, size, p->address + (guest - p->lo)};
@@ -5713,6 +5922,7 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
         if (!host->gpu_ptr(gpu, &avail) || avail < size) return {};
         guest = host->gpu_guest(gpu);
     }
+    big_note(guest, size, written ? 1 : 0);   // (RX_VK_LOG_BIG_POOLS: the big placements the GPU reaches)
     // (the same read, while that stamp still stands: the buffer and the offset are the ones found before. a miss
     // runs the lookup below, including a mirror sync, and remembers what it returned. a write is not remembered)
     auto remember = [&](BufferRef ref) {

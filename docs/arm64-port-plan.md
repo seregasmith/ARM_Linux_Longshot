@@ -289,6 +289,13 @@ Written 2026-11-17, not yet run (it needs Docker on the Mac):
     `free_import_memory`); `tests/test_placed_import_memory.py` counts as Turnip does. Still open from that run: 5.5 GB in
     swap, 100-800 ms to make a 16 MB staging buffer under that pressure, and the forest at 17-20 fps with the GPU at 40-70
     ms a frame at half resolution.
+  - **The placements' cost (being measured):** after the sixth run's fix the forest still held 5.5 GB of placements in
+    about 4500, 2.4 GB of it one pool (`0x109c1b0000`) placed at boot with 8 KB copied in, and each placement seems to
+    cost its whole size in RAM (the kernel's msm driver takes a buffer object's pages all at once and keeps them).
+    Keeping more textures under that pressure made it worse (a keep window, tried and reverted: stalls of up to 20 s).
+    `RX_VK_LOG_BIG_POOLS=1` logs for each placement of 64 MB or more what MemAvailable did as it was made, what the GPU
+    reaches of it and which parts hold data, to choose between placing a big pool at its first GPU use, in parts, or
+    as now.
   - The game's own log under Steam: `logs/longshot_log.txt` in the game folder (`longshot-launch` gives the game no
     stderr when it isn't a terminal: Steam's pipe kept the game from writing it). Crash reports: `bug-reports/`.
 - The mesh fallback with indirect counts (hard problem 3).

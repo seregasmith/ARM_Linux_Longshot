@@ -438,6 +438,7 @@ SW(RX_VK_LOG_ADDR, diag, bool, "no logging", "Logs the GPU address range of each
 SW(RX_VK_LOG_B2T, diag, bool, "no logging", "Logs the first 60 buffer copies into textures 960 wide or more, and in the host who recorded them.")
 SW(RX_VK_LOG_BAKED, diag, bool, "no logging", "Logs, every 600 presents, the textures drawn in a single frame by size bucket and the ten largest.")
 SW(RX_VK_LOG_BIG_COPY, diag, bool, "no logging", "Logs up to 300 copies into textures of 32 MB or more.")
+SW(RX_VK_LOG_BIG_POOLS, diag, bool, "no logging", "Where the guest's pools are placed in the device's memory (Turnip), logs each placement of 64 MB or more: MemAvailable as it is made, what the GPU reaches of it, and every 60 s which parts of it hold data.")
 SW(RX_VK_LOG_BRX, diag, bool, "off: no line", "Prints a stderr line for each constant-buffer-bounded indirect branch table the shader translator finds.")
 SW(RX_VK_LOG_CASCADE_BIAS, diag, bool, "off", "Logs the depth bias the game asks for on shadow cascades, 40 lines.")
 SW(RX_VK_LOG_COPY, diag, bool, "no logging", "Logs the first 400 texture-to-texture copies.")

@@ -40,6 +40,7 @@ static void require(bool condition, const char* message) {
 }
 struct ParLock { ParLock() {} ~ParLock() {} };
 static void texture_gpu_wrote(uint64_t, uint64_t) { ++texture_writes; }
+static void big_note(uint64_t, uint64_t, int) {}   // (RX_VK_LOG_BIG_POOLS: tests/test_big_pools.py)
 static void rb_hazard_locked(uint64_t lo, uint64_t hi) { ++hazards; hazard_lo = lo; hazard_hi = hi; }
 // (gpu/vk/wb_learn.h's table: every write-back queued here; tests/test_wb_learn.py runs its rules)
 static bool wb_leave_out(uint64_t, uint64_t, std::vector<std::pair<uint64_t, uint64_t>>&) { return false; }

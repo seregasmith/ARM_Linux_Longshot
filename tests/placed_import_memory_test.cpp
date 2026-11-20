@@ -199,6 +199,12 @@ uint64_t mem_completed = 0;
 uint64_t st_retired_imports_freed = 0, st_retired_import_bytes_freed = 0, dead_import_bytes = 0;
 std::deque<std::map<uint64_t, Pool>::node_type> evicted_pools;   // (idle imports given back: imports_give_back frees them)
 uint64_t evicted_import_bytes = 0;
+// (RX_VK_LOG_BIG_POOLS: off here; tests/test_big_pools.py checks it)
+constexpr uint64_t kBigMin = 64ull << 20;
+std::atomic<bool> big_active{false};
+uint64_t big_avail_mb() { return 0; }
+void big_take(uint64_t, uint64_t, uint64_t, const uint64_t*) {}
+void big_drop(uint64_t, uint64_t, const char*) {}
 
 /* ACTUAL */
 
