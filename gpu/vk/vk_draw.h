@@ -93,6 +93,7 @@ int64_t draw_slotgen_saves();
 /// RX_VK_FLASH_RECORD=<key>,...: the last frames' draws of those programs, written to the log for frames around a flash
 void draw_records_log(uint64_t frame_lo, uint64_t frame_hi);
 bool pass_trace_on();
+void trace_depth_clear_packet(uint32_t op, const uint8_t* data, uint32_t bytes);
 void trace_line(const char* fmt, ...);
 void pass_traces_log(uint64_t frame_lo, uint64_t frame_hi);   // (RX_VK_PASS_TRACE=1)
 /// (longshot) The latest Linux memory-pressure shortfall (bytes) and sample number from texture_frame() without holding pools_mu

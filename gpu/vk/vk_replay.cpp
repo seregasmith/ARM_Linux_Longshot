@@ -1517,6 +1517,7 @@ bool depth_copy_report_disjoint(uint64_t addr, const nvn_p_copy_tt& copy) {
 void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* end = nullptr) {
     const Mode mode = rmode;
     const bool dry = mode == Mode::Dry, worker = mode == Mode::Worker;
+    const bool trace_packets = !dry && pass_trace_on();
     Texture* cleared = nullptr;
     float clear_value = 0;
     // (RX_VK_LOG_RB_WRITERS, RX_VK_READBACK_EARLY: each op said, as the writer of what it writes)
@@ -1534,6 +1535,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
         if (!dry && !worker && part_end_wanted && (h.op == NOP_DRAW || h.op == NOP_DRAW_IDX || h.op == NOP_DRAW_INDIRECT) &&
             s.render_enabled && !s.raster_discard)
             split_part(cmd);
+        if (trace_packets) trace_depth_clear_packet(h.op, a, avail);
         switch (h.op) {
         case NOP_END: return;
         case NOP_BEGIN: case NOP_JUMP: case NOP_CALL: break;

@@ -5291,6 +5291,7 @@ struct Pass {
     uint64_t first_prog = 0;
     VkFormat format0 = VK_FORMAT_UNDEFINED;
     std::vector<const Texture*> sampled;   // First six distinct samples for pass tracing only.
+    std::vector<std::string> clear_interval;   // Ordered guest packets following a depth clear, in printable chunks.
     uint16_t sampled_targets = 0;          // (colour i bit i, depth bit 8: targets earlier draws sampled)
     uint16_t written = 0;                  // (its targets written so far: colour i bit i, depth bit 8)
 };
@@ -5468,6 +5469,7 @@ void begin_pass(VkCommandBuffer cmd, const Targets& at, const VkClearDepthStenci
     ps.draws = 0, ps.format0 = at.n ? at.color_format[0] : at.depth_format;
     ps.wm_or = 0, ps.wm_n = 0;
     ps.clears = 0, ps.first_prog = 0;
+    ps.clear_interval.clear();
     ps.sampled.clear(), ps.sampled_targets = 0, ps.written = 0;
     vkCmdBeginRendering(cmd, &ri);
     ps.open = true;
@@ -6292,6 +6294,48 @@ bool pass_trace_on() {
     static const bool v = env_on("RX_VK_PASS_TRACE");
     return v;
 }
+// Called for real replay packets, before their handlers. Keep the interval with its pass so another
+// command buffer or recording thread cannot contribute packets to it.
+void trace_depth_clear_packet(uint32_t op, const uint8_t* data, uint32_t bytes) {
+    Pass& ps = pass();
+    if (!ps.open || !ps.depth || ps.n || !ps.clears || ps.draws) return;
+    static constexpr const char* names[] = {
+        "END", "JUMP", "BEGIN", "CALL", "SIGNAL_EVENT", "REPORT_COUNTER", "COPY_B2B", "UPDATE_UB", "SET_RT",
+        "CLEAR_COLOR", "CLEAR_DS", "VIEWPORTS", "SCISSOR", "DEPTH_RANGE", "BIND_PROGRAM", "BIND_STATE",
+        "BIND_VATTR", "BIND_VSTREAM", "BIND_VBUF", "BIND_UBO", "BIND_SSBO", "BIND_TEX", "BIND_SAMP", "STENCIL",
+        "POLY_OFFSET", "DRAW", "DRAW_IDX", "DISPATCH", "BARRIER", "SET_TEX_POOL", "SET_SAMP_POOL", "COPY_B2T",
+        "COPY_STRIDE", "BLEND_COLOR", "COPY_T2B", "BIND_IMG", "COPY_T2T", "RESET_COUNTER", "CLEAR_TEX",
+        "DEPTH_CLAMP", "RENDER_ENABLE", "RASTER_DISCARD", "RENDER_COND", "PRIMITIVE_RESTART", "BIND_BUFS",
+        "DRAW_INDIRECT", "DISPATCH_INDIRECT", "DRAW_MESH", "WAIT_EVENT", "PUSH_CONST", "CLEAR_BUF"
+    };
+    static_assert(std::size(names) == NOP_COUNT_);
+    char packet[112];
+    if (op == NOP_REPORT_COUNTER && bytes >= sizeof(nvn_p_counter)) {
+        nvn_p_counter c;
+        std::memcpy(&c, data, sizeof c);
+        snprintf(packet, sizeof packet, "REPORT_COUNTER(type=%#llx addr=%#llx)",
+                 (unsigned long long)c.type, (unsigned long long)c.addr);
+    } else if (op == NOP_RENDER_ENABLE && bytes >= sizeof(nvn_p_flag)) {
+        nvn_p_flag f;
+        std::memcpy(&f, data, sizeof f);
+        snprintf(packet, sizeof packet, "RENDER_ENABLE(%d)", f.value);
+    } else if (op == NOP_BARRIER && bytes >= sizeof(uint32_t)) {
+        uint32_t flags;
+        std::memcpy(&flags, data, sizeof flags);
+        snprintf(packet, sizeof packet, "BARRIER(%#x)", flags);
+    } else if (op < std::size(names)) {
+        snprintf(packet, sizeof packet, "%s", names[op]);
+    } else {
+        snprintf(packet, sizeof packet, "op(%u)", op);
+    }
+
+    // trace_line has a 400-byte buffer. Start another numbered line before this one fills.
+    auto& lines = ps.clear_interval;
+    if (lines.empty() || lines.back().size() + 1 + std::strlen(packet) > 270) lines.emplace_back();
+    if (!lines.back().empty()) lines.back() += ' ';
+    lines.back() += packet;
+}
+
 std::mutex trace_mu;
 std::map<uint64_t, std::vector<std::pair<uint64_t, std::string>>> pass_traces;   // texture frame -> (order, line)
 thread_local uint64_t trace_seq = 0;
@@ -6551,6 +6595,11 @@ void end_pass(VkCommandBuffer cmd, const char* reason, int64_t guest_barrier_fla
                    (unsigned long long)(ps.depth_tex ? ps.depth_tex->gpu : 0), ps.depth_layer,
                    (unsigned long long)ps.first_prog, (unsigned long long)ps.prog, sampled, reason, flags,
                    ps.depth_tex ? ps.depth_tex->id : 0, ps.depth_level, ps.depth_load_clear ? " load=CLEAR" : "");
+        if (ps.depth_tex && !ps.draws && !ps.clear_interval.empty() && std::strcmp(reason, "texture copy") == 0) {
+            for (size_t i = 0; i < ps.clear_interval.size(); ++i)
+                trace_line("depth clear interval image #%u [%zu/%zu]: %s", ps.depth_tex->id, i + 1,
+                           ps.clear_interval.size(), ps.clear_interval[i].c_str());
+        }
     }
     if (gprof_on()) {
         char label[160];

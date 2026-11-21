@@ -23,6 +23,10 @@ def main():
 #include <vulkan/vulkan.h>
 #include <algorithm>
 #include <cassert>
+#include <cstdio>
+#include <cstring>
+#define _Static_assert static_assert
+#include "rx_nvn.h"
 #include <string>
 #include <vector>
 struct Texture {};
@@ -68,12 +72,13 @@ void vkCmdClearAttachments(VkCommandBuffer, uint32_t, const VkClearAttachment* a
     area = r->rect;
 }
 """
-    for marker in ["void mark_depth_target(", "void begin_pass(", "VkRect2D clear_rect(", "void clear_after_draws(", "void clear_depth_stencil("]:
+    for marker in ["void trace_depth_clear_packet(", "void mark_depth_target(", "void begin_pass(", "VkRect2D clear_rect(", "void clear_after_draws(", "void clear_depth_stencil("]:
         fixture += block(source, marker) + "\n"
     fixture += """
 int main() {
     Texture depth;
     at.depth = &depth;
+    at.depth_view = (VkImageView)1;
     at.depth_format = VK_FORMAT_D32_SFLOAT;
     at.width = 768;
     at.height = 432;
@@ -82,9 +87,29 @@ int main() {
     clear();
     assert(events == "C" && value.depth == 1.0f && ps.depth_load_clear);
     assert(ps.written == 256 && ps.clears == 1 && st_clears == 1);
+    nvn_p_counter counter{NVN_COUNTER_TYPE_TIMESTAMP_TOP, 0x12340};
+    nvn_p_flag enable{0, 0};
+    trace_depth_clear_packet(NOP_REPORT_COUNTER, reinterpret_cast<uint8_t*>(&counter), sizeof counter);
+    trace_depth_clear_packet(NOP_RENDER_ENABLE, reinterpret_cast<uint8_t*>(&enable), sizeof enable);
+    std::string expected = "REPORT_COUNTER(type=0x10 addr=0x12340) RENDER_ENABLE(0)";
+    for (int i = 0; i < 75; ++i) {
+        trace_depth_clear_packet(NOP_SET_RT, nullptr, 0);
+        expected += " SET_RT";
+    }
+    trace_depth_clear_packet(NOP_COPY_T2T, nullptr, 0);
+    expected += " COPY_T2T";
+    assert(ps.clear_interval.size() > 1);
+    std::string actual;
+    for (const auto& line : ps.clear_interval) {
+        assert(line.size() <= 270);
+        if (!actual.empty()) actual += ' ';
+        actual += line;
+    }
+    assert(actual == expected);
     end_pass({}, "texture copy");
     events += 'X';
     begin_pass({}, at);
+    assert(ps.clear_interval.empty());
     assert(events == "CEXL" && !ps.depth_load_clear);
     clear();
     assert(events == "CEXLA");
@@ -131,7 +156,8 @@ int main() {
         cpp = Path(tmp) / "fixture.cpp"
         exe = Path(tmp) / "fixture.exe"
         cpp.write_text(fixture, encoding="utf-8")
-        subprocess.run([args.cxx, "-std=c++20", "-I", args.headers, str(cpp), "-o", str(exe)], check=True)
+        subprocess.run([args.cxx, "-std=c++20", "-I", args.headers, "-I", str(DRAW.parents[1] / "render"),
+                        str(cpp), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
 
 

@@ -105,6 +105,16 @@ static int replay_stream(const std::string& stream) {
     VkCommandBuffer cmd = first.cmd;
     int writer_part = -1;
     struct { bool render_enabled = true, raster_discard = false; } s;
+    // This fixture's stream has no payloads or depth clears.
+    const bool trace_packets = false;
+    const uint8_t* a = nullptr;
+    const uint32_t avail = 0;
+    auto trace_depth_clear_packet = [](uint32_t, const uint8_t*, uint32_t) {};
+    void* cleared = nullptr;
+    float clear_value = 0;
+    auto pass_trace_on = [] { return false; };
+    auto trace_line = [](const char*) {};
+    auto clear_depth_stencil = [](VkCommandBuffer, auto&, float, bool, uint32_t, uint32_t) {};
     const bool dry = false, worker = false, early = early_on;
     for (char c : stream) {
         struct { uint32_t op; } h = {c == 'd' ? (uint32_t)NOP_DRAW : c == 'm' ? (uint32_t)NOP_DRAW_MESH : (uint32_t)NOP_DISPATCH};
