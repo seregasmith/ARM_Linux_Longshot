@@ -1533,7 +1533,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                 host->gpu_read(e.gpu, &old, 4);
                 v = old + e.value;
             }
-            end_pass(cmd);
+            end_pass(cmd, "event signal");
             GprofSpan gp(cmd, "event signal (barrier, write, barrier)");
             full_barrier(cmd);
             gpu_write(cmd, e.gpu, &v, 4);
@@ -1640,7 +1640,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                          (unsigned long long)c.dst, (unsigned long long)c.size, src ? "bound" : "NOT bound",
                          dst ? "bound" : "NOT bound (on the CPU)");
             }
-            end_pass(cmd);
+            end_pass(cmd, "buffer copy");
             GprofSpan gp(cmd, "copy buffer->buffer (with its barriers)");
             gp.bytes = c.size;
             full_barrier(cmd);
@@ -1676,7 +1676,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             ParLock lk;
             const auto c = c0;
             if (!c.size) break;
-            end_pass(cmd);
+            end_pass(cmd, "buffer clear");
             GprofSpan gp(cmd, "clear buffer (with its barriers)");
             gp.bytes = c.size;
             full_barrier(cmd);
@@ -1928,17 +1928,18 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             }
             break;
         }
-        case NOP_BARRIER:
+        case NOP_BARRIER: {
             if (dry) break;
+            const int32_t bits = payload<int32_t>(a, avail);
             {
-                const int32_t bits = payload<int32_t>(a, avail);
                 std::lock_guard lk(st_barrier_flags_mu);
                 st_barrier_flags[bits]++;
             }
-            end_pass(cmd);
+            end_pass(cmd, "guest barrier", static_cast<uint32_t>(bits));
             full_barrier(cmd, "barrier (the game's nvnCommandBufferBarrier)");
             st_barriers++;
             break;
+        }
         // ---- work ----
         case NOP_CLEAR_COLOR:
             // (longshot) in the dry pass a clear marks its pass's targets as the GPU's, as a draw does (dry_mark_written): the clear
@@ -2122,7 +2123,7 @@ void split_part(VkCommandBuffer& cmd) {
     // (asked for in another command buffer of the submission, or before a parallel replay's segments took their parts:
     // what maybe_split refuses is refused here too, and it asks again at the next draw it would cut after)
     if (split_off || !rec_cur || rec_parts + 1 >= kMaxParts || dump_on()) return;
-    end_pass(cmd);
+    end_pass(cmd, early_end_asked ? "readback split" : "recording split");
     // (a part's end does not write the stream's uniform updates recorded so far into guest memory, nor start a new window
     // of them: the submission's last part writes them all, as an unsplit submission does (finish_recording) and as the
     // parallel replay does. A uniform binding is not what changes: one overlapping an update gets an overlay copy built
@@ -2250,7 +2251,7 @@ void record_segment(VkCommandBuffer& cmd, const Segment& g) {
     ub_gen++;
     full_barrier(cmd);   // (after what the command buffers before it did)
     replay(cmd, s, g.p, g.end);
-    end_pass(cmd);
+    end_pass(cmd, "parallel replay segment end");
     full_barrier(cmd);
     rmode = Mode::Serial;
     ub_limit = SIZE_MAX;
@@ -2379,7 +2380,7 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
     // what came before, to the GPU now (its uploads included); then each segment into a recording of its own (its
     // command buffer and uploads), recorded in order by the threads and submitted in order as they are done
     Recording& r = *rec_cur;
-    end_pass(r.cmd);
+    end_pass(r.cmd, "parallel replay segment start");
     full_barrier(r.cmd);
     memory_sync_mirrors_before_segments();   // (in r's uploads, ahead of every segment)
     submit_recording(r, false);
@@ -2560,7 +2561,7 @@ void bench_replay(const std::vector<uint64_t>& handles) {
         }
     Recording& r = *rec_cur;
     rec_cur = nullptr;
-    end_pass(r.cmd);
+    end_pass(r.cmd, "benchmark recording end");
     flush_ub_updates(r.cmd);
     memory_end_submission(r.cmd, r.part);
     full_barrier(r.cmd);
@@ -2856,7 +2857,7 @@ void finish_recording(uint64_t value) {
     (void)value;
     Recording& r = *rec_cur;
     rec_cur = nullptr;
-    end_pass(r.cmd);
+    end_pass(r.cmd, "recording end");
     flush_ub_updates(r.cmd);
     memory_end_submission(r.cmd, r.part);
     full_barrier(r.cmd, "barrier (recording end)");
@@ -2923,7 +2924,7 @@ bool run_submit(const uint64_t* handles, int n, uint64_t value, uint64_t queue, 
         submit_memory_work(value);
     }
     if (burst_open && rec_cur) {   // (the burst's recording goes on: what the piece before did, done first)
-        end_pass(rec_cur->cmd);
+        end_pass(rec_cur->cmd, "next submit in burst");
         full_barrier(rec_cur->cmd, "barrier (a burst's next submit start)");
         use_queue_state(queue);
     } else {

@@ -62,7 +62,7 @@ static Recording& begin_recording(uint64_t) {
     recs[i].cmd = i, recs[i].part = (uint64_t)i + 1;
     return recs[i];
 }
-static void end_pass(VkCommandBuffer&) {}
+static void end_pass(VkCommandBuffer&, const char*) {}
 static void flush_ub_updates(VkCommandBuffer&) {}
 static void memory_end_submission(VkCommandBuffer&, uint64_t) {}
 static void memory_begin_submission() {}

@@ -263,7 +263,7 @@ void copy_b2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_bt& p, bool to
         warn(5, "copy of a buffer into a depth-stencil texture: skipped");
         return;
     }
-    end_pass(cmd);
+    end_pass(cmd, to_image ? "buffer to texture copy" : "texture to buffer copy");
     GprofSpan gp(cmd, to_image ? "xfer copy buffer->texture (with its barriers)" : "xfer copy texture->buffer (with its barriers)");
     gp.bytes = size;
     full_barrier(cmd);
@@ -304,7 +304,7 @@ void copy_t2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_tt& p) {
         return;
     }
     s.layers = d.layers = std::min(s.layers, d.layers);
-    end_pass(cmd);
+    end_pass(cmd, "texture copy");
     GprofSpan gp(cmd, "xfer copy texture->texture (with its barriers)");
     full_barrier(cmd);
     const bool same_size = s.w == d.w && s.h == d.h && s.d == d.d;
@@ -380,7 +380,7 @@ void clear_tex(VkCommandBuffer cmd, NvnState& st, const nvn_p_clear_tex& p) {
     const uint32_t lw = std::max(1u, s.tex->width >> s.level), lh = std::max(1u, s.tex->height >> s.level);
     const bool whole = !s.x && !s.y && s.w == lw && s.h == lh;
     if ((p.mask & 0xf) != 0xf && (s.tex->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) warn(8, "texture clear with a channel mask: cleared whole");
-    end_pass(cmd);
+    end_pass(cmd, "texture clear");
     GprofSpan gp(cmd, "xfer clear texture (with its barriers)");
     full_barrier(cmd);
     // (an image kept in ASTC blocks: vkCmdClearColorImage does not take a compressed format, and the region path below only

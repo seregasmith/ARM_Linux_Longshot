@@ -195,7 +195,7 @@ def main():
     if "mesh_fallback_task_threads" not in block(get_set, "Id EmitWorkgroupId(EmitContext& ctx)"):
         raise SystemExit("a fallback mesh workgroup's id is its slot, not its index in its task")
     # (the records' header is reset after a barrier: the shared pair's last draw, of any program, has read it)
-    reset = record[record.index("end_pass(cmd);"):record.index("vkCmdFillBuffer(cmd, f->records")]
+    reset = record[record.index("end_pass(cmd,"):record.index("vkCmdFillBuffer(cmd, f->records")]
     if "full_barrier(cmd);" not in reset:
         raise SystemExit("a fallback draw resets the shared records before the last draw has read them")
     if "vkCmdFillBuffer(cmd, f->records, 4, 4, 1);" not in record:

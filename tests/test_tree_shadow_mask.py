@@ -53,7 +53,7 @@ def main():
         ("tex->format != VK_FORMAT_R8G8B8A8_UNORM", "a mask of another format is blended"),
         ("VK_IMAGE_USAGE_STORAGE_BIT", "a mask without storage use is blended"),
         ("!dev.push_descriptor", "the pass runs without push descriptors"),
-        ("end_pass(cmd);", "the blend runs inside the render pass"),
+        ("end_pass(cmd,", "the blend runs inside the render pass"),
     ):
         if needle not in stab:
             raise SystemExit(why)

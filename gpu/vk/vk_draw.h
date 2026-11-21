@@ -63,8 +63,8 @@ void draw_begin_recording(int slot, VkCommandBuffer cmd, uint64_t value);
 void draw_flush_recording(int slot);
 /// The recording's stream still holds [at, at + n) in the mapping at base (a reset starts used over)
 bool stream_holds(const uint8_t* base, uint64_t at, uint64_t n);
-/// The open render pass ends (before transfers, clears, barriers and the recording's end)
-void end_pass(VkCommandBuffer cmd);
+/// Ends the open render pass. The reason and any guest barrier flags are printed in the pass trace.
+void end_pass(VkCommandBuffer cmd, const char* reason, int64_t guest_barrier_flags = -1);
 void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d);
 /// (longshot) the occlusion queries draw() left unbegun since the last call, by why: the draw returned before drawing, its
 /// vertex input was not all bound, a mesh fallback's task batches (vk_replay.cpp's RX_VK_OCC_LOG line)

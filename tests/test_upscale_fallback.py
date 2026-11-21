@@ -126,7 +126,7 @@ void vkGetPhysicalDeviceFormatProperties(VkPhysicalDevice, VkFormat format, VkFo
     if (missing_linear && format == VK_FORMAT_E5B9G9R9_UFLOAT_PACK32)
         p->optimalTilingFeatures &= ~VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
 }
-void end_pass(VkCommandBuffer) {}
+void end_pass(VkCommandBuffer, const char*, int64_t = -1) {}
 // (the temporal upscaler, off here: upscale_stub offers it the frame first, vk_draw.cpp temporal_rejected_network)
 bool temporal_wanted() { return false; }
 bool temporal_off() { return false; }

@@ -33,7 +33,7 @@ def opened_between(body, name, span, first, what):
     if span not in body:
         raise SystemExit("%s: no RX_VK_PASS_TIMING span of its own (%s)" % (name, what))
     at = body.index(span)
-    end_pass = body.find("end_pass(cmd);")
+    end_pass = body.find("end_pass(cmd,")
     if end_pass < 0 or end_pass > at:
         raise SystemExit("%s: the span opens before end_pass, inside the pass's own span, and is never timed" % name)
     if body.index(first) < at:

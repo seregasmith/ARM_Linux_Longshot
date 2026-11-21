@@ -71,7 +71,7 @@ void gprof_submitted(int slot, bool) {
     flushed_slot = -1;
 }
 void gpu_time_end(Recording&) {}
-void end_pass(VkCommandBuffer) {}
+void end_pass(VkCommandBuffer, const char*, int64_t = -1) {}
 void flush_ub_updates(VkCommandBuffer) {}
 void memory_end_submission(VkCommandBuffer, uint64_t) {}
 void full_barrier(VkCommandBuffer, const char*) {}

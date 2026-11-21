@@ -42,9 +42,9 @@ def main():
         if part not in hook:
             raise SystemExit("reactive_scene_draw: %s is gone (the mask is of the jittered scene's transparent draws alone)" % part)
     # a copy cannot be recorded in a pass
-    if "end_pass(cmd);" not in hook or hook.index("end_pass(cmd);") > hook.index("reactive::copy_scene("):
+    if "end_pass(cmd," not in hook or hook.index("end_pass(cmd,") > hook.index("reactive::copy_scene("):
         raise SystemExit("reactive_scene_draw: the scene is copied inside its pass")
-    if hook.index("reactive_policy::copy_before(") > hook.index("end_pass(cmd);"):
+    if hook.index("reactive_policy::copy_before(") > hook.index("end_pass(cmd,"):
         raise SystemExit("reactive_scene_draw: the pass is ended for draws that need no copy")
     body = function(draw, "void draw(")
     if "reactive_scene_draw(cmd, p, s, at);" not in body or \

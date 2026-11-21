@@ -45,7 +45,7 @@ def check_sources():
 
     pre = block(chain, "bool temporal_pre_bloom(VkCommandBuffer cmd")
     assert "s.pre.scene_draw()" in pre and "s.pre.sampler(key, s.pre_trigger)" in pre, "temporal_pre_bloom: the frame's list"
-    assert pre.index("s.pre.sampler(") < pre.index("end_pass(cmd);") < pre.index("draw_engine(cmd, s, mode, cam, key, true,"), \
+    assert pre.index("s.pre.sampler(") < pre.index("end_pass(cmd,") < pre.index("draw_engine(cmd, s, mode, cam, key, true,"), \
         "temporal_pre_bloom: the pass ended before DLAA's compute"
     assert "full_barrier(cmd);" in pre[pre.index("draw_engine("):], "temporal_pre_bloom: the draw waits for DLAA's picture"
     assert "s.pre.ran = false" in pre, "temporal_pre_bloom: a failed run leaves the frame to the network"

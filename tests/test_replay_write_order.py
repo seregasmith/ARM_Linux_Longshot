@@ -131,7 +131,7 @@ uint64_t pool_guest(VkBuffer b, uint64_t offset, uint64_t n, const char* what) {
 }
 
 void logf(const char*, ...) { logs++; }
-void end_pass(VkCommandBuffer) {}
+void end_pass(VkCommandBuffer, const char*, int64_t = -1) {}
 struct GprofSpan {
     GprofSpan(VkCommandBuffer, const char*) {}
     uint64_t bytes = 0;

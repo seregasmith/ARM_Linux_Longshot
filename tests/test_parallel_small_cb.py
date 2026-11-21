@@ -63,7 +63,7 @@ def main():
     split = body(replay, "void maybe_split(VkCommandBuffer& cmd) {", "part_end_wanted = true;")
     if "if (split_off ||" not in split:
         raise SystemExit("vk_replay.cpp: maybe_split no longer leaves a short command buffer's recording whole")
-    cut = body(replay, "void split_part(VkCommandBuffer& cmd) {", "end_pass(cmd);")   # (an end asked for in a buffer before it)
+    cut = body(replay, "void split_part(VkCommandBuffer& cmd) {", "end_pass(cmd,")   # (an end asked for in a buffer before it)
     if "if (split_off ||" not in cut:
         raise SystemExit("vk_replay.cpp: split_part no longer leaves a short command buffer's recording whole")
 

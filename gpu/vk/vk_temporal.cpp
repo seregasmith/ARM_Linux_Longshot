@@ -1707,7 +1707,7 @@ bool temporal_pre_bloom(VkCommandBuffer cmd, uint64_t key, const std::vector<con
         return not_here("the scene's colour target cannot be sampled and stored into");
     const VkImageView view = color_view(scene);
     if (!view) return not_here("no view of the scene's colour");
-    end_pass(cmd);   // (compute from here: outside the open pass)
+    end_pass(cmd, "temporal upscale before bloom");   // (compute from here: outside the open pass)
     // (from here commands of its own are recorded, whether DLAA then draws or not: true, and the draw binds all of its
     // own again, vk_draw.cpp. Not this frame: the skinned draws stay for the engine at the network)
     if (!draw_engine(cmd, s, mode, cam, key, true, scene, view, scene, view, 0)) return s.pre.ran = false, true;

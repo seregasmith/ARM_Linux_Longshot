@@ -5409,7 +5409,7 @@ void begin_pass(VkCommandBuffer cmd, const Targets& at) {
                 ps.height == at.height;
     for (int i = 0; i < at.n && same; i++) same = ps.color[i] == at.color_view[i];
     if (same) return;
-    end_pass(cmd);
+    end_pass(cmd, "attachments changed");
     if (at.has_block_images) {
         full_barrier(cmd, "barrier (before BC slice loads)");
         for (int i = 0; i < at.n; i++)
@@ -5999,7 +5999,7 @@ void clear_after_draws(VkCommandBuffer cmd) {
     if (logged++ < 6)
         logf("vk: a clear after %d draws of its pass (%ux%u, %d colour targets%s, last program %016llx): a pass of its own",
              pass().draws, pass().width, pass().height, pass().n, pass().depth ? " + depth" : "", (unsigned long long)pass().prog);
-    end_pass(cmd);
+    end_pass(cmd, "clear after draws");
 }
 
 /// (longshot) The temporal upscalers' reactive mask (vk_reactive.h, RX_VK_REACTIVE=1): before the scene's transparent draws
@@ -6034,7 +6034,7 @@ void reactive_scene_draw(VkCommandBuffer cmd, const Program& p, const NvnState& 
                  reactive_policy::kCopies, (unsigned long long)now);
         return;
     }
-    end_pass(cmd);   // (a copy cannot be made in a pass)
+    end_pass(cmd, "reactive mask copy");   // (a copy cannot be made in a pass)
     reactive::copy_scene(cmd, at.color[0], at.color_level[0], at.color_layer[0], at.width, at.height);
 }
 // doc: docs/design.md#4-the-lessons-from-mkw-as-rules-here (rule 5: a draw that samples what its pass wrote gets a pass of its own)
@@ -6073,7 +6073,7 @@ uint16_t draw_hazards(VkCommandBuffer cmd, const Program& p, const NvnState& s, 
     if (logged++ < 8)
         logf("vk: a draw (program %016llx) %s, after %d draws of the pass (%ux%u): a pass of its own", (unsigned long long)p.key,
              kind, ps.draws, ps.width, ps.height);
-    end_pass(cmd);
+    end_pass(cmd, kind);
     return writes;
 }
 
@@ -6462,7 +6462,7 @@ void probe_log(uint64_t f) {
 namespace {
 TLS_OBJECT(dump_mesh_indirect, std::vector<std::pair<uint64_t, uint64_t>>)   // (program key, indirect address)
 } // namespace
-void end_pass(VkCommandBuffer cmd) {
+void end_pass(VkCommandBuffer cmd, const char* reason, int64_t guest_barrier_flags) {
     Pass& ps = pass();   // (once: the accessor is a call and a thread-local read at each use. The same object for the thread's life: draw_begin_recording resets it in place)
     if (!ps.open) return;
     vkCmdEndRendering(cmd);
@@ -6492,11 +6492,13 @@ void end_pass(VkCommandBuffer cmd) {
         int k = 0;
         for (size_t i = 0; i < ps.sampled.size() && i < 6 && k < 140; i++)
             k += snprintf(sampled + k, sizeof sampled - k, " %#llx", (unsigned long long)ps.sampled[i]->gpu);
+        char flags[32] = "";
+        if (guest_barrier_flags >= 0) snprintf(flags, sizeof flags, " flags=0x%x", (unsigned)guest_barrier_flags);
         trace_line("pass %ux%u f%d %dc%s wm%x/%u: %d draws %d clears, c0 %#llx/%u, depth %#llx/%u, progs %016llx..%016llx, "
-                   "sampled%s", ps.width, ps.height, (int)ps.format0, ps.n, ps.depth ? "+d" : "", ps.wm_or, ps.wm_n, ps.draws,
+                   "sampled%s, end=%s%s", ps.width, ps.height, (int)ps.format0, ps.n, ps.depth ? "+d" : "", ps.wm_or, ps.wm_n, ps.draws,
                    ps.clears, (unsigned long long)(ps.n && ps.tex[0] ? ps.tex[0]->gpu : 0), ps.layer[0],
                    (unsigned long long)(ps.depth_tex ? ps.depth_tex->gpu : 0), ps.depth_layer,
-                   (unsigned long long)ps.first_prog, (unsigned long long)ps.prog, sampled);
+                   (unsigned long long)ps.first_prog, (unsigned long long)ps.prog, sampled, reason, flags);
     }
     if (gprof_on()) {
         char label[160];
@@ -7189,7 +7191,7 @@ struct StatsQuery {
 void StatsQuery::copy_watch(VkCommandBuffer cmd, uint32_t index) {
     const std::vector<uint64_t>& w = watch_addrs();
     if (w.empty() || !stats_watch) return;
-    end_pass(cmd);
+    end_pass(cmd, "debug buffer watch");
     VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, mb.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
     mb.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT, mb.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
@@ -7217,7 +7219,7 @@ void StatsQuery::gpu_dump(VkCommandBuffer cmd, const NvnState& s, uint64_t prog,
             return;
         stats_gpu_map = (uint8_t*)m;
     }
-    end_pass(cmd);
+    end_pass(cmd, "debug storage readback");
     VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, mb.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
     mb.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT, mb.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
@@ -7284,7 +7286,7 @@ void StatsQuery::copy_args(VkCommandBuffer cmd, const DrawArgs& d, uint32_t inde
         const BufferRef cnt = d.count_addr ? gpu_buffer_bind(d.count_addr, 4, false) : BufferRef{};
         if (!args) return;
         stats_meta[index].args_vkbuf = (uint64_t)(uintptr_t)args.buffer, stats_meta[index].args_vkoff = args.offset;
-        end_pass(cmd);
+        end_pass(cmd, "debug indirect readback");
         VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
         mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, mb.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
         mb.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT, mb.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
@@ -7353,7 +7355,7 @@ bool mesh_indirect_convert(VkCommandBuffer cmd, const DrawArgs& d) {
         off = mesh_ring_at;
         mesh_ring_at += bytes;
     }
-    end_pass(cmd);
+    end_pass(cmd, "mesh indirect conversion");
     GprofSpan gp(cmd, "meshconv (an indirect mesh draw's arguments -> {count, 1, 1}, with its barriers)");   // (RX_VK_PASS_TIMING)
     VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
@@ -7798,7 +7800,7 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
     fallback_payload_address = f->payload_address;
     fallback_records_address = f->records_address;
     const uint32_t capacity = Shader::Backend::SPIRV::MESH_FALLBACK_CAPACITY;
-    end_pass(cmd);
+    end_pass(cmd, "mesh fallback compute");
     // (RX_VK_PASS_TIMING: the fills, barriers and dispatches below as one span of their own, "fallback prog <key>", not glue
     // between the spans; its barriers are in it, not among the "barrier" spans. After end_pass, which closes the pass's span)
     char label[32] = "";
@@ -8201,7 +8203,7 @@ void mask_stabilize(VkCommandBuffer cmd, Texture* tex, uint32_t level, uint32_t 
     static VkImageView hist_view[2] = {};
     static uint32_t hist_w = 0, hist_h = 0, cur = 0;
     static uint64_t hist_frame = 0;
-    end_pass(cmd); // History image transitions must be outside dynamic rendering.
+    end_pass(cmd, "tree-shadow mask compute"); // History image transitions must be outside dynamic rendering.
     if (hist_w != w || hist_h != h) {
         for (int i = 0; i < 2; i++) mask_retire(hist[i], hist_mem[i], hist_view[i], texture_frame_no());   // (the old size's, given back later)
         for (int i = 0; i < 2; i++) {
@@ -8584,7 +8586,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     // read back on its own)
     struct EachGuard {
         VkCommandBuffer cmd = VK_NULL_HANDLE;
-        ~EachGuard() { if (cmd) end_pass(cmd); }
+        ~EachGuard() { if (cmd) end_pass(cmd, "per-draw dump"); }
     } each_guard;
     {
         static const std::vector<uint64_t> each = [] {
@@ -8679,7 +8681,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     const bool pre_recorded = temporal_pre_bloom(cmd, p.key, gfx_sampled(), at.color, at.n);
     if (pre_recorded) cb.reset();
     static const bool barrier_every = env_on("RX_VK_BARRIER_EVERY_DRAW");   // (an experiment: a pass each)
-    if (barrier_every) end_pass(cmd);
+    if (barrier_every) end_pass(cmd, "per-draw barrier");
     reactive_scene_draw(cmd, p, s, at);
     uint16_t writes, samples;
     {
@@ -8698,7 +8700,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         if (!src) SKIP_HERE();
         if (mesh_args_ready()) {
             static const uint32_t word = getenv("RX_VK_MESH_COUNT_WORD") ? (uint32_t)atoi(getenv("RX_VK_MESH_COUNT_WORD")) : 0;
-            end_pass(cmd);
+            end_pass(cmd, "mesh count copy");
             full_barrier(cmd);
             static thread_local std::vector<VkBufferCopy> copies;
             copies.clear();
@@ -9297,7 +9299,7 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
     if (!(fs.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT) || !(fd.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT) ||
         !(fs.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT))
         return false;
-    end_pass(cmd);
+    end_pass(cmd, "movie upscale");
     full_barrier(cmd);
     if (dst->format == VK_FORMAT_R8G8B8A8_UNORM && movie_upscale(cmd, in_h, out_h, dst)) {
         full_barrier(cmd);
@@ -9660,7 +9662,7 @@ static Texture* upscale_picture(const NvnState& s, const Program& p, uint32_t* l
 /// without this DLSS and FSR would only ever see the game's 3/4. True: FSR 3.1 or the temporal upscaler wrote the output
 static bool temporal_rejected_network(VkCommandBuffer cmd, uint64_t key, Texture* src, const nvn_tex* in, Texture* dst,
                                       const nvn_tex* out) {
-    end_pass(cmd);
+    end_pass(cmd, "temporal upscale");
     VkFormat in_format = VK_FORMAT_UNDEFINED, out_format = VK_FORMAT_UNDEFINED;
     const VkImageView in_view = texture_view(src, in, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample, &in_format);
     const bool rgba_pair = (temporal_colour_pair(src->format, dst->format) || fsr3_inputs::colour_pair(src->format, dst->format)) &&
@@ -11864,7 +11866,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     }
     if (plk.on) par_mutex().unlock(), plk.on = false;
     dclock.t_pipe = slow_dispatch_timing() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-    end_pass(cmd);
+    end_pass(cmd, "compute dispatch");
     grid_patch_want = indirect, grid_patch_at = UINT64_MAX;
     build_descriptors(s, p);
     grid_patch_want = false;

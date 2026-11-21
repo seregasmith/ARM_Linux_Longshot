@@ -10,8 +10,8 @@ p.add_argument('--cxx', required=True)
 a = p.parse_args()
 source = (Path(__file__).resolve().parents[1] / 'gpu/vk/vk_draw.cpp').read_text()
 stabilize = source[source.index('void mask_stabilize('):source.index('void draw(VkCommandBuffer')]
-assert stabilize.index('end_pass(cmd)') < stabilize.index('vkCmdPipelineBarrier2(')
-assert stabilize.index('end_pass(cmd)') < stabilize.index('vkCmdDispatch(')
+assert stabilize.index('end_pass(cmd,') < stabilize.index('vkCmdPipelineBarrier2(')
+assert stabilize.index('end_pass(cmd,') < stabilize.index('vkCmdDispatch(')
 start = source.index('    struct MaskGuard {')
 end = source.index('    if (!record_progs()', start)
 actual = source[start:end]

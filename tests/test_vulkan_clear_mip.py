@@ -56,7 +56,7 @@ int nvn_block_size(int,int* w,int* h) {
     return raw ? 8 : 4;
 }
 void texture_resident(Texture*,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t) {}
-void end_pass(VkCommandBuffer) {}
+void end_pass(VkCommandBuffer, const char*, int64_t = -1) {}
 void full_barrier(VkCommandBuffer) {}
 struct GprofSpan { GprofSpan(VkCommandBuffer,const char*) {} };
 void texture_written(Texture* t) { t->gpu_written=true; }
