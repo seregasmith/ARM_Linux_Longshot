@@ -2011,6 +2011,19 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                                        (unsigned long long)counter.type, (unsigned long long)counter.addr, hdr.op);
                     }
                 }
+                // The clear ran with rendering enabled. Setting it to one again changes no state.
+                // Only inspect this packet here; replay still executes both it and the timestamp in order.
+                if (!reason && report && hdr.op == NOP_RENDER_ENABLE) {
+                    if (hdr.size != sizeof hdr + sizeof(nvn_p_flag) ||
+                        (end && end - next < (ptrdiff_t)(hdr.size + sizeof hdr))) {
+                        reason = "short render-enable packet or replay boundary";
+                    } else if (payload<nvn_p_flag>(next + sizeof hdr, sizeof(nvn_p_flag)).value != 1) {
+                        reason = "render-enable value is not one";
+                    } else {
+                        next += hdr.size;
+                        std::memcpy(&hdr, next, sizeof hdr);
+                    }
+                }
                 if (!reason && hdr.op != NOP_COPY_T2T) reason = "next eligible guest command is not a texture copy";
                 else if (!reason && (hdr.size < sizeof hdr + sizeof(nvn_p_copy_tt) ||
                          (end && end - next < (ptrdiff_t)(sizeof hdr + sizeof(nvn_p_copy_tt)))))

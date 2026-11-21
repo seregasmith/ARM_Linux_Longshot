@@ -100,6 +100,22 @@ int main() {
     test(NVN_COUNTER_TYPE_TIMESTAMP | NVN_COUNTER_WRITTEN, 64, NOP_COPY_T2T, false);
     test(NVN_COUNTER_TYPE_SAMPLES_PASSED, 64, NOP_COPY_T2T, false);
     test(NVN_COUNTER_TYPE_TIMESTAMP, 64, NOP_BARRIER, false);
+    auto through_enable = [&](int value, uint32_t following, uint64_t addr, bool expected) {
+        auto v = clear;
+        packet(v, NOP_REPORT_COUNTER, nvn_p_counter{NVN_COUNTER_TYPE_TIMESTAMP_TOP, addr});
+        const size_t enable_at = v.size();
+        packet(v, NOP_RENDER_ENABLE, nvn_p_flag{value, 0});
+        const size_t copy_at = v.size();
+        packet(v, following, copy);
+        assert(candidate(v, v.size()) == expected);
+        assert(!candidate(v, enable_at + sizeof(nvn_op_hdr)));
+        assert(!candidate(v, copy_at));
+        assert(!candidate(v, v.size()-1));
+    };
+    through_enable(1, NOP_COPY_T2T, 64, true);
+    through_enable(0, NOP_COPY_T2T, 64, false);
+    through_enable(1, NOP_BARRIER, 64, false);
+    through_enable(1, NOP_COPY_T2T, 4096+512, false);
     dst.gpu = 4096+128;
     test(NVN_COUNTER_TYPE_TIMESTAMP, 64, NOP_COPY_T2T, false);
 }
