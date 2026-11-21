@@ -6140,7 +6140,9 @@ void clear_depth_stencil(VkCommandBuffer cmd, NvnState& s, float depth, bool dep
     const VkRect2D rect = clear_rect(s, at.width, at.height);
     const VkClearDepthStencilValue value{std::clamp(depth, 0.0f, 1.0f), stencil & 0xFF};
     // A new depth-only pass can clear its whole render area on load, before any subsequent transfer.
-    const bool clear_on_load = !pass().open && !at.n && aspect == VK_IMAGE_ASPECT_DEPTH_BIT &&
+    // Keep explicit clears on Turnip while investigating device loss on Adreno 830 with the load-clear path.
+    const bool clear_on_load = dev.driver_id != VK_DRIVER_ID_MESA_TURNIP &&
+                               !pass().open && !at.n && aspect == VK_IMAGE_ASPECT_DEPTH_BIT &&
                                !has_stencil(at.depth_format) && !rect.offset.x && !rect.offset.y &&
                                rect.extent.width && rect.extent.height &&
                                rect.extent.width == at.width && rect.extent.height == at.height;

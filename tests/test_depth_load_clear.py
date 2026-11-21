@@ -26,6 +26,7 @@ def main():
 #include <string>
 #include <vector>
 struct Texture {};
+struct { VkDriverId driver_id = VK_DRIVER_ID_MESA_RADV; } dev;
 struct ParLock { ParLock(bool = true) {} };
 struct NvnState { int scissor[4]{}; };
 """
@@ -114,6 +115,16 @@ int main() {
     at.n = 1;
     clear();
     assert(events == "LA");
+    end_pass({}, "test");
+    events.clear();
+    at.n = 0;
+    dev.driver_id = VK_DRIVER_ID_MESA_TURNIP;
+    clear();
+    assert(events == "LA" && value.depth == 1.0f && !ps.depth_load_clear);
+    end_pass({}, "texture copy");
+    events += 'X';
+    begin_pass({}, at);
+    assert(events == "LAEXL");
 }
 """
     with tempfile.TemporaryDirectory(prefix="depth-load-clear-") as tmp:
