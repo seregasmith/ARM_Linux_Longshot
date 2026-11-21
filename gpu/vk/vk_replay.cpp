@@ -1963,14 +1963,25 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                 const auto c = payload<nvn_p_clear_ds>(a, avail);
                 // Only pair adjacent complete packets within this replay invocation.
                 const uint8_t* next = p + h.size;
-                if (!worker && avail >= sizeof c && c.depth_mask && !c.stencil_mask &&
-                    (!end || end - next >= (ptrdiff_t)(sizeof(nvn_op_hdr) + sizeof(nvn_p_copy_tt)))) {
-                    nvn_op_hdr hdr;
-                    std::memcpy(&hdr, next, sizeof hdr);
-                    if (hdr.op == NOP_COPY_T2T && hdr.size >= sizeof hdr + sizeof(nvn_p_copy_tt)) {
-                        cleared = depth_clear_before_copy(s, payload<nvn_p_copy_tt>(next + sizeof hdr, hdr.size - sizeof hdr));
-                        clear_value = c.depth;
-                    }
+                nvn_op_hdr hdr{};
+                const bool has_header = !end || end - next >= (ptrdiff_t)sizeof hdr;
+                if (has_header) std::memcpy(&hdr, next, sizeof hdr);
+                const char* reason = nullptr;
+                if (worker) reason = "parallel worker";
+                else if (avail < sizeof c) reason = "short clear packet";
+                else if (!c.depth_mask || c.stencil_mask) reason = "clear mask";
+                else if (!has_header) reason = "replay boundary";
+                else if (hdr.op != NOP_COPY_T2T) reason = "next guest command is not a texture copy";
+                else if (hdr.size < sizeof hdr + sizeof(nvn_p_copy_tt) ||
+                         (end && end - next < (ptrdiff_t)(sizeof hdr + sizeof(nvn_p_copy_tt))))
+                    reason = "short copy packet";
+                if (pass_trace_on())
+                    trace_line("depth clear candidate %#llx: next guest op %d, depth mask %d stencil mask %#x, %s",
+                               (unsigned long long)(s.rt.depth ? s.rt.depth->gpu : 0), has_header ? (int)hdr.op : -1,
+                               c.depth_mask, (unsigned)c.stencil_mask, reason ? reason : "checking adjacent copy");
+                if (!reason) {
+                    cleared = depth_clear_before_copy(s, payload<nvn_p_copy_tt>(next + sizeof hdr, hdr.size - sizeof hdr));
+                    clear_value = c.depth;
                 }
                 if (!cleared) clear_depth_stencil(cmd, s, c.depth, c.depth_mask != 0, (uint32_t)c.stencil, (uint32_t)c.stencil_mask);
             }
@@ -2062,6 +2073,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             static const int64_t early_gap = std::max<int64_t>(0, env_int("RX_VK_READBACK_EARLY_GAP", 16));
             if (split_after || memory_split_wanted()) early_split_pending = true;
             if (cleared && early_split_pending && part_work >= early_gap) {
+                if (pass_trace_on()) trace_line("depth clear kept: early recording split");
                 clear_depth_stencil(cmd, s, clear_value, true, 0, 0);
                 cleared = nullptr;
             }

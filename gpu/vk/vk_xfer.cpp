@@ -292,9 +292,18 @@ void copy_t2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_tt& p, Texture
     const bool resolved = resolve(p.src, &p.sv, p.has_sv != 0, p.sr, s, true) &&
                           resolve(p.dst, &p.dv, p.has_dv != 0, p.dr, d, true);
     if (cleared) {
-        if (!resolved || !overwrites_depth_clear(s, d, *cleared))
+        if (!resolved || !overwrites_depth_clear(s, d, *cleared)) {
+            if (pass_trace_on()) {
+                if (!resolved) trace_line("depth clear kept: copy operand did not resolve");
+                else trace_line("depth clear kept: direct overwrite check, cleared #%u %ux%u, src/dst #%u/#%u same image %d, "
+                                "formats %d/%d samples %u/%u BC %d/%d size compatible %d",
+                                cleared->id, cleared->width, cleared->height, s.tex->id, d.tex->id,
+                                (int)(s.tex->image == cleared->image), (int)s.tex->format, (int)d.tex->format,
+                                (unsigned)s.tex->samples, (unsigned)d.tex->samples, (int)s.tex->bc, (int)d.tex->bc,
+                                (int)size_compatible(s, d));
+            }
             clear_depth_stencil(cmd, st, depth, true, 0, 0);
-        else if (pass_trace_on())
+        } else if (pass_trace_on())
             trace_line("depth clear omitted: full copy to image #%u mip 0 layer 0", cleared->id);
     }
     if (!resolved) return;

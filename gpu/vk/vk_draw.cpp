@@ -6130,17 +6130,33 @@ void clear_color_target(VkCommandBuffer cmd, NvnState& s, int index, const float
 // Serial replay only. Keep the clear's ownership marks before either copy operand is looked up.
 Texture* depth_clear_before_copy(NvnState& s, const nvn_p_copy_tt& p) {
     static const bool cpu_over_gpu = env_on("RX_VK_CPU_OVER_GPU");
-    if (pass().open || dump_on() || probe_on() || cpu_over_gpu || s.rt.n || !p.dst || !p.src ||
-        p.dst != s.rt.depth || !p.src->L.size || !p.dst->L.size ||
-        p.src->d.target != NVN_TEXTURE_TARGET_2D || p.dst->d.target != NVN_TEXTURE_TARGET_2D ||
-        p.src->d.format != p.dst->d.format) return nullptr;
+    auto keep = [](const char* reason) -> Texture* {
+        if (pass_trace_on()) trace_line("depth clear kept: %s", reason);
+        return nullptr;
+    };
+    if (pass().open) return keep("render pass open");
+    if (dump_on() || probe_on()) return keep("dump or probe active");
+    if (cpu_over_gpu) return keep("CPU writes over GPU textures enabled");
+    if (s.rt.n) return keep("colour attachment slots bound");
+    if (!p.src || !p.dst) return keep("missing copy operand");
+    if (p.dst != s.rt.depth) return keep("destination descriptor differs from depth target");
+    if (!p.src->L.size || !p.dst->L.size) return keep("unknown guest storage size");
+    if (p.src->d.target != NVN_TEXTURE_TARGET_2D || p.dst->d.target != NVN_TEXTURE_TARGET_2D)
+        return keep("guest texture target is not 2D");
+    if (p.src->d.format != p.dst->d.format) return keep("guest formats differ");
     // A source overlapping the cleared guest storage could observe the clear through another view.
     if (p.src->gpu <= p.dst->gpu ? p.dst->gpu - p.src->gpu < p.src->L.size :
-                                  p.src->gpu - p.dst->gpu < p.dst->L.size) return nullptr;
+                                  p.src->gpu - p.dst->gpu < p.dst->L.size) return keep("guest storage overlaps");
     const Targets at = targets(s);
     if (!at.depth || at.depth->aspect != VK_IMAGE_ASPECT_DEPTH_BIT || at.depth->sparse ||
         at.depth->type != VK_IMAGE_TYPE_2D || at.depth->samples != VK_SAMPLE_COUNT_1_BIT ||
-        at.depth_level || at.depth_layer || at.depth->skip || at.depth->layers != 1) return nullptr;
+        at.depth_level || at.depth_layer || at.depth->skip || at.depth->layers != 1) {
+        if (pass_trace_on() && at.depth)
+            trace_line("depth attachment #%u aspect %#x sparse %d type %d samples %u mip %u layer %u skipped mips %u layers %u",
+                       at.depth->id, at.depth->aspect, (int)at.depth->sparse, (int)at.depth->type,
+                       (unsigned)at.depth->samples, at.depth_level, at.depth_layer, at.depth->skip, at.depth->layers);
+        return keep("ineligible depth attachment");
+    }
     mark_depth_target(at.depth);
     return at.depth;
 }
