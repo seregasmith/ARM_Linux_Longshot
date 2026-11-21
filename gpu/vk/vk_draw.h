@@ -71,6 +71,8 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d);
 void occ_draw_counts(uint64_t out[3]);
 /// Clears of the bound targets, inside the open pass (NOP_CLEAR_COLOR, NOP_CLEAR_DS)
 void clear_color_target(VkCommandBuffer cmd, NvnState& s, int index, const float rgba[4], uint32_t mask);
+struct Texture;
+Texture* depth_clear_before_copy(NvnState& s, const nvn_p_copy_tt& p);
 void clear_depth_stencil(VkCommandBuffer cmd, NvnState& s, float depth, bool depth_mask, uint32_t stencil,
                          uint32_t stencil_mask);
 void clear_stats(int64_t* clears, int64_t* masked);

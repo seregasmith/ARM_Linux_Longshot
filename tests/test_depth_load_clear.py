@@ -68,7 +68,7 @@ void vkCmdClearAttachments(VkCommandBuffer, uint32_t, const VkClearAttachment* a
     area = r->rect;
 }
 """
-    for marker in ["void begin_pass(", "VkRect2D clear_rect(", "void clear_after_draws(", "void clear_depth_stencil("]:
+    for marker in ["void mark_depth_target(", "void begin_pass(", "VkRect2D clear_rect(", "void clear_after_draws(", "void clear_depth_stencil("]:
         fixture += block(source, marker) + "\n"
     fixture += """
 int main() {

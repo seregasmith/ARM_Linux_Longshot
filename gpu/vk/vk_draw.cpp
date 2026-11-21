@@ -5404,6 +5404,11 @@ bool targets_persistent(const Targets& at) {
     return at.depth && at.depth->first_render_frame && at.depth->first_render_frame < now;
 }
 
+void mark_depth_target(Texture* depth) {
+    texture_written(depth, "a pass's depth target");
+    texture_rendered(depth);
+}
+
 void begin_pass(VkCommandBuffer cmd, const Targets& at, const VkClearDepthStencilValue* depth_clear = nullptr) {
     Pass& ps = pass();   // (once: the accessor is a call and a thread-local read at each use. The same object for the thread's life: draw_begin_recording resets it in place)
     bool same = ps.open && ps.depth == at.depth_view && ps.n == at.n && ps.width == at.width &&
@@ -5445,8 +5450,7 @@ void begin_pass(VkCommandBuffer cmd, const Targets& at, const VkClearDepthStenci
         da.loadOp = depth_clear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
         if (depth_clear) da.clearValue.depthStencil = *depth_clear;
         da.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        texture_written(at.depth, "a pass's depth target");
-        texture_rendered(at.depth);
+        mark_depth_target(at.depth);
     }
     ps.depth = at.depth_view;
     ps.depth_load_clear = depth_clear != nullptr;
@@ -6121,6 +6125,24 @@ void clear_color_target(VkCommandBuffer cmd, NvnState& s, int index, const float
     vkCmdSetScissor(cmd, 0, 1, &rect);
     vkCmdPushConstants(cmd, clear_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16, rgba);
     vkCmdDraw(cmd, 3, 1, 0, 0);
+}
+
+// Serial replay only. Keep the clear's ownership marks before either copy operand is looked up.
+Texture* depth_clear_before_copy(NvnState& s, const nvn_p_copy_tt& p) {
+    static const bool cpu_over_gpu = env_on("RX_VK_CPU_OVER_GPU");
+    if (pass().open || dump_on() || probe_on() || cpu_over_gpu || s.rt.n || !p.dst || !p.src ||
+        p.dst != s.rt.depth || !p.src->L.size || !p.dst->L.size ||
+        p.src->d.target != NVN_TEXTURE_TARGET_2D || p.dst->d.target != NVN_TEXTURE_TARGET_2D ||
+        p.src->d.format != p.dst->d.format) return nullptr;
+    // A source overlapping the cleared guest storage could observe the clear through another view.
+    if (p.src->gpu <= p.dst->gpu ? p.dst->gpu - p.src->gpu < p.src->L.size :
+                                  p.src->gpu - p.dst->gpu < p.dst->L.size) return nullptr;
+    const Targets at = targets(s);
+    if (!at.depth || at.depth->aspect != VK_IMAGE_ASPECT_DEPTH_BIT || at.depth->sparse ||
+        at.depth->type != VK_IMAGE_TYPE_2D || at.depth->samples != VK_SAMPLE_COUNT_1_BIT ||
+        at.depth_level || at.depth_layer || at.depth->skip || at.depth->layers != 1) return nullptr;
+    mark_depth_target(at.depth);
+    return at.depth;
 }
 
 void clear_depth_stencil(VkCommandBuffer cmd, NvnState& s, float depth, bool depth_mask, uint32_t stencil,

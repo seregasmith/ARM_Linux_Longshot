@@ -16,7 +16,8 @@ namespace mkwvk {
 /// buffer <-> texture level (nvn_p_copy_bt); to_image: buffer to texture, else texture to buffer
 void copy_b2t(VkCommandBuffer cmd, NvnState& s, const nvn_p_copy_bt& p, bool to_image);
 /// texture level -> texture level (nvn_p_copy_tt): copy, blit when scaled or converting, resolve when multisampled
-void copy_t2t(VkCommandBuffer cmd, NvnState& s, const nvn_p_copy_tt& p);
+struct Texture;
+void copy_t2t(VkCommandBuffer cmd, NvnState& s, const nvn_p_copy_tt& p, Texture* cleared = nullptr, float depth = 0);
 /// a whole level to a value (nvn_p_clear_tex)
 void clear_tex(VkCommandBuffer cmd, NvnState& s, const nvn_p_clear_tex& p);
 

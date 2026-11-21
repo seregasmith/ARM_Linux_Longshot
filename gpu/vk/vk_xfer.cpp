@@ -279,10 +279,25 @@ void copy_b2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_bt& p, bool to
     full_barrier(cmd);
 }
 
-void copy_t2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_tt& p) {
+bool overwrites_depth_clear(const Sub& s, const Sub& d, const Texture& cleared) {
+    return d.tex == &cleared && s.tex->image != cleared.image && s.aspect == VK_IMAGE_ASPECT_DEPTH_BIT &&
+           d.aspect == s.aspect && s.tex->format == cleared.format && s.tex->samples == cleared.samples &&
+           !s.tex->bc && !d.tex->bc && size_compatible(s, d) && !d.level && !d.layer && !d.x && !d.y && !d.z &&
+           d.w == cleared.width && d.h == cleared.height && d.d == 1 && d.layers == 1 &&
+           s.w == d.w && s.h == d.h && s.d == d.d && s.layers >= 1;
+}
+
+void copy_t2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_tt& p, Texture* cleared, float depth) {
     Sub s, d;
-    if (!resolve(p.src, &p.sv, p.has_sv != 0, p.sr, s, true)) return;
-    if (!resolve(p.dst, &p.dv, p.has_dv != 0, p.dr, d, true)) return;
+    const bool resolved = resolve(p.src, &p.sv, p.has_sv != 0, p.sr, s, true) &&
+                          resolve(p.dst, &p.dv, p.has_dv != 0, p.dr, d, true);
+    if (cleared) {
+        if (!resolved || !overwrites_depth_clear(s, d, *cleared))
+            clear_depth_stencil(cmd, st, depth, true, 0, 0);
+        else if (pass_trace_on())
+            trace_line("depth clear omitted: full copy to image #%u mip 0 layer 0", cleared->id);
+    }
+    if (!resolved) return;
     {   // (RX_VK_LOG_COPY: the texture copies, 400 of them)
         static const bool log_copy = env_on("RX_VK_LOG_COPY");
         static int logged;

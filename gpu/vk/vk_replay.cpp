@@ -1497,6 +1497,8 @@ bool op_is_work(uint32_t op) {
 void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* end = nullptr) {
     const Mode mode = rmode;
     const bool dry = mode == Mode::Dry, worker = mode == Mode::Worker;
+    Texture* cleared = nullptr;
+    float clear_value = 0;
     // (RX_VK_LOG_RB_WRITERS, RX_VK_READBACK_EARLY: each op said, as the writer of what it writes)
     static const bool rb_writers = rb_writers_on(), early = readback_early_on(), note_ops = rb_writers || early;
     for (;;) {
@@ -1695,7 +1697,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
         }
         case NOP_COPY_B2T: if (!dry) { ParLock lk; copy_b2t(cmd, s, payload<nvn_p_copy_bt>(a, avail), true); } break;
         case NOP_COPY_T2B: if (!dry) { ParLock lk; copy_b2t(cmd, s, payload<nvn_p_copy_bt>(a, avail), false); } break;
-        case NOP_COPY_T2T: if (!dry) { ParLock lk; copy_t2t(cmd, s, payload<nvn_p_copy_tt>(a, avail)); } break;
+        case NOP_COPY_T2T: if (!dry) { ParLock lk; copy_t2t(cmd, s, payload<nvn_p_copy_tt>(a, avail), cleared, clear_value); cleared = nullptr; } break;
         case NOP_CLEAR_TEX: if (!dry) { ParLock lk; clear_tex(cmd, s, payload<nvn_p_clear_tex>(a, avail)); } break;
         case NOP_UPDATE_UB: {
             const auto u = payload<nvn_p_update_ub>(a, avail);
@@ -1959,7 +1961,18 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             if (s.render_enabled && dry) dry_mark_written(s, false, true);   // (as NOP_CLEAR_COLOR above)
             if (s.render_enabled && !dry) {
                 const auto c = payload<nvn_p_clear_ds>(a, avail);
-                clear_depth_stencil(cmd, s, c.depth, c.depth_mask != 0, (uint32_t)c.stencil, (uint32_t)c.stencil_mask);
+                // Only pair adjacent complete packets within this replay invocation.
+                const uint8_t* next = p + h.size;
+                if (!worker && avail >= sizeof c && c.depth_mask && !c.stencil_mask &&
+                    (!end || end - next >= (ptrdiff_t)(sizeof(nvn_op_hdr) + sizeof(nvn_p_copy_tt)))) {
+                    nvn_op_hdr hdr;
+                    std::memcpy(&hdr, next, sizeof hdr);
+                    if (hdr.op == NOP_COPY_T2T && hdr.size >= sizeof hdr + sizeof(nvn_p_copy_tt)) {
+                        cleared = depth_clear_before_copy(s, payload<nvn_p_copy_tt>(next + sizeof hdr, hdr.size - sizeof hdr));
+                        clear_value = c.depth;
+                    }
+                }
+                if (!cleared) clear_depth_stencil(cmd, s, c.depth, c.depth_mask != 0, (uint32_t)c.stencil, (uint32_t)c.stencil_mask);
             }
             break;
         case NOP_DRAW: {
@@ -2048,6 +2061,10 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
         if (early && !dry && !worker) {
             static const int64_t early_gap = std::max<int64_t>(0, env_int("RX_VK_READBACK_EARLY_GAP", 16));
             if (split_after || memory_split_wanted()) early_split_pending = true;
+            if (cleared && early_split_pending && part_work >= early_gap) {
+                clear_depth_stencil(cmd, s, clear_value, true, 0, 0);
+                cleared = nullptr;
+            }
             if (early_split_pending && part_work >= early_gap) early_split(cmd);
         }
         p += h.size;
