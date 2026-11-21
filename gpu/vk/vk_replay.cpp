@@ -1494,6 +1494,26 @@ bool op_is_work(uint32_t op) {
            op == NOP_DISPATCH_INDIRECT;
 }
 
+// A timestamp report writes two guest words. Check the mapped storage too: two virtual pools
+// can name the same pages. A fragmented or unknown mapping stays on the ordinary clear path.
+bool depth_copy_report_disjoint(uint64_t addr, const nvn_p_copy_tt& copy) {
+    if (!copy.src || !copy.dst || !copy.src->L.size || !copy.dst->L.size) return false;
+    auto mapped = [](uint64_t gpu, uint64_t size) -> uintptr_t {
+        uint64_t available = 0;
+        auto ptr = host->gpu_ptr(gpu, &available);
+        return available >= size ? reinterpret_cast<uintptr_t>(ptr) : 0;
+    };
+    auto separate = [](uintptr_t a, uint64_t na, uintptr_t b, uint64_t nb) {
+        return a < b ? b - a >= na : a - b >= nb;
+    };
+    constexpr uint64_t bytes = 2 * sizeof(uint64_t);
+    const uintptr_t report = mapped(addr, bytes);
+    const uintptr_t src = mapped(copy.src->gpu, copy.src->L.size);
+    const uintptr_t dst = mapped(copy.dst->gpu, copy.dst->L.size);
+    return report && src && dst && separate(report, bytes, src, copy.src->L.size) &&
+           separate(report, bytes, dst, copy.dst->L.size) && separate(src, copy.src->L.size, dst, copy.dst->L.size);
+}
+
 void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* end = nullptr) {
     const Mode mode = rmode;
     const bool dry = mode == Mode::Dry, worker = mode == Mode::Worker;
@@ -1961,7 +1981,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             if (s.render_enabled && dry) dry_mark_written(s, false, true);   // (as NOP_CLEAR_COLOR above)
             if (s.render_enabled && !dry) {
                 const auto c = payload<nvn_p_clear_ds>(a, avail);
-                // Only pair adjacent complete packets within this replay invocation.
+                // Inspect complete packets in this replay only. The regular loop still executes the report.
                 const uint8_t* next = p + h.size;
                 nvn_op_hdr hdr{};
                 const bool has_header = !end || end - next >= (ptrdiff_t)sizeof hdr;
@@ -1971,16 +1991,40 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                 else if (avail < sizeof c) reason = "short clear packet";
                 else if (!c.depth_mask || c.stencil_mask) reason = "clear mask";
                 else if (!has_header) reason = "replay boundary";
-                else if (hdr.op != NOP_COPY_T2T) reason = "next guest command is not a texture copy";
-                else if (hdr.size < sizeof hdr + sizeof(nvn_p_copy_tt) ||
-                         (end && end - next < (ptrdiff_t)(sizeof hdr + sizeof(nvn_p_copy_tt))))
+                const int first_op = has_header ? (int)hdr.op : -1;
+                const bool report = !reason && hdr.op == NOP_REPORT_COUNTER;
+                nvn_p_counter counter{};
+                if (report) {
+                    if (hdr.size != sizeof hdr + sizeof counter ||
+                        (end && end - next < (ptrdiff_t)(hdr.size + sizeof hdr))) {
+                        reason = "short report or replay boundary";
+                    } else {
+                        counter = payload<nvn_p_counter>(next + sizeof hdr, sizeof counter);
+                        next += hdr.size;
+                        std::memcpy(&hdr, next, sizeof hdr);
+                        if (counter.type != NVN_COUNTER_TYPE_TIMESTAMP && counter.type != NVN_COUNTER_TYPE_TIMESTAMP_TOP)
+                            reason = "counter is not an ordinary timestamp";
+                        if (pass_trace_on())
+                            trace_line("depth clear: counter type %#llx at %#llx, following guest op %u",
+                                       (unsigned long long)counter.type, (unsigned long long)counter.addr, hdr.op);
+                    }
+                }
+                if (!reason && hdr.op != NOP_COPY_T2T) reason = "next eligible guest command is not a texture copy";
+                else if (!reason && (hdr.size < sizeof hdr + sizeof(nvn_p_copy_tt) ||
+                         (end && end - next < (ptrdiff_t)(sizeof hdr + sizeof(nvn_p_copy_tt)))))
                     reason = "short copy packet";
+                nvn_p_copy_tt copy{};
+                if (!reason) {
+                    copy = payload<nvn_p_copy_tt>(next + sizeof hdr, hdr.size - sizeof hdr);
+                    if (report && !depth_copy_report_disjoint(counter.addr, copy))
+                        reason = "timestamp or texture storage overlaps or is not contiguous";
+                }
                 if (pass_trace_on())
                     trace_line("depth clear candidate %#llx: next guest op %d, depth mask %d stencil mask %#x, %s",
-                               (unsigned long long)(s.rt.depth ? s.rt.depth->gpu : 0), has_header ? (int)hdr.op : -1,
-                               c.depth_mask, (unsigned)c.stencil_mask, reason ? reason : "checking adjacent copy");
+                               (unsigned long long)(s.rt.depth ? s.rt.depth->gpu : 0), first_op,
+                               c.depth_mask, (unsigned)c.stencil_mask, reason ? reason : report ? "checking copy after timestamp" : "checking adjacent copy");
                 if (!reason) {
-                    cleared = depth_clear_before_copy(s, payload<nvn_p_copy_tt>(next + sizeof hdr, hdr.size - sizeof hdr));
+                    cleared = depth_clear_before_copy(s, copy);
                     clear_value = c.depth;
                 }
                 if (!cleared) clear_depth_stencil(cmd, s, c.depth, c.depth_mask != 0, (uint32_t)c.stencil, (uint32_t)c.stencil_mask);
