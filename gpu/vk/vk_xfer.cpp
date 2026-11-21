@@ -305,6 +305,12 @@ void copy_t2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_tt& p) {
     }
     s.layers = d.layers = std::min(s.layers, d.layers);
     end_pass(cmd, "texture copy");
+    if (pass_trace_on())
+        trace_line("copy request src #%u %#llx mip %u layer %u aspect %#x (%d,%d,%d %ux%ux%u) -> "
+                   "dst #%u %#llx mip %u layer %u aspect %#x (%d,%d,%d %ux%ux%u), %u layers",
+                   s.tex->id, (unsigned long long)s.tex->gpu, s.level, s.layer, s.aspect, s.x, s.y, s.z, s.w, s.h, s.d,
+                   d.tex->id, (unsigned long long)d.tex->gpu, d.level, d.layer, d.aspect, d.x, d.y, d.z, d.w, d.h, d.d,
+                   s.layers);
     GprofSpan gp(cmd, "xfer copy texture->texture (with its barriers)");
     full_barrier(cmd);
     const bool same_size = s.w == d.w && s.h == d.h && s.d == d.d;

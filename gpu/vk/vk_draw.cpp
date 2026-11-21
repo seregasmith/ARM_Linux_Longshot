@@ -5273,6 +5273,7 @@ namespace {
 // ---- the open render pass ----
 struct Pass {
     bool open = false;
+    bool depth_load_clear = false;
     VkImageView color[8]{};
     VkImage block_image[8]{};
     bool has_block_images = false;
@@ -5403,7 +5404,7 @@ bool targets_persistent(const Targets& at) {
     return at.depth && at.depth->first_render_frame && at.depth->first_render_frame < now;
 }
 
-void begin_pass(VkCommandBuffer cmd, const Targets& at) {
+void begin_pass(VkCommandBuffer cmd, const Targets& at, const VkClearDepthStencilValue* depth_clear = nullptr) {
     Pass& ps = pass();   // (once: the accessor is a call and a thread-local read at each use. The same object for the thread's life: draw_begin_recording resets it in place)
     bool same = ps.open && ps.depth == at.depth_view && ps.n == at.n && ps.width == at.width &&
                 ps.height == at.height;
@@ -5441,12 +5442,14 @@ void begin_pass(VkCommandBuffer cmd, const Targets& at) {
     if (at.depth) {
         da.imageView = at.depth_view;
         da.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-        da.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        da.loadOp = depth_clear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
+        if (depth_clear) da.clearValue.depthStencil = *depth_clear;
         da.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         texture_written(at.depth, "a pass's depth target");
         texture_rendered(at.depth);
     }
     ps.depth = at.depth_view;
+    ps.depth_load_clear = depth_clear != nullptr;
     ps.has_block_images = at.has_block_images;
     ps.depth_tex = at.depth, ps.depth_level = at.depth_level, ps.depth_layer = at.depth_layer;
     ps.n = at.n, ps.width = at.width, ps.height = at.height;
@@ -6134,14 +6137,22 @@ void clear_depth_stencil(VkCommandBuffer cmd, NvnState& s, float depth, bool dep
         if (logged++ < 4) logf("vk: stencil clear with write mask %#x: cleared whole", stencil_mask);
     }
     clear_after_draws(cmd);
-    begin_pass(cmd, at);
     const VkRect2D rect = clear_rect(s, at.width, at.height);
+    const VkClearDepthStencilValue value{std::clamp(depth, 0.0f, 1.0f), stencil & 0xFF};
+    // A new depth-only pass can clear its whole render area on load, before any subsequent transfer.
+    const bool clear_on_load = !pass().open && !at.n && aspect == VK_IMAGE_ASPECT_DEPTH_BIT &&
+                               !has_stencil(at.depth_format) && !rect.offset.x && !rect.offset.y &&
+                               rect.extent.width && rect.extent.height &&
+                               rect.extent.width == at.width && rect.extent.height == at.height;
+    begin_pass(cmd, at, clear_on_load ? &value : nullptr);
     if (!rect.extent.width || !rect.extent.height) return;
-    VkClearAttachment ca{};
-    ca.aspectMask = aspect;
-    ca.clearValue.depthStencil = {std::clamp(depth, 0.0f, 1.0f), stencil & 0xFF};
-    const VkClearRect cr{rect, 0, 1};
-    vkCmdClearAttachments(cmd, 1, &ca, 1, &cr);
+    if (!clear_on_load) {
+        VkClearAttachment ca{};
+        ca.aspectMask = aspect;
+        ca.clearValue.depthStencil = value;
+        const VkClearRect cr{rect, 0, 1};
+        vkCmdClearAttachments(cmd, 1, &ca, 1, &cr);
+    }
     pass().written |= 1u << 8;
     st_clears++, pass().clears++;
 }
@@ -6495,10 +6506,11 @@ void end_pass(VkCommandBuffer cmd, const char* reason, int64_t guest_barrier_fla
         char flags[32] = "";
         if (guest_barrier_flags >= 0) snprintf(flags, sizeof flags, " flags=0x%x", (unsigned)guest_barrier_flags);
         trace_line("pass %ux%u f%d %dc%s wm%x/%u: %d draws %d clears, c0 %#llx/%u, depth %#llx/%u, progs %016llx..%016llx, "
-                   "sampled%s, end=%s%s", ps.width, ps.height, (int)ps.format0, ps.n, ps.depth ? "+d" : "", ps.wm_or, ps.wm_n, ps.draws,
+                   "sampled%s, end=%s%s, depth image #%u mip %u%s", ps.width, ps.height, (int)ps.format0, ps.n, ps.depth ? "+d" : "", ps.wm_or, ps.wm_n, ps.draws,
                    ps.clears, (unsigned long long)(ps.n && ps.tex[0] ? ps.tex[0]->gpu : 0), ps.layer[0],
                    (unsigned long long)(ps.depth_tex ? ps.depth_tex->gpu : 0), ps.depth_layer,
-                   (unsigned long long)ps.first_prog, (unsigned long long)ps.prog, sampled, reason, flags);
+                   (unsigned long long)ps.first_prog, (unsigned long long)ps.prog, sampled, reason, flags,
+                   ps.depth_tex ? ps.depth_tex->id : 0, ps.depth_level, ps.depth_load_clear ? " load=CLEAR" : "");
     }
     if (gprof_on()) {
         char label[160];
