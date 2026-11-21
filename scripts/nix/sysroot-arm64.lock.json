@@ -608,9 +608,9 @@
   },
   {
    "name": "libsystemd0",
-   "version": "255.4-1ubuntu8.18",
-   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/s/systemd/libsystemd0_255.4-1ubuntu8.18_arm64.deb",
-   "sha256": "4f3b34215f5d76d69c12249b167fc416d9bc58d6669274f39cb30775c1c2f823"
+   "version": "255.4-1ubuntu8.19",
+   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/s/systemd/libsystemd0_255.4-1ubuntu8.19_arm64.deb",
+   "sha256": "e31335e465b7663df4f50c1b639bfff01a704ab2a030a25169be9ba2f05f4780"
   },
   {
    "name": "libtsan2",
@@ -626,15 +626,15 @@
   },
   {
    "name": "libudev-dev",
-   "version": "255.4-1ubuntu8.18",
-   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/s/systemd/libudev-dev_255.4-1ubuntu8.18_arm64.deb",
-   "sha256": "4b287709aaddb404233155f78c4f08bb943515065d99b8a205b7a147b76b4d5d"
+   "version": "255.4-1ubuntu8.19",
+   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/s/systemd/libudev-dev_255.4-1ubuntu8.19_arm64.deb",
+   "sha256": "708beddd768c0066a74a55ff1205ec646be39020889c678659bbfc395b6b1d04"
   },
   {
    "name": "libudev1",
-   "version": "255.4-1ubuntu8.18",
-   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/s/systemd/libudev1_255.4-1ubuntu8.18_arm64.deb",
-   "sha256": "f3ecaa3ae86de0a92dd158ae6626f4d461ff5309fbded2224fb5bac3b63513b8"
+   "version": "255.4-1ubuntu8.19",
+   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/s/systemd/libudev1_255.4-1ubuntu8.19_arm64.deb",
+   "sha256": "538a9a233ac8b6355d9c4fa103e4dc5d00da08a96c61a5705f16e8ca4ac02410"
   },
   {
    "name": "libuuid1",
@@ -932,9 +932,9 @@
   },
   {
    "name": "linux-libc-dev",
-   "version": "6.8.0-149.149",
-   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux/linux-libc-dev_6.8.0-149.149_arm64.deb",
-   "sha256": "7ab70f6ebc55fe9ea6ceb9bb087cc7df252b62b9f1b14df46e825052206d7cff"
+   "version": "6.8.0-151.151",
+   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux/linux-libc-dev_6.8.0-151.151_arm64.deb",
+   "sha256": "e9fe154b8357bfdba61fe4f95690be4aaccdc8fe14e08571dc396633185a170f"
   },
   {
    "name": "mesa-libgallium",

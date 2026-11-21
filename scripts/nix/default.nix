@@ -198,7 +198,7 @@ rec {
   dav1d = pkgs.stdenv.mkDerivation {
     pname = "longshot-dav1d-${arch}";
     version = pin "DAV1D_VER";
-    src = tagged "dav1d" "https://code.videolan.org/videolan/dav1d.git" (pin "DAV1D_VER") (pin "DAV1D_TREE");
+    src = tagged "dav1d" "https://github.com/videolan/dav1d.git" (pin "DAV1D_VER") (pin "DAV1D_TREE");
     nativeBuildInputs = [ pkgs.meson pkgs.ninja toolchain ] ++ lib.optional (arch == "x86_64") pkgs.nasm;
     dontFixup = true;   # (a target library: no Nix patchelf or strip)
     configurePhase = ''
