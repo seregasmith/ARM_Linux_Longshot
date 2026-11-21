@@ -83,4 +83,32 @@ inline bool too_big(bool radv_gcn, uint32_t phis, uint32_t limit) { return radv_
 // (longshot) A fallback compute stage not to give Mesa's Intel driver: more calls than the limit (0: no limit). Left out as above.
 inline bool too_many_calls(bool mesa_intel, uint32_t calls, uint32_t limit) { return mesa_intel && limit && calls > limit; }
 
+// (arm64 port, longshot) Turnip (AYN Odin 3, Adreno 830, Mesa 26.2.6) builds them all, and they cost there in another way: a
+// shader's private memory, where its register spills go, is one buffer for the whole device, sized for the hungriest shader
+// made so far times every invocation the GPU can hold, rounded up to a power of two, and never shrunk. Built before the title,
+// 93e3e999f2fb9fd8 (79,947 phis, 4.2 MB of SPIR-V) grew it to 1.5 GiB and 5c9454152ebde335 (16,837) took 373 MB more, about
+// 1.9 GB the kernel cannot swap, for programs a Kokiri Forest session never drew (RX_VK_LOG_PIPELINE_RAM). So on Turnip a
+// fallback program with a compute stage over this many phis is left to its first draw, which builds it as it builds any not
+// built yet (fallback_pipelines_ready): the memory is taken then, if ever. The 253 KB program that took 48 MB is under it
+constexpr uint32_t kTurnipLaterPhiLimit = 10000;
+
+// The phi count over which a fallback program waits for its first draw (0: none waits): RX_VK_FALLBACK_LATER_PHIS's value on
+// any driver where it parses (*ignored set when it is given and does not), else kTurnipLaterPhiLimit on Turnip and 0
+// elsewhere. A run that only prepares the shaders (LONGSHOT_PREPARE_ONLY) builds every one it reaches, whatever the switch: its
+// process ends after it, and what it builds is in the driver's cache for the first draw. Under RX_VK_LOAD=create its warm builds
+// no fallback program, though: after a driver or translator update the first draw of one of these compiles it, in play, its
+// draws left out until it is done (seconds to minutes for the biggest, as the game start's compile was before the title)
+inline uint32_t later_limit(bool turnip, bool prepare_only, const char* text, bool* ignored) {
+    *ignored = false;
+    uint32_t limit = turnip ? kTurnipLaterPhiLimit : 0;
+    if (text && !parse_limit(text, limit)) {
+        *ignored = true;
+        limit = turnip ? kTurnipLaterPhiLimit : 0;
+    }
+    return prepare_only ? 0 : limit;
+}
+
+// A fallback compute stage that makes its program wait for its first draw: more phis than the limit (0: none)
+inline bool build_later(uint32_t phis, uint32_t limit) { return limit && phis > limit; }
+
 } // namespace fallback_size
