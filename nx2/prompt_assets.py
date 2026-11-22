@@ -22,9 +22,10 @@ Each face's images (the notes, the letters, the controller picture drawn by nx2/
 layers first: --dump <dir> writes them as PNG, and a PNG of the same name in nx2/prompt_faces/<face>/ takes a layer's place, to
 rework one by hand (nx2/prompt_faces/README.md).
 
-The font is larger than the game's, and the game drops a file larger than its entry in the resource size table: <out>/
-rsizetable.zs is the game's table with the font's entry raised to fit it, served in its place (host/prompts.c merges it into a
-mod's own table when a mod ships one).
+The font is larger than the game's, and the game drops a file larger than its entry in the resource size table: the game
+(host/prompts.c own_sizes) serves the table it opens as the RomFS's own with the font's entry raised to fit it, made at each
+start. No table is made here: the RomFS may hold other versions' tables beside the game's, or be another dump by the time the
+game runs, and a table that is not the game's own drops files it needs (#1109).
 
 A .bfotf is an OpenType font behind an 8-byte header and XORed per little-endian word: the header is the magic 0x18029a7f and the
 font's size (big-endian), each XORed with the same key as the font. The .zs files are zstd frames made with the dictionary zs.zsdic
@@ -49,9 +50,10 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)   # (python -I leaves the script folder off)
 import long_paths  # noqa: E402
-long_paths.install()   # (paths past 260 characters on Windows, before anything reads a file: #1115)
+long_paths.install()   # (paths past 260 characters on Windows, before anything reads a file)
 from prompt_faces import FACES, override, parts   # noqa: E402 (the faces: their icons, drawings and their parts)
 import prompt_keys   # noqa: E402 (the keyboard face)
+import build_jobs   # noqa: E402 (the workers the build was asked for: LONGSHOT_JOBS)
 KENNEY = os.path.join(os.path.dirname(HERE), "third_party", "kenney_input")
 KENNEY_KEYBOARD = os.path.join(os.path.dirname(HERE), "third_party", "kenney_input_keyboard")   # (the keyboard face's)
 FONT = "Font2/Scalable/External.Nin_Ounce_NVN2.bfotf.zs"
@@ -111,34 +113,6 @@ def read_zs(romfs, rel, dictionary):
     if zstandard.frame_content_size(data) > 0:
         return d.decompress(data)
     return d.stream_reader(data).read()
-
-
-def size_table(romfs, dictionary, game_size, font_size):
-    """the game's resource size table (System/Resource/ResourceSizeTable.*.rsizetable.zs: "RESTBL", u32 version, u32 name length,
-    u32 hashed entries, u32 named entries; the hashed ones u32 CRC-32 of the path, u32 size, by hash) with the External font's
-    entry raised from the game's font (game_size bytes) to fit one of font_size: the game drops a file larger than its entry. None
-    when it fits already"""
-    import zlib
-    folder = os.path.join(romfs, "System", "Resource")
-    name = next((n for n in sorted(os.listdir(folder)) if n.startswith("ResourceSizeTable.") and n.endswith(".rsizetable.zs")),
-                None)
-    if not name:
-        raise SystemExit("prompts: no System/Resource/ResourceSizeTable.*.rsizetable.zs")
-    b = bytearray(read_zs(romfs, f"System/Resource/{name}", dictionary))
-    if b[:6] != b"RESTBL":
-        raise SystemExit(f"prompts: {name} is not a RESTBL table")
-    hashed, = struct.unpack_from("<I", b, 14)
-    want = zlib.crc32(FONT[:-3].encode())
-    for i in range(hashed):
-        at = 22 + 8 * i
-        h, size = struct.unpack_from("<II", b, at)
-        if h == want:
-            fit = font_size + size - game_size   # (the entry's allowance over the file kept: 288 bytes)
-            if fit <= size:
-                return None
-            struct.pack_into("<I", b, at + 4, fit)
-            return bytes(b)
-    raise SystemExit(f"prompts: {name} has no entry for {FONT[:-3]}")
 
 
 def unwrap(blob):
@@ -1323,11 +1297,11 @@ def make_prompts(a, incremental=False):
 
 
 def face_jobs(faces):
-    """processes for the faces' textures: LONGSHOT_PROMPT_JOBS, else one a face, at most the CPU threads and one
+    """processes for the faces' textures: LONGSHOT_PROMPT_JOBS, else one a face, at most the CPU threads (and LONGSHOT_JOBS, nx2/build_jobs.py) and one
     per GB of available memory (each holds the 244 MB Common.bntx and its images)"""
     if os.environ.get("LONGSHOT_PROMPT_JOBS"):
         return max(1, int(os.environ["LONGSHOT_PROMPT_JOBS"]))
-    n = min(faces, os.cpu_count() or 1)
+    n = build_jobs.cap(min(faces, os.cpu_count() or 1))
     gb = None
     try:
         if os.name == "nt":
@@ -1427,14 +1401,6 @@ def generate(a):
         print("prompts: the Talk ring", file=sys.stderr)
     else:
         print("prompts: the Talk ring keeps the Switch's places (its layout is not the one known)", file=sys.stderr)
-    table, path = size_table(a.romfs, dictionary, len(game_font), len(font)), os.path.join(a.out, "rsizetable.zs")
-    if table:
-        import zstandard
-        with open(path, "wb") as f:
-            f.write(zstandard.ZstdCompressor(level=3).compress(table))
-        print(f"prompts: the size table lets the font have {len(font)} bytes", file=sys.stderr)
-    elif os.path.exists(path):
-        os.remove(path)
 
 
 def main():

@@ -88,7 +88,7 @@ def main():
     parser.add_argument("--cxx", default="g++")
     args = parser.parse_args()
     i18n = (VK / "vk_menu_i18n.cpp").read_text(encoding="utf-8")
-    menu = (VK / "vk_menu.cpp").read_text(encoding="utf-8")
+    menu = (VK / "menu" / "pipeline_list.cpp").read_text(encoding="utf-8")   # (Save my pipeline list's module, #1633)
     lookup = "\n".join((block(i18n, "namespace {\n\n/// A printf conversion"),
                         block(i18n, "std::string tr_text(const std::string& s) {"),
                         block(i18n, "const char* tr(const char* s) {")))

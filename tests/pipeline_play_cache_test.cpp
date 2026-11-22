@@ -48,10 +48,12 @@ struct VkPipelineCacheCreateInfo {
     size_t initialDataSize = 0;
     const void* pInitialData = nullptr;
 };
+enum VkDriverId { VK_DRIVER_ID_AMD_PROPRIETARY = 1, VK_DRIVER_ID_NVIDIA_PROPRIETARY = 4 };
 struct {
     int device = 1;
     struct { bool pipelineCreationCacheControl = true; } vk13;
     struct { unsigned vendorID = 0; } props;
+    VkDriverId driver_id = VK_DRIVER_ID_AMD_PROPRIETARY;   // (not NVIDIA's: pcache_load_off reads no NVIDIA cache, the file is read)
     // (dev.policy, which pcache_fetch_lock_on and serial_builds_on read: gpu/vk/device_policy.h makes the two of the GPU's
     // driver and their switches. Here, not Intel's Windows driver: the fetch lock only with RX_VK_PCACHE_FETCH_LOCK=1, the
     // case lock-users, and the builds not serial)
@@ -248,14 +250,23 @@ using mkwvk::PipelineCacheFile;
 struct { std::atomic<int64_t> play_from_driver{0}, play_from_start{0}, play_compiled{0}; } census;
 thread_local struct { uint8_t made_how = 0; } use_counters;
 #include "pipeline_play_cache.inc"
+#include "precompile_save.h"
+thread_local precompile_save::Outcome pcache_save_outcome;   // (vk_draw.cpp's: what the last save on this thread did)
+void helper_thread_start() {}   // (the background save's thread: no priority or name here)
 #include "pipeline_cache_save.inc"
 
 std::string cache_path(const char*) { return pcache_dir; }
 uint64_t program_cache_stamp() { return 17; }
+bool pipelines_stamp_ok(uint64_t stamp) { return stamp == 17; }
 namespace pcache_stamp {
-struct Dropped { size_t files; uint64_t bytes; };
-Dropped check(const std::string&, uint64_t) { return {0, 0}; }
+struct Dropped { size_t files = 0; uint64_t bytes = 0; bool carried = false; uint64_t main = 0, all = 0, base = 0; };
+Dropped check(const std::string&, uint64_t, bool (*)(uint64_t) = nullptr) { return {}; }
 }
+// (pcache_load_off's inputs: programs loaded before the title, not at their create calls, and no NVIDIA cache limit)
+#include "pcache_load.h"
+#include "nvidia_cache_limit.h"
+bool programs_load_at_create() { return false; }
+nvidia_cache_limit::Limit nvidia_limit() { return {}; }
 // (init's conditional read uses the read-result stub; play writes keep the real mapped-file writer)
 #define PipelineCacheFile ReadPart
 #include "pcache_init.inc"
@@ -317,12 +328,7 @@ CacheFiles cache_files() {
     }
     return files;
 }
-// (vk_draw.cpp's forced save as far as pcache_saved_now sees it: nothing under RX_VK_PCACHE_LOAD=0, else the whole cache in
-// the file. The real one is not extracted)
-void pipeline_cache_save(bool) {
-    if (!pcache || pcache_no_save) return;
-    write_file(pcache_path, "FAKE", keys_of(pcache));
-}
+// (pcache_saved_now's forced save is the real pipeline_cache_save, extracted above)
 #include "pcache_saved_now.inc"
 
 int run(const std::string& name) {

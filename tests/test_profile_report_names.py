@@ -1,8 +1,8 @@
-"""The profiling mode's report names a Windows build's code and threads as it names a Linux build's (scripts/prof.py,
-scripts/profile_report.py), without the game:
+"""The profiling mode's report names a Windows build's code and threads as it names a Linux build's
+(scripts/profiling/symbols.py, scripts/perf.py report), without the game:
 
   - a Windows linker map's C++ symbols (llvm-mingw: Itanium names, _ZN...) come out demangled, as nm -C gives them on
-    Linux; a name that isn't mangled, and a lifted import's (imp__ZN...: scripts/cpu_report.py reads those), stay as they
+    Linux; a name that isn't mangled, and a lifted import's (imp__ZN...: scripts/perf.py cpu reads those), stay as they
     are. Skipped when no demangler is on this PC (llvm-cxxfilt or c++filt);
   - a sample asleep under a wait counts as waiting, not running, with a C++ name's parameters (as nm -C and the Windows
     demangling give it): std::condition_variable's and libc++'s waits, host/hos_thread.c's sleep_away, the renderer's
@@ -21,7 +21,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-import prof  # noqa: E402
+from profiling import symbols  # noqa: E402
 
 WAIT = "_ZNSt3__118condition_variable4waitERNS_11unique_lockINS_5mutexEEE"
 MAP = """ Address         Publics by Value              Rva+Base               Lib:Object
@@ -42,10 +42,10 @@ def demangled():
     with tempfile.TemporaryDirectory() as t:
         mp = Path(t) / "longshot_vk.map"
         mp.write_text(MAP, encoding="utf-8")
-        _, names = prof.load_map(str(mp), 0x180000000)
+        _, names = symbols.load_map(str(mp), 0x180000000)
     need("vk_record_frame" in names, "a plain C name changed: %r" % names)
     need("imp__ZN2nn2os13WaitLightEventEPNS0_14LightEventTypeE" in names, "a lifted import's name changed: %r" % names)
-    find = getattr(prof, "demangler", lambda: shutil.which("llvm-cxxfilt") or shutil.which("c++filt"))
+    find = getattr(symbols, "demangler", lambda: shutil.which("llvm-cxxfilt") or shutil.which("c++filt"))
     if not find():
         print("profile report names: no llvm-cxxfilt or c++filt here: the demangling is not checked")
         return
@@ -59,12 +59,12 @@ def waits():
     """a sample asleep in one of these counts as waiting, whichever system named it"""
     wait = "std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)"
     # (a sample of a thread asleep in it: the system's frame the leaf, libc++'s wait (linked into longshot_vk.dll) above it)
-    need(prof.waiting("ntdll.dll", ["ntdll.dll", "longshot_vk:" + wait, "longshot_vk:vk_record_frame"]),
+    need(symbols.waiting("ntdll.dll", ["ntdll.dll", "longshot_vk:" + wait, "longshot_vk:vk_record_frame"]),
          "a thread asleep in std::condition_variable::wait counts as running")
     for frame in ("longshot_vk:std::__1::__libcpp_condvar_timedwait(void**, void**, timespec*)", "longshot:sleep_away",
                   "longshot_vk:mkwvk::(anonymous namespace)::wait(unsigned long long, unsigned long long)"):
-        need(prof.waiting("ntdll.dll", ["ntdll.dll", frame]), "a thread asleep in %s counts as running" % frame)
-    need(not prof.waiting("ntdll.dll", ["ntdll.dll", "longshot_vk:mkwvk::(anonymous namespace)::record(int)"]),
+        need(symbols.waiting("ntdll.dll", ["ntdll.dll", frame]), "a thread asleep in %s counts as running" % frame)
+    need(not symbols.waiting("ntdll.dll", ["ntdll.dll", "longshot_vk:mkwvk::(anonymous namespace)::record(int)"]),
          "a thread in the system's code under a function that doesn't wait counts as waiting")
 
 
@@ -84,9 +84,9 @@ def threads_table():
         (d / "process.json").write_text(json.dumps({"env": {"HOS_PROFILE": "1"}}), encoding="utf-8")
         (d / "game.log").write_text("[hos host] prof: threads in 5 s: sead::MainThread 34%; mkw_vk replay 36%;\n",
                                     encoding="utf-8")
-        out = subprocess.run([sys.executable, "-I", "-B", str(ROOT / "scripts/profile_report.py"), str(d), "--maps", t,
+        out = subprocess.run([sys.executable, "-I", "-B", str(ROOT / "scripts/perf.py"), "report", str(d), "--maps", t,
                               "--no-trace"], capture_output=True, text=True, encoding="utf-8")
-        need(out.returncode == 0, "profile_report.py failed:\n" + out.stdout + out.stderr)
+        need(out.returncode == 0, "perf.py report failed:\n" + out.stdout + out.stderr)
         rep = (d / "report.md").read_text(encoding="utf-8")
         rows = [r for r in rep.splitlines() if r.startswith("| mkw_vk")]
         need(len(rows) == 1, "the renderer's replay thread has %d rows in Threads, not one: %r" % (len(rows), rows))

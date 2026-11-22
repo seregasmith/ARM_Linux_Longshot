@@ -1,5 +1,5 @@
 """The Linux builder's build tools: tools.lock's linux-x64 lines (the compiler, the sysroot, FFmpeg, SDL2, the Vulkan headers),
-which are not in the AppImage (docs/releases.md, "tools.lock"). AppRun asks this file where they are before it starts
+which are not in the AppImage (docs/dev/reference/releases.md, "tools.lock"). AppRun asks this file where they are before it starts
 nx2/make_game.py (--cli), and puts what it prints in the environment.
 
     linux_tools.py env [--install]

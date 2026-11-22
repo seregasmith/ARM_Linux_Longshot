@@ -1,5 +1,6 @@
 // Turns the repository's own documents (content-pages.ts) into site pages: their links rewritten for the site, then
 // the page's own presentation (install cards, issue cards, graphics settings).
+import { readdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createMarkdownProcessor } from '@astrojs/markdown-remark';
@@ -7,9 +8,8 @@ import { contentPages, pageForSource } from '../content-pages.ts';
 import { editUrl, siteUrl, sourceUrl } from '../site.ts';
 import { repositoryAssets } from './assets.ts';
 import { formatInstallHub } from './format-install.ts';
-import { formatGraphicsSettings } from './graphics-settings.ts';
+import { formatGraphicsSettings, MODULES_MARKER } from './graphics-settings.ts';
 import { formatCommonIssues } from './format-common-issues.ts';
-import { fragmentDirectory, publicTestedRunsMarker, readTestedConfigurations } from './tested-configurations.ts';
 
 // Astro runs from website/; the documents are in the repository around it.
 export const repoRoot = path.resolve('..');
@@ -19,12 +19,12 @@ const repoFile = (file: string) => path.join(repoRoot, file);
 const publicAssets = repositoryAssets;
 
 /** Every file a page is made from, for rebuilding the pages when one changes in dev. */
-export const sourceFiles = [...new Set([...Object.values(contentPages), 'gpu/vk/vk_menu.cpp'])].map(repoFile);
-export const testedFragmentsPath = repoFile(fragmentDirectory);
+// (the Insert menu: vk_menu.cpp and its feature modules, gpu/vk/menu/*.cpp)
+const menuModules = readdirSync(repoFile('gpu/vk/menu')).filter(name => name.endsWith('.cpp')).sort()
+  .map(name => `gpu/vk/menu/${name}`);
+export const sourceFiles = [...new Set([...Object.values(contentPages), 'gpu/vk/vk_menu.cpp', ...menuModules])].map(repoFile);
 export function isSourceFile(file: string): boolean {
-  file = path.resolve(file);
-  return sourceFiles.includes(file) || (path.dirname(file) === testedFragmentsPath &&
-    file.endsWith('.md') && path.basename(file) !== 'README.md');
+  return sourceFiles.includes(path.resolve(file));
 }
 
 function urlFor(value: string, source: string) {
@@ -54,21 +54,17 @@ export interface RepoPage { title: string; markdown: string; editUrl: string; ta
 export async function renderPage(slug: string): Promise<RepoPage> {
   const source = contentPages[slug];
   let text = await readFile(repoFile(source), 'utf8');
-  if (source === 'docs/tested-configurations.md') {
-    // Resolve fragment links at their own paths, after validation, before assembling the document's links.
-    text = await readTestedConfigurations(text, testedFragmentsPath, rewriteRepoLinks);
-  }
   const title = text.match(/^# (.+)$/m)?.[1] || source;
   text = text.replace(/^# .+\n/m, '');
   text = rewriteRepoLinks(text, source);
-  if (source === 'docs/getting-started.md') text = formatInstallHub(text);
-  if (source === 'docs/common-issues.md') text = formatCommonIssues(text);
-  if (source === 'docs/saves.md') text = '\n<div class="save-transfer-guide">\n\n' + text.trim() + '\n\n</div>\n';
-  if (source === 'docs/graphics-and-controls.md') {
-    text = await formatGraphicsSettings(text, await readFile(repoFile('README.md'), 'utf8'),
-      await readFile(repoFile('gpu/vk/vk_menu.cpp'), 'utf8'), await createMarkdownProcessor());
+  if (source === 'docs/user/getting-started.md') text = formatInstallHub(text);
+  if (source === 'docs/user/common-issues.md') text = formatCommonIssues(text);
+  if (source === 'docs/user/saves.md') text = '\n<div class="save-transfer-guide">\n\n' + text.trim() + '\n\n</div>\n';
+  if (source === 'docs/user/graphics-and-controls.md') {
+    const modules = await Promise.all(menuModules.map(file => readFile(repoFile(file), 'utf8')));
+    text = await formatGraphicsSettings(text, await readFile(repoFile('gpu/vk/vk_menu.cpp'), 'utf8') + MODULES_MARKER + modules.join('\n'),
+      await createMarkdownProcessor());
   }
-  if (source === 'docs/tested-configurations.md') text = publicTestedRunsMarker + '\n\n' + text;
   return { title, markdown: text, editUrl: editUrl(source),
-    ...(source === 'docs/common-issues.md' ? { tableOfContents: false as const } : {}) };
+    ...(source === 'docs/user/common-issues.md' ? { tableOfContents: false as const } : {}) };
 }

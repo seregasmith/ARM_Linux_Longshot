@@ -1,5 +1,5 @@
 // Host wall time inside explicit GPU resource waits, not GPU utilization or a frame's critical path.
-// The recorder's drain happens before these helpers. Concurrent threads add their own elapsed time;
+// Concurrent threads add their own elapsed time;
 // nested waits count once, zero-timeout polls and explicitly excluded pacing waits count nothing.
 #pragma once
 

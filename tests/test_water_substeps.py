@@ -117,6 +117,9 @@ def host_entry_points():
     """host/nn_vi.c's hooks for patch_whole_frames, cut out of it"""
     text = (ROOT / "host" / "nn_vi.c").read_text(encoding="utf-8")
     cuts = [block(text, "uint32_t hos_frame_whole(uint64_t at, uint32_t amount_bits) {")]
+    if "static int carry_fractions(void)" in text:   # (its cap-60 half reads the engine's rate: tests/test_frame_carry_cap60.py)
+        cuts.insert(0, "static int carry_fractions(void) { return hos_frame_seconds_bits != 0; }\n"
+                       "static void whole_seen(uint32_t a, uint32_t t, uint32_t w, int c) { (void)a; (void)t; (void)w; (void)c; }")
     if "uint32_t hos_frame_whole_times(" in text:
         cuts.append(block(text, "uint32_t hos_frame_whole_times("))
     return "\n".join(cuts)

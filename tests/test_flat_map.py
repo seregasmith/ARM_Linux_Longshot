@@ -58,7 +58,6 @@ uint64_t texture_destroy_generation() { return destroy_gen; }
 uint32_t texture_epoch() { return epoch; }
 bool env_on(const char*) { return false; }
 void logf(const char*, ...) {}
-struct ParLock {};
 bool texture_touch_quick(Texture* t, bool sampling) {
     note("touch_quick", (uint64_t)t->id, sampling);
     return (t->id + epoch) % 3 != 0;

@@ -18,7 +18,8 @@ the keep_* functions lift.py asks before the functions are written change these 
   - keep_not_ran(): only the functions nx2/ran_funcs.txt names (play was seen to run them) may have locals; the rest
     join no_local and are written as without this change (A64_LOCAL_FUNCS=all: every function may).
   - keep_spliced(): a function with C spliced after one of its instructions (Lifter.after: widescreen, the field of
-    view, the shadow cascades, DLSS jitter) joins no_local: that C reads and writes the context.
+    view, the shadow cascades, DLSS jitter) joins no_local when it may access integer registers or flags. Explicitly
+    marked vector-only hooks leave those locals intact.
   - a function the game's patches would change keeps the context as well: install(touched) takes a function that
     answers that for one function's text as it reads with the context kept (nx2/oot_patches.py's touches), and
     localize_regs asks it of every function before giving it locals. The patches find their places by the lifted text
@@ -56,7 +57,9 @@ def keep_spliced(lifter):
     """the functions with C spliced after an instruction keep the context: into lifter.no_local. Returns how many"""
     if not lifter.after:
         return 0
-    spliced = {e for e, (body, _) in lifter.funcs.items() if any(pc in body for pc in lifter.after)}
+    from oot_wide import VectorOnly
+    spliced = {e for e, (body, _) in lifter.funcs.items()
+               if any(pc in body and not isinstance(text, VectorOnly) for pc, text in lifter.after.items())}
     lifter.no_local |= spliced
     return len(spliced)
 
@@ -76,7 +79,7 @@ RAN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ran_funcs.txt")
 
 def ran_functions():
     """the functions that may get locals (A64_LOCAL_FUNCS): unset, the ones nx2/ran_funcs.txt names (the functions a
-    100-minute play session ran, recorded with scripts/coverage/cover.py: 77,725 of the game's ~295,000, issue #362);
+    100-minute play session ran, recorded with scripts/coverage/cover.py: 77,725 of the game's ~295,000);
     `all`, every function (None). No such file: every function too. The file's contents are in the lift key (a .txt in
     nx2/: make_game.py's lift_sources)"""
     if os.environ.get("A64_LOCAL_FUNCS", "").strip().lower() == "all" or not os.path.isfile(RAN):

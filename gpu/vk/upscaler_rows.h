@@ -252,6 +252,13 @@ inline float upscale_lod_bias_for(int upscaler, int share, float offset) {
     return std::min(0.0f, std::log2((float)share / 7500.0f));
 }
 
+/// The FSR 4 model row (opts.fsr4_model, saved as fsr4_model): 0 Auto (AMD's own pick for this GPU), 1 Lite (the faster
+/// INT8 network, ffxProvider_FSR4Lite_Int8). The row is shown only where FSR 4 runs and the loaded library has a Lite
+/// provider with the hook installed; it has nothing to choose while the Upscaler is not FSR 4, or RX_VK_FSR4_MODEL is set
+enum { FSR4_MODEL_AUTO = 0, FSR4_MODEL_LITE = 1, kFsr4Models = 2 };
+inline bool fsr4_model_shown(bool fsr4_ok, bool lite_available) { return fsr4_ok && lite_available; }
+inline bool fsr4_model_fixed(int upscaler, bool env_set) { return !is_fsr4(upscaler) || env_set; }
+
 /// The DLSS model row (opts.dlss_model, saved as dlss_model): which of NVIDIA's networks DLSS and DLAA draw with, by its
 /// preset (NVSDK_NGX_DLSS_Hint_Render_Preset_*). 0 the transformer, preset K (the default here, the one tested), or on a
 /// card with less than 7 GB of video memory the CNN, preset E (cnn_for_vram); 1 the second generation transformer, preset M
@@ -301,9 +308,9 @@ inline bool upscaler_fixed(unsigned available) { return (available & ~bit(GAME))
 /// everywhere (the menu's mask has it), so the menu always shows the row
 inline bool upscaler_shown(unsigned available) { return !upscaler_fixed(available); }
 inline bool resolution_fixed(int upscaler) { return full_scale(upscaler); }
-/// The DLSS model row: shown only where DLSS runs (dlss_ok: dlss_why() == DLSS_OK; a build without DLSS, or a GPU or
-/// driver it cannot run on, hides it), with nothing to choose while the game's own upscales
-inline bool model_shown(bool dlss_ok) { return dlss_ok; }
+/// The DLSS model row: shown only with NVIDIA DLSS chosen (DLSS or DLAA) where it runs (dlss_ok: dlss_why() == DLSS_OK; a
+/// build without DLSS, or a GPU or driver it cannot run on, hides it), as the model picks nothing for another upscaler
+inline bool model_shown(bool dlss_ok, int upscaler) { return dlss_ok && is_dlss(upscaler); }
 /// (env_set: RX_VK_DLSS_PRESET names a preset, which wins over the row for this run)
 inline bool model_fixed(int upscaler, bool env_set) { return !is_dlss(upscaler) || env_set; }
 /// (longshot) The DLAA before the bloom row (opts.dlss_pre_bloom): shown with NVIDIA DLSS chosen where it runs (DLSS or

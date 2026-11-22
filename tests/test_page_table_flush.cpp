@@ -4,7 +4,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <map>
+#include <mutex>
 #include <new>
 #include <random>
 #include <set>
@@ -21,6 +23,8 @@ void operator delete(void* p, size_t) noexcept { std::free(p); }
 
 struct TableRun { uint64_t first, count, address; };
 std::vector<TableRun> table_pending;
+std::mutex table_flushed_mu;   // (memory_table_flush keeps the last submissions' runs for RX_VK_GP_TABLE's cover)
+std::deque<std::vector<TableRun>> table_flushed;
 bool table_defer;
 using VkCommandBuffer = int;
 int guest_pages_buffer = 11;

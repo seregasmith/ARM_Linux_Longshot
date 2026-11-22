@@ -21,6 +21,9 @@ FIXTURE = r'''
 
 enum VkShaderStageFlagBits : uint32_t {
     VK_SHADER_STAGE_VERTEX_BIT = 1,
+    VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT = 2,
+    VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT = 4,
+    VK_SHADER_STAGE_GEOMETRY_BIT = 8,
     VK_SHADER_STAGE_FRAGMENT_BIT = 16,
     VK_SHADER_STAGE_COMPUTE_BIT = 32,
     VK_SHADER_STAGE_TASK_BIT_EXT = 64,
@@ -29,15 +32,26 @@ enum VkShaderStageFlagBits : uint32_t {
     VK_SHADER_STAGE_ALL = 0x7fffffff,
 };
 using VkShaderStageFlags = uint32_t;
+using VkBool32 = uint32_t;
+constexpr VkBool32 VK_FALSE = 0;
+enum VkShaderFloatControlsIndependence { VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL = 1, VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE = 2 };
 constexpr uint32_t VK_DRIVER_ID_AMD_PROPRIETARY = 1;
 struct {
     uint32_t sg32_stages = 0, subgroup_size = 32, subgroup_max = 32, driver_id = 0;
     uint32_t max_workgroup_subgroups = 32;   // (pins_32: 32-lane subgroups cover the 64 invocations profile_pinned assumes)
+    VkShaderStageFlags subgroup_stages = 0xff;   // (make_profile: subgroups in every stage, float modes and 64-bit atomics on)
+    struct {
+        VkShaderFloatControlsIndependence denormBehaviorIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL,
+                                          roundingModeIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL;
+        VkBool32 shaderSignedZeroInfNanPreserveFloat16 = 1, shaderSignedZeroInfNanPreserveFloat32 = 1,
+                 shaderDenormPreserveFloat32 = 1, shaderDenormFlushToZeroFloat32 = 1;
+    } float_controls;
     struct {
         bool shaderFloat16 = true;   // (k10: f16 lowered where the GPU has none; here it has)
         // (make_profile: storage image and texel buffer arrays indexed nonuniformly where the GPU can)
         bool shaderStorageImageArrayNonUniformIndexing = true, shaderUniformTexelBufferArrayNonUniformIndexing = true,
              shaderStorageTexelBufferArrayNonUniformIndexing = true;
+        VkBool32 shaderBufferInt64Atomics = 1;
     } vk12;
     bool float_atomic_add = false;
     struct { struct { uint64_t minStorageBufferOffsetAlignment = 16; } limits; } props;

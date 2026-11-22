@@ -12,8 +12,6 @@
   "nx2/test_texture_phi_dominance.py": 277.7,
   "nx2/test_unsigned_image_types.py": 274.9,
   "tests/test_appimage_package_retry.py": 5.0,
-  "tests/test_bake_mimo.py": 452.2,
-  "tests/test_bake_skeleton.py": 453.0,
   "tests/test_capture_copy_helpers.py": 4.9,
   "tests/test_capture_copy_nt.py": 3.2,
   "tests/test_capture_copy_runs.py": 2.7,

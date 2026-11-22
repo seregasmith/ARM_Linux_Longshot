@@ -37,6 +37,10 @@ void note_color_types(const PipeNote& n, uint8_t types[8]);
 #include "vk_internal.h"
 #include "vk_state.h"
 
+namespace mesh_conv {
+struct Item;   // (mesh_conv.h)
+}
+
 namespace mkwvk {
 
 struct DrawArgs {
@@ -55,11 +59,13 @@ struct DrawArgs {
     // (longshot) an occlusion query around the draw, inside its pass (vk_replay.cpp, RX_VK_OCC_QUERIES); none when null
     VkQueryPool occ_pool = VK_NULL_HANDLE;
     uint32_t occ_query = 0;
+    // (longshot) its op in the stream (a mesh draw's: RX_VK_MESH_CONV=2 finds its arguments converted at the barrier before it)
+    const void* op = nullptr;
 };
 
 /// A recording starts (its slot's descriptor pool and upload stream are reset); value: the timeline value it signals
 void draw_begin_recording(int slot, VkCommandBuffer cmd, uint64_t value);
-/// Publish CPU writes from this slot's used streams before its commands reach the GPU (also for worker slots).
+/// Publish CPU writes from this slot's used streams before its commands reach the GPU.
 void draw_flush_recording(int slot);
 /// The recording's stream still holds [at, at + n) in the mapping at base (a reset starts used over)
 bool stream_holds(const uint8_t* base, uint64_t at, uint64_t n);
@@ -76,10 +82,15 @@ Texture* depth_clear_before_copy(NvnState& s, const nvn_p_copy_tt& p);
 void clear_depth_stencil(VkCommandBuffer cmd, NvnState& s, float depth, bool depth_mask, uint32_t stencil,
                          uint32_t stencil_mask);
 void clear_stats(int64_t* clears, int64_t* masked);
+/// (longshot, RX_VK_MESH_CONV: mesh_conv.h) Whether this recording converts the indirect mesh draws after each barrier of the
+/// game's at once (2, with mesh shaders); its value; the batch's conversion right after such a barrier, of the draws scanned
+/// after it (none: the last batch let go); and the counts since the last call (vk_draw.cpp mesh_conv_stats)
+bool mesh_conv_batching();
+int mesh_conv_mode();
+void mesh_conv_batch(VkCommandBuffer cmd, const mesh_conv::Item* items, size_t n);
+void mesh_conv_stats(int64_t out[7]);
 /// indirect: the workgroup counts' GPU address (x, y, z unused)
 void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t z, uint64_t indirect);
-void dry_mark_written(NvnState& s, bool compute, bool first);   // (longshot: the parallel replay's dry pass)
-void dry_marks_begin();   // (at the start of each dry pass: the last targets it skipped by are forgotten)
 void draw_stats(int64_t* draws, int64_t* skipped, int64_t* dispatches, int64_t* pipelines);
 void draw_stats2(int64_t* passes, int64_t* mesh, double* pipeline_ms);
 void draw_stats3(int64_t* pending_skips, int64_t* waits, double* wait_ms);
@@ -132,6 +143,10 @@ VkResult extern_guarded_shader_module(const VkShaderModuleCreateInfo* ci, VkShad
 /// (RX_VK_LOG_PIPELINE_RAM, Linux) What the pipelines weighed took of the driver's memory outside its heap, in all, in bytes;
 /// -1: none weighed
 int64_t pipeline_ram_total();
+/// (longshot, vk_texture.cpp) One of the renderer's own compute pipelines (the texture pipelines; vk_draw.cpp's upscale and mask
+/// helpers): through the pipeline cache, and without the optimizer where the driver refuses it. The caller holds no
+/// IntelDriverGate
+VkResult texture_compute_pipeline(const VkComputePipelineCreateInfo& ci, VkPipeline& out);
 /// (longshot) The programs the driver faulted on (driver_faults.h): asked before a program's modules are made, and noted
 /// when making one faulted (vk_shader.cpp make_module)
 bool driver_faulted_program(uint64_t key);

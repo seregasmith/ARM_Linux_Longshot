@@ -16,7 +16,7 @@
    each pass before the next, so the GPU's numbers are its shares, not an unprofiled frame's) and RX_VK_SLOW_LOG=50. A switch
    already set keeps its value (RX_VK_PASS_TIMING=0 leaves the pass timing out). An older HOS_PROFILE=<seconds> (the
    busiest threads' log, before the mode) turns it all on too, with its seconds for the log's lines. All times are hos_now_ns's, so the samples,
-   presents, frames and events line up. python -I scripts/profile_report.py <folder> reads the folder into trace.json.gz (Perfetto: each thread's
+   presents, frames and events line up. python -I scripts/perf.py report <folder> reads the folder into trace.json.gz (Perfetto: each thread's
    stack over time, the frames, the waits, the counters), speedscope.json (flame graphs) and report.md: the
    frame rate and frame times over the run, what limits the frame, the hottest code on each thread, and each stutter's
    causes. It costs frame rate (the sampler suspends or signals each thread every 2 ms): a diagnostic, off by default. All
@@ -176,7 +176,7 @@ void hos_profiling_env(void) {
         fputs("}}\n", f);
         fclose(f);
     }
-    fprintf(stderr, "env: HOS_PROFILE=1: a profile of this run in %s (python -I scripts/profile_report.py <that folder>)\n",
+    fprintf(stderr, "env: HOS_PROFILE=1: a profile of this run in %s (python -I scripts/perf.py report <that folder>)\n",
             prof_dir);
 }
 

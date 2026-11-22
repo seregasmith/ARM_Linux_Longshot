@@ -69,7 +69,6 @@ struct GuestPool { uint64_t lo = 0, hi = 0; };
 std::vector<GuestPool> guest_pools = {{0x10000, 0x20000}, {0x20000, 0x30000}, {0x38000, 0x40000}, {0x40000, 0x48000}};
 constexpr size_t kFailing = 3;
 std::mutex pools_mu;
-struct ParLock { explicit ParLock(bool = true) {} };
 const VkCommandBuffer kCb = (VkCommandBuffer)(uintptr_t)7;
 const VkBuffer kStream = (VkBuffer)(uintptr_t)0x900;
 VkBuffer pool_buffer(size_t i) { return (VkBuffer)(uintptr_t)(0x100 + i); }
@@ -214,13 +213,12 @@ void memory_stamp_gpu(uint64_t guest_addr, uint64_t size) { stamps.push_back({gu
 
 SUFFIX = r'''
 @@PAYLOAD@@
-/// replay()'s NOP_CLEAR_BUF case as it is in the source, in the mode given (a parallel replay: the dry pass, then a worker)
-void clear_buf(VkCommandBuffer cmd, uint64_t dst, uint64_t size, uint32_t value, bool worker = false, bool dry = false) {
+/// replay()'s NOP_CLEAR_BUF case as it is in the source
+void clear_buf(VkCommandBuffer cmd, uint64_t dst, uint64_t size, uint32_t value) {
     nvn_p_clear_buf p{};
     p.dst = dst, p.size = size, p.value = value;
     const uint8_t* a = (const uint8_t*)&p;
     const uint32_t avail = sizeof p;
-    (void)worker, (void)dry;
     switch (NOP_CLEAR_BUF) {
     @@CLEAR@@
     }
@@ -442,15 +440,6 @@ int run() {
                 need(holds(0x1fff8, cleared(16, 0x01020304)), "not cleared"), need(covers(cpu_writes, 0x1fff8, 16), "not on the CPU"),
                 need(count(Cmd::Fill) == 2, "not on the GPU, a pool at a time"), need(stamps.empty(), "stamped as the GPU's")}));
     }
-    {   // (a parallel replay: its dry pass cleared it on the CPU in stream order, the worker's segment on the GPU)
-        reset();
-        clear_buf(kCb, 0x1fff8, 16, 0x01020304, false, true);
-        clear_buf(kCb, 0x1fff8, 16, 0x01020304, true);
-        submit();
-        verdict("a parallel replay's small clear across two game pools: the dry pass's on the CPU, the worker's on the GPU", all({
-                need(holds(0x1fff8, cleared(16, 0x01020304)), "not cleared"), need(covers(cpu_writes, 0x1fff8, 16), "not on the CPU once"),
-                need(count(Cmd::Fill) == 2, "not on the GPU, a pool at a time"), need(stamps.empty(), "stamped as the GPU's")}));
-    }
     {
         reset();
         clear_buf(kCb, 0x30100, 0x400, 0x77777777);
@@ -499,9 +488,11 @@ def main():
                            ("void gpu_write(VkCommandBuffer", True), ("bool gpu_fill(", False)):
         if always or marker in replay:
             code.append(block(replay, marker))
+    # (payload's out-of-line copy of a payload shorter than its type, where the source has one)
+    payload_short = block(replay, "void payload_short(") + "\n" if "void payload_short(" in replay else ""
     source = (PREFIX.replace("@@NVN@@", clear[0]).replace("@@BUFFERREF@@", block(internal, "struct BufferRef {")) +
               "\n".join(code) +
-              SUFFIX.replace("@@PAYLOAD@@", "template <class T>\n" + block(replay, "T payload(const uint8_t* a, uint32_t bytes)"))
+              SUFFIX.replace("@@PAYLOAD@@", payload_short + "template <class T>\n" + block(replay, "T payload(const uint8_t* a, uint32_t bytes)"))
                     .replace("@@CLEAR@@", block(replay, "case NOP_CLEAR_BUF: {")))
     with tempfile.TemporaryDirectory(prefix="replay-write-order-") as tmp:
         cpp, exe = Path(tmp) / "t.cpp", Path(tmp) / ("t.exe" if os.name == "nt" else "t")

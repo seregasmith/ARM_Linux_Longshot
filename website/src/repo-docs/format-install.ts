@@ -39,7 +39,6 @@ function downloadButtons(body) {
 // No channel starts selected: the best-channel download route stays current even if metadata fails.
 export const launcherChannels = [
   { value: 'stable', name: 'Stable', note: 'For playing.' },
-  { value: 'rc', name: 'Release candidate', note: 'The next version, to try before it is stable.' },
   { value: 'nightly', name: 'Nightly', note: 'Every change, untested: it may break your saves or settings, so copy them first.' },
 ];
 

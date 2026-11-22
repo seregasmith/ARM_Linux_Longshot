@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <unordered_map>
 #include <unordered_set>
 #include <array>
 
@@ -270,6 +271,7 @@ public:
     Id is_helper_invocation{};
     Id subgroup_local_invocation_id{};
     Id software_matrix_function{};   // (longshot: emit_spirv_warp.cpp)
+    Id wmma16_function{};   // (longshot: emit_spirv_warp.cpp DefineWmma16MatrixFunction)
     Id subgroup_mask_eq{};
     Id subgroup_mask_lt{};
     Id subgroup_mask_le{};
@@ -479,6 +481,22 @@ public:
     bool uses_nonuniform_storage_image{};
     bool uses_nonuniform_uniform_texel_buffer{};
     bool uses_nonuniform_storage_texel_buffer{};
+
+    // (longshot, AMD RDNA 3/3.5/4) Fused WMMA 16x16x16 N-pair state: pairs two HMMA_nx2 sharing A into one 16x16 [B0|B1] call.
+    struct Wmma16Step {
+        enum class Kind : u8 { Skip, Single, Pair };
+        Kind kind{Kind::Single};
+        IR::Inst* m0{};
+        IR::Inst* m1{};
+        std::vector<IR::Inst*> deferred_extracts;
+    };
+    struct Wmma16FusedState {
+        bool active{};
+        Id pair_fn{};
+        std::unordered_map<const IR::Inst*, Wmma16Step> steps;
+        std::unordered_set<const IR::Inst*> skip_insts;
+    };
+    Wmma16FusedState wmma16_fused{};
 
 private:
     void DefineCommonTypes(const Info& info);

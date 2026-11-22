@@ -39,11 +39,16 @@
 #ifndef LONGSHOT_ENV_H   /* (env_on: the switches' one rule) */
 #include "../gpu/vk/compat/longshot_env.h"
 #endif
+#include "input_movie.h"   /* (MovieCam: an input recording's camera lines, host/input_movie.c) */
 
 int hos_mouse_take(int32_t *dx, int32_t *dy);                                   /* display.c */
+int hos_script_mouse_take(int32_t *dx, int32_t *dy);                            /* nn_hid.c: the script's MX=, MY= */
+int hos_input_movie_active(void);                                                /* input_movie.c */
+int hos_input_movie_cam_begin(MovieCam *c, uint32_t *block, uint32_t *inputs);
+void hos_input_movie_cam_end(const MovieCam *c);
 void hos_mouse_give_back(int32_t dx, int32_t dy);                               /* display.c */
 int rx_option(int id, int otherwise);
-extern double hos_mouse_sens;
+double hos_mouse_sensitivity(void);   /* (nn_hid.c: the menu's Mouse sensitivity) */
 
 enum { LIMITS_AT = 0x178, PITCH_AT = 0x18c, YAW_AT = 0x1a4, STATE_AT = 0x204 };
 #define LIVE_NS 150000000LL   /* (the hook ran this recently: the camera takes the mouse) */
@@ -103,8 +108,8 @@ static int free_look(void) {
 }
 
 /* The Controls row "Disable camera centering" (option 45), independent of the mouse mode. The game's state-3 yaw-follow
-   branch asks before it runs (nx2/oot_patches.py); 0 keeps the stock behavior, including without a renderer. (#2617 took it
-   out with its rewrite of this file; the lifted game still calls it, and the link failed without it) */
+   branch asks before it runs (nx2/oot_patches.py); 0 keeps the stock behavior, including without a renderer. (The lifted
+   game calls it: the link fails without it) */
 int hos_disable_camera_centering(void) { return rx_option(45, 0); }
 
 /* nn_hid.c, with each read of the controller: 1 while the game leaves the camera to the player, 0 while it takes the
@@ -116,9 +121,34 @@ void hos_mouse_native_free(int free) { InterlockedExchange(&game_free, free ? 1 
    mouse both turn the camera instead of undoing each other. */
 void hos_mouse_native_stick(int held) { InterlockedExchange(&stick_held, held ? 1 : 0); }
 
-/* f_80644c80's first line (nx2/oot_patches.py): cam is the player camera, the game's thread */
+/* f_80644c80's first line (nx2/oot_patches.py): cam is the player camera, the game's thread.
+   (longshot, issue 1113) An input recording takes each update's decisions down (HOS_INPUT_RECORD: whether the mouse camera was
+   on, whether the game left the camera free, whether a stick turned it, and the degrees the mouse turned it by), and a
+   replay gives them back at the same update (HOS_INPUT_PLAY) in place of the mouse, the menu's row and the window's
+   clock: the camera then turns as it did, whatever the mouse and the settings do now */
 void hos_mouse_camera(uint64_t cam) {
-    if (!cam || !native_on() || !looks_like_camera(cam)) return;
+    if (!cam) return;
+    /* (no recording written or played: as before, the mouse camera's row first, and nothing of the guest's read while it is
+       off. With one, every update goes through it, the native camera on or not) */
+    const int recorded = hos_input_movie_active();
+    int native = recorded ? -1 : native_on();
+    if (!native || !looks_like_camera(cam)) return;
+    MovieCam mc;
+    int movie = -1;   /* (-1 none, 0 recording, 1 playing) */
+    if (recorded) {
+        /* (the state block as the update begins, +0x178 on (LIMITS_AT .. YAW_AT and past it): the camera's fingerprint, put
+           back there by HOS_INPUT_SYNC; and the object the camera's update reads what it eases to from) */
+        const uint64_t source = G64(MOVIE_VIEW_INPUTS);
+        uint32_t *inputs = source >= 0x80000000ULL && source + MOVIE_VIEW_IN_AT + 4 * MOVIE_VIEW_IN_WORDS < HOS_GUEST_SPACE ?
+                           (uint32_t *)GP(source + MOVIE_VIEW_IN_AT) : NULL;
+        movie = hos_input_movie_cam_begin(&mc, (uint32_t *)GP(cam + MOVIE_VIEW_AT), inputs);
+    }
+    if (native < 0) native = movie == 1 ? mc.native : native_on();
+    if (movie == 0) mc.native = (uint8_t)native;
+    if (!native) {
+        if (movie >= 0) hos_input_movie_cam_end(&mc);   /* (recorded: also a replay's, when it is recorded too) */
+        return;
+    }
     /* Only while it is the view: following Link (3) or turned by the player (4). Aiming the slingshot in first person
        leaves this camera updating with its state 0 while another one draws (traced at Hyrule Castle); shops are reported
        the same. In any other state the mouse is the right stick, which those views turn by (the hook counts as not
@@ -139,38 +169,61 @@ void hos_mouse_camera(uint64_t cam) {
             said[nsaid++] = state;
             hos_log("mouse native: camera state %u: the mouse is the right stick", state);
         }
+        if (movie >= 0) hos_input_movie_cam_end(&mc);
         return;
     }
     InterlockedExchange64(&last_hook_ns, hos_now_ns());
     InterlockedExchange(&last_state, geti(cam + STATE_AT));
-    if (!free_look()) {   /* (a menu, an item wheel, a lock-on, the bow: the game's camera, and the motion is the right stick's, nn_hid.c) */
+    const int free = movie == 1 ? mc.free : free_look(), held = movie == 1 ? mc.held : stick_held != 0;
+    if (movie == 0) mc.free = (uint8_t)free, mc.held = (uint8_t)held;
+    if (!free) {   /* (a menu, an item wheel, a lock-on, the bow: the game's camera, and the motion is the right stick's, nn_hid.c) */
         target_ok = 0;
+        if (movie >= 0) hos_input_movie_cam_end(&mc);
         return;
     }
     if (InterlockedExchange64(&last_camera, (LONG64)cam) != (LONG64)cam && cameras_seen++ < 8)
         hos_log("mouse native: the player camera at %#llx turns with the mouse", (unsigned long long)cam);
     /* (a new camera, or one the game's own stick turned: its angles now are where the mouse starts from) */
-    if (!target_ok || own_camera != cam || stick_held) {
+    if (!target_ok || own_camera != cam || held) {
         own_camera = cam;
         target_yaw = getf(cam + YAW_AT);
         target_pitch = getf(cam + PITCH_AT);
         target_ok = 1;
     }
-    int32_t dx, dy;
-    if (hos_mouse_take(&dx, &dy) && (dx || dy)) {
-        const double k = DEG_PER_COUNT * hos_mouse_sens;
-        target_yaw -= (float)((invert_x() ? -dx : dx) * k);
-        target_pitch += (float)((invert_y() ? -dy : dy) * k);
+    float dyaw = 0, dpitch = 0;
+    int moved = 0;
+    if (movie == 1) {
+        moved = mc.moved, dyaw = mc.dyaw, dpitch = mc.dpitch;
+    } else {
+        int32_t dx, dy, sx, sy;
+        int captured = hos_mouse_take(&dx, &dy);
+        if (hos_script_mouse_take(&sx, &sy)) captured = 1, dx += sx, dy += sy;   /* (a test's motion: MX=, MY=) */
+        if (captured && (dx || dy)) {
+            const double k = DEG_PER_COUNT * hos_mouse_sensitivity();
+            dyaw = (float)((invert_x() ? -dx : dx) * k);
+            dpitch = (float)((invert_y() ? -dy : dy) * k);
+            moved = 1;
+        }
+    }
+    if (moved) {
+        target_yaw -= dyaw;
+        target_pitch += dpitch;
         const float lo = getf(cam + LIMITS_AT), hi = getf(cam + LIMITS_AT + 4);
-        while (target_yaw > 180.0f) target_yaw -= 360.0f;
-        while (target_yaw < -180.0f) target_yaw += 360.0f;
+        target_yaw = remainderf(target_yaw, 360.0f);   /* (-180 .. 180 in one step: 360s taken off one at a time made no progress on a huge angle) */
         if (target_pitch < lo) target_pitch = lo;
         if (target_pitch > hi) target_pitch = hi;
         if ((++applied & 4095) == 1)
             hos_log("mouse native: %lld moves applied; pitch %.2f yaw %.2f", applied, target_pitch, target_yaw);
     }
+    if (movie == 0) mc.moved = (uint8_t)moved, mc.dyaw = dyaw, mc.dpitch = dpitch;
+    if (movie >= 0) hos_input_movie_cam_end(&mc);
     /* (put back every frame: the camera eases and follows by itself inside one, but none of that adds up to a view that
-       drifts back toward Link while the mouse is the camera) */
+       drifts back toward Link while the mouse is the camera. Never a NaN or an infinity: the angles start again from the
+       game's at the next update) */
+    if (!isfinite(target_yaw) || !isfinite(target_pitch)) {
+        target_ok = 0;
+        return;
+    }
     putf(cam + YAW_AT, target_yaw), putf(cam + PITCH_AT, target_pitch);
 }
 

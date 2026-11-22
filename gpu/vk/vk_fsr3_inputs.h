@@ -1,16 +1,15 @@
 // (longshot) AMD FSR 3.1's inputs (vk_fsr3_inputs.cpp): everything FSR 3.1's upscaler (vk_fsr3.h) and its frame
 // interpolation (vk_fsr3fi.h) are given besides the picture, in one place, so they can move onto the renderer's shared
-// temporal inputs (#1008) by changing this file alone.
+// temporal inputs by changing this file alone.
 //
-// What comes from #841 (NVIDIA DLSS's own inputs, now vk_temporal.cpp: the frame chain DLSS and FSR 4 share) and what does
-// not yet:
-//  - the camera jitter: #841's, the one jitter in the game (nx2/oot_jitter.py, host/rx_backend.c hos_dlss_jitter_clip),
+// What comes from the frame chain DLSS and FSR 4 share (vk_temporal.cpp) and what does not yet:
+//  - the camera jitter: the chain's, the one jitter in the game (nx2/oot_jitter.py, host/rx_backend.c hos_dlss_jitter_clip),
 //    switched on for FSR by jitter_size() as vk_temporal.cpp's temporal_jitter_size switches it on for DLSS and FSR 4, and
 //    read back here from the camera's uniform buffer as vk_temporal.cpp reads it;
 //  - the camera: the same uniform buffer and the same checks as vk_temporal.cpp's temporal_note_scene_draw; the near plane and the
 //    field of view are read from its projection (fsr3_math.h), so nothing in the game is hooked for them;
-//  - the motion: the camera's, from the scene depth with dlss_prep.comp's math (shaders/fsr3_prep.comp). #841's actor motion
-//    (the skinned draws drawn again with last frame's bones) is in vk_temporal.cpp, in every build since #1008: FSR 3.1's
+//  - the motion: the camera's, from the scene depth with dlss_prep.comp's math (shaders/fsr3_prep.comp). The actor motion
+//    (the skinned draws drawn again with last frame's bones) is in vk_temporal.cpp, in every build: FSR 3.1's
 //    upscaler takes it on the chain, and its frame interpolation from the chain's motion copied over this file's
 //    (take_motion), whether an engine draws or not (vk_temporal.h temporal_fg_inputs).
 #pragma once

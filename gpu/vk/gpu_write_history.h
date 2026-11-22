@@ -28,7 +28,7 @@ class GpuWriteHistory {
 
     // A drawn image may own the only copy of its pixels. Only an actual buffer
     // write to its bytes, ordered after the draw, can replace them. Register live
-    // images at creation so parallel recording can observe a later segment first.
+    // images at creation. (segment: 0 since one thread replays every command buffer.)
     // A first successful replacement transfers ownership back to guest memory.
     using Position = std::tuple<uint64_t, uint64_t, uint64_t>;  // timeline, segment, order within segment
     struct Image {

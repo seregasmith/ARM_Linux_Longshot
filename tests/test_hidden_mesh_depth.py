@@ -284,11 +284,9 @@ def main():
         raise SystemExit("vk_draw.cpp: the hidden-mesh table is one a thread: the game submits from several threads, and a "
                          "mesh's depth and colour from two of them would make it look hidden")
 
-    # (its switches: the rule on unless RX_VK_DLSS_FADED=0, the detailed log only with RX_VK_DLSS_FADED_LOG=1, and nothing
-    # at all with the parallel replay, whose workers draw at once)
+    # (its switches: the rule on unless RX_VK_DLSS_FADED=0, the detailed log only with RX_VK_DLSS_FADED_LOG=1)
     mode = block(temporal, "int temporal_hidden_mesh_mode() {")
-    for need in ('env_switch("RX_VK_DLSS_FADED") != 0', 'env_switch("RX_VK_DLSS_FADED_LOG") == 1',
-                 'env_switch("RX_VK_PARALLEL") >= 2', "return parallel ? 0 :"):
+    for need in ('env_switch("RX_VK_DLSS_FADED") != 0', 'env_switch("RX_VK_DLSS_FADED_LOG") == 1'):
         if need not in mode:
             raise SystemExit("vk_temporal.cpp temporal_hidden_mesh_mode(): lost " + need)
     for name, kind in (("RX_VK_DLSS_FADED", "kill"), ("RX_VK_DLSS_FADED_LOG", "diag")):

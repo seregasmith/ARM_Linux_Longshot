@@ -3,7 +3,7 @@
 Checks every imported byte against its pinned SHA-256, the complete adapted filter
 math against the upstream sections, defaults/compute ABI, the area-box formula and
 its rational reference cases, and the headers' source hashes/notices. No shader
-compiler is required by default. --glslang also runs the generator's --check,
+compiler is required by default. --glslang also runs scripts/shaders.py crt --check,
 compiling all four shaders and comparing same-version SPIR-V. These are source and
 compiler checks, not GPU execution or a claim of visual equivalence.
 
@@ -237,19 +237,19 @@ def check_box(adapter):
 
 
 def check_headers():
-    generator = runpy.run_path(str(ROOT / "scripts/crt_shaders.py"))
-    require(generator["SHADERS"] == NAMES, "generator shader set changed")
-    require(generator["TARGET_ENV"] == "vulkan1.2", "generator target environment changed")
+    generator = runpy.run_path(str(ROOT / "scripts/shaders.py"))
+    require(generator["CRT_SHADERS"] == NAMES, "generator shader set changed")
+    require(generator["CRT_TARGET_ENV"] == "vulkan1.2", "generator target environment changed")
     for name in NAMES:
         comp = SHADERS / (name + ".comp")
         header = comp.with_name(name + "_comp_spv.h")
-        body_text = generator["checked_header"](comp, name)
+        body_text = generator["crt_checked_header"](comp, name)
         first = header.read_text(encoding="utf-8").splitlines()[0]
         digest = hashlib.sha256(comp.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
         require(first.startswith(f"// {comp.name} sha256 {digest} "), f"{name}: first-line source hash mismatch")
         require(f"-V --target-env vulkan1.2 --vn {name.upper()}_COMP_SPV" in first, f"{name}: generation command changed")
-        require(len(generator["words"](body_text, name)) > 20, f"{name}: not a complete SPIR-V module")
-        require(generator["generator"](body_text), f"{name}: missing glslang version")
+        require(len(generator["crt_words"](body_text, name)) > 20, f"{name}: not a complete SPIR-V module")
+        require(generator["glslang_version"](body_text), f"{name}: missing glslang version")
 
 
 def main():
@@ -269,7 +269,7 @@ def main():
     print("PASS: four byte-identical CRT imports, provenance, defaults, complete filter math, compute ABI and area-box contracts")
     print("PASS: four checked-in CRT headers name their sources and retain their notices")
     if args.glslang:
-        subprocess.run([sys.executable, "-I", "-B", str(ROOT / "scripts/crt_shaders.py"), "--check",
+        subprocess.run([sys.executable, "-I", "-B", str(ROOT / "scripts/shaders.py"), "crt", "--check",
                         "--glslang", args.glslang], check=True)
     else:
         print("CRT compilation not checked (pass --glslang to recompile and compare)")

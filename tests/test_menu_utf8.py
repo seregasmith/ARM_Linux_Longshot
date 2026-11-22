@@ -12,6 +12,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
 from srccut import block   # noqa: E402
+from menu_model_fixture import menu_text   # noqa: E402
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
@@ -22,7 +23,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cxx", default="g++")
     a = p.parse_args()
-    src = (ROOT / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8")
+    # (vk_menu.cpp and its modules, #1633: the microphone's name functions are gpu/vk/menu/audio.cpp's)
+    src = menu_text(ROOT)
     parts = [block(src, m) for m in ("size_t text_char_start(", "std::string mic_key(", "void utf8_whole(",
                                      "std::vector<size_t> char_starts(")]
     fixture = r'''#include <cstdio>

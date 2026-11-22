@@ -215,19 +215,100 @@ static Obj *obj_lookup(uint64_t key, int kind);
    direct-mapped cache per thread answers those. An entry holds while its object is still that address's and of the
    kind asked for (objects are reused, never freed: spares). HOS_NO_OBJ_CACHE=1: off. */
 static Obj *obj_nockpt(uint64_t key, int kind);
+static void obj_cache_flush(void);
+static int obj_cache_due;   /* (HOS_OBJ_CACHE: a thread's counts are due in the log line: obj_cache_flush) */
 static Obj *obj(uint64_t key, int kind) {
     hos_vcore_checkpoint();   /* (virtual cores: every nn::os call, where a better waiter takes the core) */
-    return obj_nockpt(key, kind);
+    Obj *o = obj_nockpt(key, kind);
+    if (__atomic_load_n(&obj_cache_due, __ATOMIC_RELAXED)) obj_cache_flush();   /* (HOS_OBJ_CACHE only: below) */
+    return o;
 }
 /* obj without the checkpoint, for lookups under a host lock: a checkpoint there can give the core up and wait for one
    while the lock is held, and a thread that holds a core can then block on that lock (wait_any's scan under mw_lock vs
    poke_multiwait: a stall until the 250 ms vcore escape) */
+/* (longshot) HOS_OBJ_CACHE=<entries> (16384 when unset): the per-thread cache with that many entries (256 to 65536,
+   rounded up to a power of two), made on the heap at the thread's first lookup, instead of the fixed 1024; and a log
+   line every 10 s with its lookups and misses. OoT's f_80364080 (under the graphics front end's record pass,
+   0x806602e0) searches a table whose every slot has its own mutex, locking and unlocking each slot it passes: a search
+   over more slots than the cache holds misses at every step, and obj_lookup was ~80 % of that function's time on the
+   main thread and 2 % of the main thread's samples in the Market (RTX 3090, 5900X). Four ways a set (a set is one
+   64-byte line), the oldest way replaced, and the set chosen by a mixing hash: the fixed cache's multiply-and-shift
+   sends mutexes at a power-of-two stride (an array of slots) to few entries, and even 16384 entries of it missed 1,880
+   of a 4,000-slot walk at a 0x80 stride every pass (tests/test_obj_cache_size.py). Unset, empty or not a number: 16384;
+   HOS_OBJ_CACHE=0: the fixed cache, as before. A thread that ends leaves its cache (entries x 16 bytes); the log line
+   counts the caches made. What obj_nockpt reaches runs under mw_lock in WaitAny's scan (tests/test_multiwait_wake.py:
+   only calls that keep the core): the counting is the thread's own there, and the sums and the log line are made by
+   obj() (obj_cache_flush), which no lock holder calls */
+static int obj_cache_entries(const char *v) {
+    enum { OBJ_CACHE_DEFAULT = 16384 };   /* (unset: the size the Market's walk fits in, measured) */
+    long n = 0;
+    if (!v || !*v) return OBJ_CACHE_DEFAULT;
+    for (const char *p = v; *p; p++) {
+        if (*p < '0' || *p > '9') return OBJ_CACHE_DEFAULT;
+        if (n < 1000000) n = n * 10 + (*p - '0');
+    }
+    if (n <= 0) return 0;
+    int e = 256;
+    while (e < n && e < 65536) e <<= 1;
+    return e;
+}
+typedef struct { uint64_t key; Obj *o; } ObjCacheEntry;
+static _Thread_local uint64_t obj_cache_tl_looks, obj_cache_tl_misses;
+static _Thread_local int obj_cache_tl_made;   /* (1: made, not counted yet; 2: counted) */
+static int obj_cache_size_logged;
+static volatile LONG64 obj_cache_looks, obj_cache_misses, obj_cache_made, obj_cache_logged_ns;
+static Obj *obj_lookup_cached(uint64_t key, int kind, int entries) {
+    static _Thread_local ObjCacheEntry *cache;   /* (sets of four, each set 64-byte aligned) */
+    static _Thread_local unsigned shift;
+    if (!cache) {
+        void *raw = calloc((size_t)entries + 4, sizeof *cache);
+        if (!raw) return obj_lookup(key, kind);
+        cache = (ObjCacheEntry *)(((uintptr_t)raw + 63) & ~(uintptr_t)63);
+        shift = 64;
+        for (int e = entries / 4; e > 1; e >>= 1) shift--;
+        obj_cache_tl_made = 1;
+        __atomic_store_n(&obj_cache_size_logged, entries, __ATOMIC_RELAXED);
+    }
+    uint64_t h = key >> 3;   /* (murmur3's finalizer: every key bit reaches the set index) */
+    h ^= h >> 33, h *= 0xff51afd7ed558ccdULL, h ^= h >> 33, h *= 0xc4ceb9fe1a85ec53ULL, h ^= h >> 33;
+    ObjCacheEntry *set = &cache[(h >> shift) * 4];
+    obj_cache_tl_looks++;
+    for (int w = 0; w < 4; w++) {
+        Obj *o = set[w].o;
+        if (set[w].key == key && o && __atomic_load_n(&o->key, __ATOMIC_RELAXED) == key &&
+            __atomic_load_n(&o->kind, __ATOMIC_ACQUIRE) == kind)
+            return o;   /* (a hit: no shared write) */
+    }
+    obj_cache_tl_misses++;
+    Obj *o = obj_lookup(key, kind);
+    set[3] = set[2], set[2] = set[1], set[1] = set[0];   /* (the oldest goes) */
+    set[0].key = key, set[0].o = o;
+    if (obj_cache_tl_looks >= 65536 && !__atomic_load_n(&obj_cache_due, __ATOMIC_RELAXED))
+        __atomic_store_n(&obj_cache_due, 1, __ATOMIC_RELAXED);
+    return o;
+}
+/* (obj(), HOS_OBJ_CACHE: this thread's counts added up; the log line once 10 s have passed since the last) */
+static void obj_cache_flush(void) {
+    __atomic_store_n(&obj_cache_due, 0, __ATOMIC_RELAXED);
+    if (obj_cache_tl_made == 1) obj_cache_tl_made = 2, InterlockedIncrement64(&obj_cache_made);
+    InterlockedAdd64(&obj_cache_looks, (LONG64)obj_cache_tl_looks), InterlockedAdd64(&obj_cache_misses, (LONG64)obj_cache_tl_misses);
+    obj_cache_tl_looks = obj_cache_tl_misses = 0;
+    const int64_t now = hos_now_ns(), last = obj_cache_logged_ns;
+    if (now - last > 10000000000ll && InterlockedCompareExchange64(&obj_cache_logged_ns, now, last) == last) {
+        const int64_t l = InterlockedExchange64(&obj_cache_looks, 0), m = InterlockedExchange64(&obj_cache_misses, 0);
+        hos_log("sync: object cache (HOS_OBJ_CACHE=%d a thread, %lld made): %lld lookups, %lld missed (%.2f %%)",
+                __atomic_load_n(&obj_cache_size_logged, __ATOMIC_RELAXED), (long long)obj_cache_made, (long long)l,
+                (long long)m, l ? 100.0 * m / l : 0.0);
+    }
+}
 static Obj *obj_nockpt(uint64_t key, int kind) {
     /* (longshot: 128 still missed: obj_lookup was the busiest leaf in dense Kokiri, 3.2% of all samples, 4.3% of the instants when one
        thread alone ran; each actor has its own mutexes) */
     static _Thread_local struct { uint64_t key; Obj *o; } cache[1024];
-    static int off = -1;
+    static int off = -1, entries = -1;
     if (off < 0) off = env_on("HOS_NO_OBJ_CACHE");
+    if (entries < 0) entries = obj_cache_entries(getenv("HOS_OBJ_CACHE"));
+    if (!off && entries) return obj_lookup_cached(key, kind, entries);
     if (!off) {
         const unsigned i = (unsigned)((key * 0x9E3779B97F4A7C15ULL) >> 54);
         Obj *o = cache[i].o;
@@ -374,10 +455,33 @@ static void poke_multiwait(Obj *o) {
 
 #if (defined(__x86_64__) || defined(_M_X64)) && !defined(__EMSCRIPTEN__)
 #include <emmintrin.h>
+/* HOS_SPIN_ALWAYS (gpu/vk/switches.def), read at the first spin: spin_adaptive is -1 until then. Threads spinning for
+   the first time at once: one reads it under spin_adaptive_lock, the others wait there for its value; after that, one
+   atomic load per spin */
+static int spin_adaptive = -1;
+static SRWLOCK spin_adaptive_lock = SRWLOCK_INIT;
 static int spin_begin(Obj *o, int *misses) {
     if (hos_spin_ns() <= 0) return 0;
-    static int adaptive = -1;
-    if (adaptive < 0) adaptive = !env_on("HOS_SPIN_ALWAYS");
+    int adaptive = __atomic_load_n(&spin_adaptive, __ATOMIC_RELAXED);
+    if (adaptive < 0) {
+#ifdef HOS_TEST_SPIN_LOCK_TIME
+        const int64_t lock_start = hos_now_ns();
+#endif
+        AcquireSRWLockExclusive(&spin_adaptive_lock);
+#ifdef HOS_TEST_SPIN_LOCK_TIME
+        const int64_t lock_wait = hos_now_ns() - lock_start;
+#endif
+        adaptive = __atomic_load_n(&spin_adaptive, __ATOMIC_RELAXED);
+        if (adaptive < 0) {
+            adaptive = !env_on("HOS_SPIN_ALWAYS");
+            __atomic_store_n(&spin_adaptive, adaptive, __ATOMIC_RELAXED);
+        }
+        ReleaseSRWLockExclusive(&spin_adaptive_lock);
+#ifdef HOS_TEST_SPIN_LOCK_TIME
+        /* Test builds only: one line per cold acquisition, outside the lock and before this thread spins. */
+        hos_log("spin: cold lock wait %lld ns", (long long)lock_wait);
+#endif
+    }
     *misses = __atomic_load_n(&o->spin_misses, __ATOMIC_RELAXED);
     return !(adaptive && *misses >= 4 && (__atomic_add_fetch(&o->spin_waits, 1, __ATOMIC_RELAXED) & 31));
 }
@@ -1166,7 +1270,11 @@ static int queue_put(Obj *q, uint64_t v, int jam, int try_only) {
     return 1;
 }
 /* take: remove it; timeout_ns: < 0 forever, 0 try, > 0 timed. Returns 1 if a value was read. */
-static int queue_get(Obj *q, uint64_t *out, int take, int64_t timeout_ns) {
+extern int nvn_detached_observe_present_wait(Ctx *c);
+extern void nvn_detached_present_wait(const int *length, SRWLOCK *queue_lock, const unsigned *life);
+extern void nvn_detached_present_received(SRWLOCK *queue_lock, unsigned instance);
+extern void nvn_detached_pre_acquire(Ctx *c);
+static int queue_get_impl(Obj *q, uint64_t *out, int take, int64_t timeout_ns, int observe_idle) {
     int64_t deadline = timeout_ns > 0 ? hos_now_ns() + timeout_ns : 0;
     const int was_set = __atomic_load_n(&q->qlen, __ATOMIC_RELAXED) > 0;
     const int chain = timeout_ns != 0 && !was_set && hos_chain_on;
@@ -1185,7 +1293,11 @@ static int queue_get(Obj *q, uint64_t *out, int take, int64_t timeout_ns) {
             if (chain) hos_chain_note(HOS_CHAIN_WOKE, q->key, 0);
             return 0;
         }
-        if (timeout_ns < 0) hos_cv_sleep(&q->cv, &q->lk, INFINITE);
+        if (timeout_ns < 0) {
+            if (observe_idle) nvn_detached_present_wait(&q->qlen, &q->lk, &q->life);
+            hos_cv_sleep(&q->cv, &q->lk, INFINITE);
+            if (observe_idle) nvn_detached_present_wait(NULL, NULL, NULL);
+        }
         slept = 1;
     }
     if (timeout_ns != 0 && wake_lat_on()) wake_lat_note(slept ? 2 : spun ? 1 : 0, slept ? hos_now_ns() - q->sig_ns : 0);
@@ -1193,6 +1305,7 @@ static int queue_get(Obj *q, uint64_t *out, int take, int64_t timeout_ns) {
     if (take) {
         q->qhead = (q->qhead + 1) % q->qcap;
         __atomic_store_n(&q->qlen, q->qlen - 1, __ATOMIC_RELEASE);
+        if (observe_idle) nvn_detached_present_received(&q->lk, __atomic_load_n(&q->life, __ATOMIC_RELAXED));
     }
     ReleaseSRWLockExclusive(&q->lk);
     if (chain) hos_chain_note(HOS_CHAIN_WOKE, q->key, 0);
@@ -1201,6 +1314,10 @@ static int queue_get(Obj *q, uint64_t *out, int take, int64_t timeout_ns) {
         poke_multiwait(q);
     }
     return 1;
+}
+
+static int queue_get(Obj *q, uint64_t *out, int take, int64_t timeout_ns) {
+    return queue_get_impl(q, out, take, timeout_ns, 0);
 }
 
 HLE(_ZN2nn2os22InitializeMessageQueueEPNS0_16MessageQueueTypeEPmm) { queue_init(ARG(0), (int)ARG(2)); }
@@ -1220,7 +1337,8 @@ HLE(_ZN2nn2os20JamLightMessageQueueEPNS0_21LightMessageQueueTypeEm) { queue_put(
 HLE(_ZN2nn2os23TryJamLightMessageQueueEPNS0_21LightMessageQueueTypeEm) { RET(queue_put(obj(ARG(0), K_QUEUE), ARG(1), 1, 1)); }
 HLE(_ZN2nn2os24ReceiveLightMessageQueueEPmPNS0_21LightMessageQueueTypeE) {
     uint64_t v;
-    queue_get(obj(ARG(1), K_QUEUE), &v, 1, -1);
+    const int observe_idle = c->x[30] == 0x834a3084 && nvn_detached_observe_present_wait(c);
+    queue_get_impl(obj(ARG(1), K_QUEUE), &v, 1, -1, observe_idle);
     G64(ARG(0)) = v;
 }
 HLE(_ZN2nn2os27TryReceiveLightMessageQueueEPmPNS0_21LightMessageQueueTypeE) {
@@ -1438,7 +1556,10 @@ HLE(_ZN2nn2os11SystemEventC2ENS0_14EventClearModeEb) { event_init(ARG(0), 0, (in
 HLE(_ZN2nn2os11SystemEventD2Ev) { drop(ARG(0)); }
 
 /* ---- the remaining waits on the HLE's objects ----------------------------------------------------------------- */
-HLE(_ZN2nn2os9WaitEventEPNS0_9EventTypeE) { event_wait(obj(ARG(0), K_EVENT), 0, 0); }
+HLE(_ZN2nn2os9WaitEventEPNS0_9EventTypeE) {
+    event_wait(obj(ARG(0), K_EVENT), 0, 0);
+    if (c->x[30] == 0x81207a6c) nvn_detached_pre_acquire(c);
+}
 HLE(_ZN2nn2os12TryWaitEventEPNS0_9EventTypeE) { RET(event_wait(obj(ARG(0), K_EVENT), 0, 1)); }
 HLE(_ZN2nn2os14TimedWaitEventEPNS0_9EventTypeENS_8TimeSpanE) {
     RET(event_wait(obj(ARG(0), K_EVENT), (int64_t)ARG(1) > 0 ? (int64_t)ARG(1) : 1, (int64_t)ARG(1) <= 0));

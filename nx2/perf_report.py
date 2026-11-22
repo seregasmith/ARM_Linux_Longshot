@@ -12,9 +12,12 @@ the game left in the game folder's perf_pending/.
     player or a tester to read. The launcher's "Keep a copy of what was sent" (keep_sent=0 in longshot_perf.ini when it is
     off), or LONGSHOT_PERF_KEEP_SENT, turns that off, and empties perf_sent/.
   - Turning the tick off deletes what is waiting, and what perf_sent/ kept: the player said no.
-  - Polite by default: the summaries go over one connection, at most LONGSHOT_PERF_MAX_SENDS (12) a start, and a relay that
+  - Polite by default: the summaries go over one connection, at most LONGSHOT_PERF_MAX_SENDS (5: under the perf route's
+    ingress, 6 a minute with a burst of 6) a start, one sender at a time (perf_pending/.sending, a lease its holder renews), and a relay that
     answers busy (429 or 5xx) is left alone until the time it names (Retry-After), else an hour, doubled each time it is
-    busy again up to a day (perf_pending/.next). The switches: docs/performance-statistics.md, "Switches".
+    busy again up to a day (perf_pending/.next). A status that is not the relay saying the summary will never be taken
+    (only 400, 413, 415, 422) keeps the summary for the next start. The switches: docs/dev/reference/profiling.md,
+    "Performance statistics".
 
 python -I nx2/perf_report.py <game folder>            what would be sent, sends nothing
 python -I nx2/perf_report.py <game folder> --send     sends it (what the launchers start: start_sending)
@@ -27,6 +30,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import sys
 import time
 import urllib.error
@@ -45,11 +49,26 @@ VERSION_FILE = "longshot_version.txt"
 LOGS = [os.path.join(d, name) for d in ("logs", "") for name in ["longshot_log.txt"] + ["longshot_log.%d.txt" % k for k in range(1, 5)]]
 MAX_PENDING = 48   # (the newest kept when the launcher hasn't been back for long: older ones go unsent)
 MAX_BODY = 60 * 1024   # (the relay's limit is 64 KiB: a bigger one is refused there anyway)
-# A release's version (docs/versioning.md), as the crash report has it (host/hos_crash_dialog.h)
+# A release's version (docs/dev/reference/releases.md), as the crash report has it (host/hos_crash_dialog.h)
 RELEASE_VERSION = re.compile(r"^v?\d+\.\d+\.\d+(?:-rc\.\d+)?$|^nightly-\d+-[0-9a-f]{8}$")
 FIRST_LINE = re.compile(r"\blongshot (\S+)(?: \(source ([0-9a-f]+)\))?")
 NEXT = ".next"   # (in perf_pending/: when the relay may be asked again after it answered busy, and the wait it took)
+LOCK = ".sending"   # (in perf_pending/: the send lock while a sender runs. Its body names the holder and its lease;
+                    #  the holder's heartbeat renews the lease every BEAT (a live sender is never taken over, and a
+                    #  whole send runs minutes at most — its timeouts' worst case — so a lease that ran un-renewed
+                    #  means the holder died between taking it and releasing it).)
+LEASE = 900        # (a lock's lease in seconds: see LOCK)
+BEAT = 30          # (the heartbeat's period: the holder renews its lease this often while it sends)
+STALL = 4 * BEAT   # (a lease may run out this far before the lock stops holding: the heartbeat may be mid-beat on a
+                   #  stalled file system; the holder pid check is the hard wall a clock cannot move)
+LEGACY = 60        # (a body an older sender wrote (no lease): fall back to its mtime, this old means its sender is gone)
 BUSY_FIRST, BUSY_MOST = 3600, 86400   # (seconds: a busy relay's first wait without a Retry-After, and the longest)
+# The status that means "this summary will never be taken" (bad body, too big, wrong kind, unprocessable): only those
+# are deleted. Every other answer (a redirect, 404 while the service is redeployed, 408, 425) keeps it for later.
+REFUSED = (400, 413, 415, 422)
+MAX_SENDS = 5   # (one start's share, oldest first: the perf route's ingress takes 6 a minute with a burst of 6 per
+                # address (the deploy repo's deploy/telemetry/40-ingress.yaml); the two numbers live together, if you
+                # raise one, raise the other in the same change)
 HEADERS = {"Content-Type": "application/json", "User-Agent": "longshot-perf-report"}
 
 
@@ -194,13 +213,17 @@ def build_facts(folder):
 
 
 def answer(code, retry_after=None):
-    """(result, seconds to wait) of the relay's status: 'sent' (2xx), 'refused' (4xx but 429: never better next time) or
-    'busy' (429, 5xx), with its Retry-After in seconds when it gave one"""
+    """(result, seconds to wait) of the relay's status: 'sent' (2xx), 'refused' (only REFUSED's codes: this summary will
+    never be taken there, so it goes), 'busy' (429, 5xx: asked again after its wait), 'later' (every other answer: 3xx a
+    redirect http.client does not follow, 404 while the service is redeployed or its route is missing, 408, 425: kept
+    for the next start; a missing route is not the relay asking to be left alone, so no wait is noted)"""
     if 200 <= code < 300:
         return "sent", None
     if code == 429 or code >= 500:
         return "busy", wait_of(retry_after)
-    return "refused", None
+    if code in REFUSED:
+        return "refused", None
+    return "later", None
 
 
 def wait_of(retry_after):
@@ -215,12 +238,20 @@ def wait_of(retry_after):
         return None
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """urllib follows a 302 by turning the POST into a GET of the Location — a redirect's 200 at the far end is not the
+    relay taking the summary: the answer to judge is the 3xx itself (issue #1265, review)"""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def post(body, url, timeout=10):
     """One summary on a connection of its own (urllib, which takes the system's proxy): answer()'s pair, or ('later', None)
-    when not reached or cut short"""
+    when not reached or cut short. The opener is built per call, so a proxy that started or stopped after this process
+    began is seen as it is now; it never follows a redirect (see _NoRedirect)"""
     req = urllib.request.Request(url, data=body, method="POST", headers=HEADERS)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with urllib.request.build_opener(_NoRedirect).open(req, timeout=timeout) as r:
             return answer(r.status)
     except urllib.error.HTTPError as e:
         return answer(e.code, e.headers.get("Retry-After"))
@@ -297,16 +328,250 @@ def note_busy(folder, retry_after):
         pass
 
 
+def _lock_body(pid):
+    return ("%d %d\n" % (pid, int(time.time()) + LEASE)).encode()
+
+
+def _lock_read(path):
+    """(the holder's pid, the lease's end second): (None, None) when there is no lock to read. A body an older sender
+    wrote (no lease second in it: the pre-lease form) reads as lease 0 — the mtime check below is its stand-in."""
+    try:
+        with open(path, "rb") as f:
+            fields = f.read(64).split()
+        pid = int(fields[0])
+        lease = int(fields[1]) if len(fields) > 1 else 0
+        return pid, lease
+    except (OSError, ValueError, IndexError):
+        return None, None
+
+
+def _pid_gone(pid):
+    """True only when the pid is certainly not running (its sender died and took its heartbeat with it). Unknown
+    (Windows, another user's process, a wild number) reads as NOT gone: the lease is then the only evidence."""
+    if os.name != "posix" or pid <= 1:
+        return False
+    try:
+        os.kill(pid, 0)
+        return False
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False   # (a process by that number, someone else's: treat as running; the lease bounds it anyway)
+    except OSError:
+        return False
+
+
+def _lock_holds(path):
+    """True while the lock at path stands for a sender that may still act. Two pieces of evidence, neither of them
+    the wall clock's age alone: a holder whose pid is CERTAINLY gone (ProcessLookupError) holds nothing, lease or
+    no lease; and a holder whose lease ran out is judged by whether it is still working — a live sender's heartbeat
+    touches the lock every BEAT, so its mtime walks with its beats and the lock keeps holding, while a dead one (or
+    a pid recycled by an unrelated process) goes quiet and is claimable once 2*BEAT pass without a touch. The round-
+    three review's four windows on 81926bf5 all needed a live, working holder's lock to read stale; under these two
+    rules none can. (issue #1265, reviews)"""
+    pid, lease = _lock_read(path)
+    if pid is None:
+        # (a body we cannot parse. A directory (older or broken form): not a holder. A regular file whose body is
+        #  empty or unparseable: a sender may be mid-create right now (the name exists before the pid lands), so it
+        #  holds until it ages past LEGACY — a create+write completes in microseconds, an unreadable body that stays
+        #  is a corpse the next sender clears. Claiming through a half-made lock was the round-three review's P2.)
+        try:
+            st = os.stat(path)
+            import stat as _stat
+            if _stat.S_ISDIR(st.st_mode):
+                return False
+            return time.time() - st.st_mtime < LEGACY
+        except OSError:
+            return False
+    if _pid_gone(pid):
+        return False
+    if lease and time.time() < lease + STALL:
+        return True   # (a running holder with a lease that runs: never claimable. The windows a round-three review
+                      #  reproduced on 81926bf5 all needed a live holder's lock to read stale; none can.)
+    # (the lease ran out — or it's a body an older sender wrote. Is the holder still working? Its heartbeat touches
+    #  the lock every BEAT: a live sender's mtime walks with its beats, whatever the clock or a wedged file system
+    #  does to the lease. A dead holder's mtime goes stale within a beat or two of its death; so does the pid of a
+    #  dead holder recycled by an unrelated process — that one is checked by mtime, never by the pid alone, or a
+    #  reused pid would shut out sending forever.)
+    try:
+        age = time.time() - os.stat(path).st_mtime
+    except OSError:
+        return False
+    return age < (2 * BEAT if lease else LEGACY)
+
+
+def take_send_lock(folder):
+    """True when this process may send; False while another sender's lock holds. The lock (perf_pending/.sending)
+    names its holder and its lease in the body, and the holder renews the lease every BEAT while it sends (see
+    _heartbeat): a live sender is never taken over, however slow the relay, and a killed one's pid is checked, not
+    guessed at from the wall clock's age (see _lock_holds: the wall). A takeover claims the expired lock by rename
+    and installs the new one with an O_CREAT | O_EXCL create — atomic on every file system, including the vfat/exfat
+    SD cards a Deck game folder may live on (hard links, which an earlier draft used, do not exist there) — so two
+    racing takers cannot both reclaim one stale lock and post the same summaries twice; and what the claim moved is
+    inspected before it is discarded, so a taker can never step on a fresh lock installed in the breath it spent
+    judging (issue #1265, reviews). A folder that can't hold a lock at all (read-only, gone): True — nothing can be
+    asked twice under that, and losing summaries to a lock it can't make would be worse."""
+    path = os.path.join(folder, PENDING, LOCK)
+    for _ in range(3):
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0))
+        except FileExistsError:
+            try:
+                os.remove("%s.%d" % (path, os.getpid()))   # (our own half-made body from a send that broke halfway:
+            except OSError:                                #  ours to clear; a running sender shares no pid with us)
+                pass
+            if _lock_holds(path):
+                return False   # (a running holder — us included, our heartbeat keeps that lease fresh; not our turn)
+            # (expired, dead, or a form with no body (a directory): claim it. rename is atomic: exactly one taker
+            #  moves the old lock aside; the new one then goes in with the same O_EXCL create as the ordinary path,
+            #  which fails if anyone made a fresh lock meanwhile. (link() was the first try and is dropped on
+            #  purpose: vfat and exfat, what a Deck's microSD game folder is formatted as, do not carry hard links,
+            #  and a failed install there means sending unlocked — the very double post this lock is for.)
+            mine = "%s.%d" % (path, os.getpid())
+            try:
+                os.rename(path, mine)
+            except OSError:
+                continue   # (another taker won the claim a breath ago: re-read the fresh state)
+            # (what did we just move? A round-three review caught that a taker which judged the lock stale a breath
+            #  ago can rename a FRESH lock another taker installed in that breath. The claimed file itself tells us:
+            #  if it names a live sender, it was never ours to claim — slide it back, but through the same O_EXCL
+            #  create, never a rename: a rename would clobber a lock that appeared at path while we held the corpse
+            #  (and a file that was live in our hands is the very lock the wall says nobody may displace). If path
+            #  is taken, that occupant stands; we drop our copy and re-read.)
+            if _lock_holds(mine):
+                restored = False
+                try:
+                    with open(mine, "rb") as f:
+                        body = f.read(64)   # (slide it back with an O_EXCL create of the SAME body — not a rename:
+                    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)   #  a rename could clobber a lock that
+                    os.write(fd, body)                                        #  appeared at path while we inspected)
+                    os.close(fd)
+                    restored = True
+                except OSError:
+                    pass
+                try:
+                    os.unlink(mine)   # (ours either way now: restored to path, or path was taken and this was a
+                except OSError:       #  mis-claim — either way no stray .sending.<pid> is left behind)
+                    pass
+                continue   # (re-read the fresh state; the healthy sender we nearly stepped on keeps its turn)
+            try:
+                os.unlink(mine)
+            except IsADirectoryError:
+                try:
+                    os.rmdir(mine)   # (a .sending left as a directory by an older or broken form: clear it, don't
+                except OSError:      #  wedge every later sender forever (issue #1265, review))
+                    pass
+            except OSError:
+                pass
+            try:
+                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                return not _lock_holds(path)   # (someone else's fresh lock: refused; nothing holding there: ours
+                                               #  to make, and a claim is ours to finish — try the claim once more)
+            except OSError:
+                return True   # (the folder broke under us: send unsent, the old behavior)
+            try:
+                os.write(fd, _lock_body(os.getpid()))
+            except OSError:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                try:
+                    os.remove(path)   # (a lock whose body didn't get written is nobody's; see the ordinary path's arm)
+                except OSError:
+                    pass
+                return True
+            os.close(fd)
+            return True
+        except OSError:
+            return True   # (no lock can be made at all: send unsent, the old behavior)
+        try:
+            os.write(fd, _lock_body(os.getpid()))
+        except OSError:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.remove(path)   # (never hand out a lock whose body didn't get written: an unreadable body wedges
+            except OSError:       #  taking over, and the sender that couldn't write it may not be back (ENOSPC left
+                pass              #  the lock and shut out the immediate retry; issue #1265, review))
+            return True
+        os.close(fd)
+        return True
+    return True   # (the claim race kept losing to healthy senders: sending proceeds, the old behavior)
+
+
+def release_send_lock(folder):
+    """remove only OUR lock: a remove by pathname deleted the lock a takeover had handed to the next sender, and a
+    third sender then posted the same summaries a second time (issue #1265, review). the body's pid must be ours."""
+    path = os.path.join(folder, PENDING, LOCK)
+    if _lock_read(path)[0] != os.getpid():
+        return   # (gone, replaced, or someone else's: nothing of ours to remove)
+    try:
+        os.remove(path)
+    except OSError:
+        pass   # (gone under us: an expired lock only blocks until its lease runs out or its pid checks gone)
+
+
+def _heartbeat(folder, stop):
+    """every BEAT the holder renews its lease (rewrite OUR lock's body, by name: a lock whose body is no longer ours
+    was taken over and is not ours to rewrite). A send slower than any single lease (a relay that trickles) keeps its
+    lock — the wall clock's age was never liveness (issue #1265, review)."""
+    path = os.path.join(folder, PENDING, LOCK)
+    while not stop.wait(BEAT):
+        if _lock_read(path)[0] != os.getpid():
+            return   # (the lock is gone or another's: nothing to renew; the send finishes what it started)
+        try:
+            mine = "%s.%d" % (path, os.getpid())
+            with open(mine, "wb") as f:
+                f.write(_lock_body(os.getpid()))
+            os.replace(mine, path)   # (ours by the check above; the rename carries a fresh lease AND mtime. The
+                                     #  parked-beat window a round-three review measured (a beat landing after a
+                                     #  normal release) is closed where the thread lives: send_waiting joins this
+                                     #  thread BEFORE its release. If the join's bound expired on a wedged file
+                                     #  system and this beat still lands late, the wall in _lock_holds is the back-
+                                     #  stop: the landing names OUR pid, so it can only ever block other senders,
+                                     #  never admit a second poster — and our own sender is exiting, so the pid
+                                     #  check clears it at the next start.)
+        except OSError:
+            pass
+
+
 def send_waiting(folder, url=None, timeout=None):
     """Sends what is waiting, when the tick is on: {"sent": n, "refused": n, "left": n}. Stops at the first one the relay
-    couldn't take now, and after LONGSHOT_PERF_MAX_SENDS; nothing while the relay asked to be left alone (LONGSHOT_PERF_BACKOFF)"""
+    couldn't take now, and after LONGSHOT_PERF_MAX_SENDS; nothing while the relay asked to be left alone
+    (LONGSHOT_PERF_BACKOFF); nothing while another sender holds .sending (two detached senders would post the same
+    summaries, and a summary has no id for the service to dedupe on)"""
     url = endpoint() if url is None else url
     timeout = env_number("LONGSHOT_PERF_TIMEOUT", 10, 2, 60) if timeout is None else timeout
-    most = env_number("LONGSHOT_PERF_MAX_SENDS", 12, 1, MAX_PENDING)
+    most = env_number("LONGSHOT_PERF_MAX_SENDS", MAX_SENDS, 1, MAX_PENDING)
     backoff = env_switch("LONGSHOT_PERF_BACKOFF") is not False
     counts = {"sent": 0, "refused": 0, "left": 0}
     if not folder or not sending(folder):
         return counts
+    if not take_send_lock(folder):   # (another sender's lease runs: everything stays, nothing is asked twice)
+        counts["left"] = len(waiting(folder))
+        return counts
+    stop = threading.Event()
+    beat = threading.Thread(target=_heartbeat, args=(folder, stop), daemon=True)
+    beat.start()   # (the send outlives one lease on a slow relay: a live sender keeps its lock; a killed holder's
+                   #  thread dies with the process and its lease runs out (issue #1265, review))
+    try:
+        return send_unlocked(folder, url, timeout, most, backoff, counts)
+    finally:
+        stop.set()
+        beat.join(5 * BEAT)   # (before release, not after: a round-three review's beat parked between the ownership
+                              #  check and its rename landed AFTER a normal release and stomped the successor's fresh
+                              #  lock. Joined first, no beat can exist once the lock is removed. The join is bounded
+                              #  (5 beats) because a beat can only still be in flight on a file system that is itself
+                              #  wedged — where every other call on this folder fails the same way; past the bound the
+                              #  release goes ahead, the same floor as the broken-folder arm.)
+        release_send_lock(folder)
+
+
+def send_unlocked(folder, url, timeout, most, backoff, counts):
     names = waiting(folder)
     for old in names[:-MAX_PENDING]:   # (too many: the oldest go unsent)
         try:
@@ -339,8 +604,13 @@ def send_waiting(folder, url=None, timeout=None):
 
 def send_these(folder, names, relay, version, release, counts, backoff):
     """send_waiting's loop: True when the relay took or refused each one, False when it stopped (busy: noted, unless
-    LONGSHOT_PERF_BACKOFF is off; not reached: tried again at the next start)"""
+    LONGSHOT_PERF_BACKOFF is off; not reached: tried again at the next start). Mid-send the player can turn the tick off:
+    set_sending(False) deletes what waits and the busy note, and anything this loop writes after that (an answer's
+    .next, a kept copy) must not be left behind — the sweep runs again when we notice (issue #1265, review)"""
     for name in names:
+        if not sending(folder):
+            remove_all(folder, PENDING, (".json", ".tmp", NEXT))
+            return False
         path = os.path.join(folder, PENDING, name)
         try:
             with open(path, encoding="utf-8", errors="replace") as f:   # (a bad byte: one field's text, not the summary)
@@ -360,6 +630,8 @@ def send_these(folder, names, relay, version, release, counts, backoff):
             if result == "busy":
                 if backoff:
                     note_busy(folder, wait)
+                if not sending(folder):   # (unticked while the request was in flight: the note the sweep already
+                    remove_all(folder, PENDING, (".json", ".tmp", NEXT))   #  deleted came back from this answer)
                 return False
         if result == "later":
             return False

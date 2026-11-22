@@ -17,7 +17,7 @@ using namespace mkwvk;
 VkDevice device;
 VkPhysicalDevice physical;
 VkPhysicalDeviceMemoryProperties memory_props;
-struct { VkExtent2D swap_extent; bool hdr = false; } dev;
+struct { VkExtent2D swap_extent; bool hdr = false; std::vector<VkImageView> swap_views = std::vector<VkImageView>(1); } dev;
 std::atomic<bool> present_native_pq{false};
 float display_aspect;
 float get_aspect() { return display_aspect; }
@@ -27,14 +27,22 @@ VkImage framegen_scale(VkCommandBuffer,VkImageView,VkImage,uint32_t,uint32_t,con
     return VK_NULL_HANDLE; // This GPU fixture exercises direct blits; filtered routing is covered by L1.
 }
 // (SDR only here: the HDR pass and Native's routing are covered by test_present_aspect.py)
-VkImage framegen_hdr(VkCommandBuffer,VkImageView,uint32_t,uint32_t,const int*,uint32_t,uint32_t,bool) { return VK_NULL_HANDLE; }
+VkImage framegen_hdr(VkCommandBuffer,VkImageView,uint32_t,uint32_t,const int*,uint32_t,uint32_t,bool,int) { return VK_NULL_HANDLE; }
 VkImageView framegen_scaled_view() { return VK_NULL_HANDLE; }
+// (Colour vision correction Off: the uncorrected blits; the corrected route is covered by test_present_geometry_trace.py)
+namespace colour_vision { constexpr bool enabled(int mode) { return mode >= 1 && mode <= 3; } }
+int menu_colour_vision_mode() { return 0; }
+bool colour_vision_sdr(VkCommandBuffer,VkImageView,uint32_t,uint32_t,const int*,VkImage,VkImageView,PresentRect,int,bool) {
+    CHECK(false); return false;
+}
 void full_barrier(VkCommandBuffer) {}
 void logf(const char*,...) {}
 // @PRODUCTION_HELPERS@
 void record_actual(VkCommandBuffer command,VkImage src,uint32_t sw,uint32_t sh,const int* crop,VkImage dst) {
     struct { VkCommandBuffer cmd; } f{command};
     VkImageView view=VK_NULL_HANDLE;
+    const bool allow_scale=true, source_srgb=false;
+    const uint32_t index=0;
 // @PRODUCTION_PRESENT@
 }
 uint32_t memory_type(uint32_t bits,VkMemoryPropertyFlags flags) {

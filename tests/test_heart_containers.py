@@ -5,7 +5,9 @@ No game file: the SARC (Pack/ZsDic.pack.zs's dictionaries) and the BYML map file
 Gyaml and Hash) are made here, in both byte orders, with made-up names and ids. The readers find the named file and the
 named actors' 64-bit (and 32-bit) ids, skip the others, keep to cap, and refuse what is not one of them; each file cut at
 every length is refused or read without reading past its end (the harness is built with -fsanitize=address where the
-compiler has it). The total adds up, and is -1 (not shown) when a part is not known or the parts do not add up.
+compiler has it). A SARC whose string table passes 256 KiB is read too: the name's offset in an SFAT node is 24 bits,
+and its bits 16 to 23 are the ones a 16-bit mask loses. The total adds up, and is -1 (not shown) when a part is not known
+or the parts do not add up.
 host/hos_main.c, host/discord_rpc.c, host/oot_state_tap.c and nx2/build.py are checked in their source for using them.
 
     python -I -B tests/test_heart_containers.py [--cc gcc]
@@ -104,6 +106,16 @@ def sarc(files, be):
     return out + b"\0" * (data_at - len(out)) + data
 
 
+def deep_sarc(be):
+    """A SARC whose wanted names sit past 256 KiB of string table, where the name offset needs its bits 16 to 23"""
+    files = {}
+    for i in range(1024):   # (each filler name is 255 bytes and a terminator: 1024 * 256 = 256 KiB, word 0x10000)
+        files["f%04d" % i + "y" * 250] = b"filler"
+    files["zs.zsdic"] = b"the-zs-d"
+    files["bcett.byml.zsdic"] = b"the-bcett-d"
+    return sarc(files, be)
+
+
 def c_array(name, data):
     return "static const unsigned char %s[%d] = {%s};\n" % (name, max(len(data), 1), ",".join(str(b) for b in data) or "0")
 
@@ -152,6 +164,12 @@ int main(void) {
             if (heart_sarc_find(p, k, "bcett.byml.zsdic", &a, &b)) CHECK(b <= k && a <= b);
             free(p);
         }
+        const unsigned char *q = be ? PACK_DEEP_BE : PACK_DEEP_LE;
+        const size_t qn = be ? sizeof PACK_DEEP_BE : sizeof PACK_DEEP_LE;
+        p = copy(q, qn);
+        CHECK(heart_sarc_find(p, qn, "bcett.byml.zsdic", &a, &b) && b - a == 11 && !memcmp(p + a, "the-bcett-d", 11));
+        CHECK(heart_sarc_find(p, qn, "zs.zsdic", &a, &b) && b - a == 8 && !memcmp(p + a, "the-zs-d", 8));
+        free(p);
     }
     unsigned long long ids[2];
     CHECK(heart_byml_actor_ids((const unsigned char *)"not a map file", 14, "Obj_Heart_Container", (uint64_t *)ids, 2) == -1);
@@ -203,6 +221,7 @@ def main():
         tag = "BE" if be else "LE"
         data += c_array("MAP_" + tag, byml(actors, be, extra_root_key="Version"))
         data += c_array("PACK_" + tag, sarc({"zs.zsdic": b"the-zs-d", "bcett.byml.zsdic": b"the-bcett-d"}, be))
+        data += c_array("PACK_DEEP_" + tag, deep_sarc(be))
     no_actors = bytearray(byml(actors, 0))
     root = struct.unpack_from("<I", no_actors, 12)[0]
     no_actors[root] = 0xc0   # (the root no longer a dictionary)

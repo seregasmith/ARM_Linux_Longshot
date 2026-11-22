@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DRAW = ROOT / "gpu" / "vk" / "vk_draw.cpp"
 GPROF = ROOT / "gpu" / "vk" / "vk_gprof.h"
-DEV = ROOT / "docs" / "development.md"
+DEV = ROOT / "docs" / "dev" / "reference" / "profiling.md"
 FALLBACK_SPAN = "GprofSpan span(cmd, label);"
 
 
@@ -62,12 +62,12 @@ def main():
     header = GPROF.read_text(encoding="utf-8")
     if '"fallback"' not in header or '"meshconv"' not in header:
         raise SystemExit("vk_gprof.h does not say which work the fallback and meshconv kinds hold")
-    # (the profiling mode's list of what its report shows: its GPU item is the pass timing block, and it says what the two
-    # kinds hold. Not RX_VK_PASS_TIMING's row in the switch table, whose neighbours change too often to edit it alongside)
+    # (profiling.md's item on the pass-timing block's by kind lines says what the two kinds hold. Not RX_VK_PASS_TIMING's
+    # row in the switch table, whose neighbours change too often to edit it alongside)
     lines = DEV.read_text(encoding="utf-8").splitlines()
-    start = next((i for i, line in enumerate(lines) if line.startswith("- **GPU:** the log's last pass timing block")), None)
+    start = next((i for i, line in enumerate(lines) if line.startswith("- The pass-timing block's `by kind` lines")), None)
     if start is None:
-        raise SystemExit("docs/development.md: the profiling mode's GPU item (the pass timing block) is missing")
+        raise SystemExit("docs/dev/reference/profiling.md: the item on the pass-timing block's by kind lines is missing")
     item = [lines[start]]
     for line in lines[start + 1:]:
         if not line.startswith("  "):
@@ -75,7 +75,7 @@ def main():
         item.append(line)
     item = " ".join(part.strip() for part in item)
     if "`fallback prog <key>`" not in item or "`meshconv`" not in item:
-        raise SystemExit("docs/development.md: the profiling mode's GPU item does not name the fallback and meshconv kinds")
+        raise SystemExit("docs/dev/reference/profiling.md: the pass-timing block's by kind item does not name the fallback and meshconv kinds")
     print("pass timing: the mesh fallback's compute and the indirect mesh argument conversion are spans of their own ok")
 
 

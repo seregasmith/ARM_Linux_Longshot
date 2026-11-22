@@ -18,6 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
 from srccut import between, block   # noqa: E402
+from menu_model_fixture import menu_text   # noqa: E402
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
@@ -75,16 +76,20 @@ def check_sources():
     assert "SW(RX_VK_DLSS_PRE_BLOOM, player, bool," in switches, "switches.def: RX_VK_DLSS_PRE_BLOOM's row"
     wanted = block(chain, "bool pre_bloom_wanted(int mode)")
     assert "opts.dlss_pre_bloom != 0" in wanted, "pre_bloom_wanted: the DLAA before the bloom row (off by default)"
-    menu = (vk / "vk_menu.cpp").read_text(encoding="utf-8")
+    # (vk_menu.cpp and its modules, their rows as table lines, #1633: the upscaler rows are gpu/vk/menu/upscaler.cpp's)
+    menu = menu_text(ROOT)
+    module = (vk / "menu" / "upscaler.cpp").read_text(encoding="utf-8")
     assert '{TAB_GRAPHICS, "DLAA before the bloom", &opts.dlss_pre_bloom, 0, 1, 1, tx_onoff,' in menu, "vk_menu.cpp: the row"
     assert menu.index('"DLSS model", &opts.dlss_model') < menu.index('"DLAA before the bloom", &opts.dlss_pre_bloom') < \
         menu.index('"Render resolution", &opts.resolution'), "the row under DLSS model, with the upscaler rows"
-    assert "ur::pre_bloom_shown(dlss_why() == DLSS_OK, upscaler())" in block(menu, "bool row_shown(int i)"), "row_shown"
-    assert "ur::pre_bloom_fixed(upscaler(), pre_bloom_env())" in block(menu, "bool row_fixed(const int* value)"), "row_fixed"
+    # (the row's own shown() and locked(), which row_shown and row_fixed ask of a module's row)
+    assert "ur::pre_bloom_shown(dlss_why() == DLSS_OK, upscaler())" in module, "the row's shown()"
+    assert "ur::pre_bloom_fixed(upscaler(), pre_bloom_env())" in module, "the row's locked()"
+    assert "rows[i].setting->shown()" in block(menu, "bool row_shown(int i)") and \
+        "module_locked(value)" in block(menu, "bool row_fixed(const int* value)"), "row_shown and row_fixed ask a module's row"
     assert 'if (r.value == &opts.dlss_pre_bloom) return "dlss_pre_bloom";' in menu, "ini_key: dlss_pre_bloom"
     assert 'getenv("RX_VK_DLSS_PRE_BLOOM"); e && *e) env_override(&opts.dlss_pre_bloom, !env_value_off(e));' in menu, \
         "RX_VK_DLSS_PRE_BLOOM over the row for a run"
-    assert 'env_switch("RX_VK_PARALLEL") >= 2' in wanted, "pre_bloom_wanted: off with the parallel replay"
     assert "mode == ur::DLAA" in wanted, "pre_bloom_wanted: DLAA only"
 
 

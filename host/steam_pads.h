@@ -3,8 +3,8 @@
 
    Started from Steam, the game gets SDL_GAMECONTROLLER_IGNORE_DEVICES, which lists Valve's controllers (the Steam
    Controller, the Steam Deck's) and others Steam reads itself, and SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1.
-   SDL then opens only Steam Input's stand-in pad, which has no gyroscope or accelerometer, so Motion controls found no
-   pad (#1897: a Steam Controller on CachyOS, and on Windows). Valve's entries come out of that list, so SDL opens the
+   SDL then opens only Steam Input's stand-in pad, which has no gyroscope or accelerometer, so Motion controls would find no
+   pad. Valve's entries come out of that list, so SDL opens the
    real pad as well, all but the Steam Deck's built-in controls (STEAM_PADS_DECK): SDL's Steam Deck driver resets their
    trackpad and button settings as it opens them, which is not yet tested beside Steam Input in Game Mode, so they stay
    as Steam set them. While a Steam stand-in pad is open, a real Valve pad gives its motion only: its buttons and sticks
@@ -52,6 +52,14 @@ static inline int steam_pads_without_valve(const char *in, char *out, size_t cap
         if (*p == ',') p++;
     }
     return dropped;
+}
+
+/* Whether a pad is the Steam Deck's built-in controls: Valve's, the Deck's product id, and no Steam Input handle (a
+   stand-in pad's). Its buttons are then the controls' own, so the mouse interface those controls also expose must not
+   count as gameplay input: in the Deck's desktop layout R2 arrives there as a left click, and the pad's own buttons
+   already carry that action. Known and sampled once a poll, not on connection (host/pad_sdl.c). */
+static inline int steam_pads_deck_builtin(unsigned vendor, unsigned product, unsigned long long steam_handle) {
+    return vendor == STEAM_PADS_VALVE && product == STEAM_PADS_DECK && !steam_handle;
 }
 
 /* Whether a pad gives its motion only: a real Valve pad (vendor 0x28de and no Steam Input handle) while a Steam

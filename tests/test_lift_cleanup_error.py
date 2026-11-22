@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import types
 import unittest
 from unittest import mock
@@ -32,7 +33,7 @@ def production():
                 isinstance(node.test.func, ast.Name) and node.test.func.id == "lifted_before"]
     assert len(branches) == 1
     # (PREPARE: the module global say() reads since --prepare for RecompLauncher; off, as make_game starts)
-    namespace = dict(os=os, sys=sys, hashlib=hashlib, PREPARE=False)
+    namespace = dict(os=os, sys=sys, hashlib=hashlib, time=time, PREPARE=False)   # (time: the lift's wall time it prints)
     exec(compile(ast.Module(body=[key, *definitions], type_ignores=[]), str(SOURCE), "exec"), namespace)
     return namespace, compile(ast.Module(body=branches, type_ignores=[]), str(SOURCE), "exec")
 

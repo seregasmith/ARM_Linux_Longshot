@@ -96,6 +96,10 @@ class LinuxPreflightTests(unittest.TestCase):
             return isfile(path)
 
         self.stack.enter_context(mock.patch.object(os.path, "isfile", side_effect=file_exists))
+        # (a system header here is a name alone, with no text to read: taken as new enough, as the authored ones are)
+        declares = self.build.header_declares
+        self.stack.enter_context(mock.patch.object(self.build, "header_declares",
+                                                   side_effect=lambda path, text: path in self.system_headers or declares(path, text)))
         for name in ("no_throttle", "warn_slow_disk", "stop_stray_compilers", "drop_stale_objects"):
             self.stack.enter_context(mock.patch.object(self.make, name))
         self.stack.enter_context(mock.patch("ctypes.WinDLL", create=True))
@@ -132,6 +136,15 @@ class LinuxPreflightTests(unittest.TestCase):
             dest = Path(cmd[cmd.index("--extract") + 1])
             (dest / "exefs").mkdir(parents=True)
             (dest / "romfs").mkdir()
+            # (what the build and the game's start need from a romfs, make_game.ROMFS_NEEDED: authored stand-ins, the .zs ones
+            # starting as zstd, so the damaged-file check reads them as whole)
+            for names, there in self.make.ROMFS_NEEDED:
+                path = dest / "romfs" / names[0]
+                if there is os.path.isdir:
+                    path.mkdir(parents=True)
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(b"\x28\xb5\x2f\xfd" + b"authored stand-in")
             header = bytearray(0x60)
             header[:4] = b"NSO0"
             header[0x40:0x44] = bytes.fromhex(self.make.BUILD_ID)
@@ -163,7 +176,7 @@ class LinuxPreflightTests(unittest.TestCase):
             base = self.root / ("cache/" + package + "/001" if mode == "cpm" else "explicit/" + package)
             path = base / "include" / probe
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("/* authored header sentinel */\n")
+            path.write_text("/* authored header sentinel */\n" + ("vmaGetAllocationInfo2\n" if probe == "vk_mem_alloc.h" else ""))
             roots.append(str(base))
             if mode != "cpm":
                 os.environ[env] = str(base / "include" if mode == "include" else base)

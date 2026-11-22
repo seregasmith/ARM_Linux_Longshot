@@ -19,12 +19,12 @@ a = p.parse_args()
 source = a.source.resolve()
 main = (source/'gpu/vk/vk_main.cpp').read_text()
 replay = (source/'gpu/vk/vk_replay.cpp').read_text()
-start = replay.index('void present_image(')
+start = replay.index('void present_image_with_trial(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view, bool source_srgb, bool allow_scale, OutputTrialSource trial) {')
 # Read the complete top-level function; capture dependencies can grow its text.
 present = replay[start:replay.index('\n}', start) + 2]
 # (present ahead, #1702: the present itself is present_image's end, present_out, which present_commit also runs; its wait
 # is read from there, the complete function as above)
-out_start = replay.index('static bool present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {')
+out_start = replay.index('static bool present_out(uint32_t index, std::unique_lock<decltype(dev.present_mu)>& qk, OutputTrialSource trial, bool preview_path) {')
 present_out = replay[out_start:replay.index('\n}', out_start) + 2]
 signal = re.search(r'    signal\.semaphore = [^;]+;', present)[0]
 wait = re.search(r'    pi\.pWaitSemaphores = [^;]+;', present_out)[0]
@@ -43,6 +43,35 @@ acquire_loss_start = present.index('    if (res == VK_ERROR_SURFACE_LOST_KHR)')
 acquire_loss = present[acquire_loss_start:present.index('\n#ifndef _WIN32', acquire_loss_start)]
 present_loss_start = present_out.index('    if (res == VK_ERROR_SURFACE_LOST_KHR)')
 present_loss = present_out[present_loss_start:present_out.index('\n    present_finish(res, false);', present_loss_start)]   # (the frame log and the failure line follow, in present_finish)
+# (longshot) the close's own wiring, verbatim from mkwvk_close_asked: the flag, the presenter
+# drain, the retire under the close's locks. Without this extraction the test checks the
+# mechanics only: deleting the close's statements from the source would stay invisible.
+close_start = main.index('    dev.closing.store(true, std::memory_order_release);')
+# (up to the function's own closing brace at column zero, without taking it: the close body has
+# 4-space closing braces of its own now — the patience loop — and the old 'newline + 4 spaces'
+# anchor would have stopped in the middle of them)
+close_end = main.index('\n}', close_start)
+close_seq = main[close_start:close_end]
+# (longshot) and the same for the initial chain: start() takes the close's lock and checks its
+# flag before the first create_swapchain, so a window closing during startup gets no chain.
+SDL_LOCKED = '        std::lock_guard pi(present_image_mu);\n        if (dev.closing.load(std::memory_order_acquire)) return 0;\n        if (!create_swapchain((uint32_t)width, (uint32_t)height)) {'
+guard_start = main.index(SDL_LOCKED)
+guard_end = main.index('\n        }', guard_start) + len('\n        }')
+start_guard_seq = main[guard_start:guard_end]
+# (longshot) the Windows path carries the same guard (hos_win runs the renderer on its own
+# thread: the same close race exists there): pinned by its own anchor text.
+WIN_LOCKED = '        std::lock_guard pi(present_image_mu);\n        if (dev.closing.load(std::memory_order_acquire)) return 0;\n        if (!create_swapchain((uint32_t)(r.right - r.left), (uint32_t)(r.bottom - r.top))) return 0;'
+assert WIN_LOCKED in main, "start(): the Windows initial chain is not under the close's lock and flag"
+assert SDL_LOCKED in main, "start(): the SDL initial chain is not under the close's lock and flag"
+# (longshot) and the create_swapchain guard: the real function answers not-made while a present is
+# in the making, instead of retiring the chain under the presenter thread (which copies the image
+# index at the hand-off and reads dev.swap_rendered[index] after its waits). The fixture's stub
+# stands in for the rest of the function, so this line pins the guard itself.
+assert 'bool create_swapchain(uint32_t width, uint32_t height) {\n    // (longshot, review)' in main and \
+       '    if (!swapchain_made_ready()) return false;' in main.split('bool create_swapchain(uint32_t width, uint32_t height) {')[1][:2000], \
+       "create_swapchain must answer not-made while a present is in the making"
+assert 'if (!swapchain_made_ready()) {' in main.split('bool invalidate_lost_surface(')[1][:700], \
+       "the lost-surface path must not let the chain go under a present in the making"
 commit_start = replay.index('bool present_commit(const PendingPresent& p)')
 commit = replay[commit_start:replay.index('\n}', commit_start) + 2]
 begin = present[present.index('{') + 1:present.index('    if (src) {')]
@@ -57,6 +86,8 @@ fixture = r'''
 #include <utility>
 #include <atomic>
 #include <mutex>
+#include <chrono>
+#include <thread>
 using VkSemaphore=uint64_t; using VkImage=uint64_t; using VkSwapchainKHR=uint64_t; using VkResult=int;
 constexpr uint64_t VK_NULL_HANDLE=0;
 constexpr int VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO=1, VK_SUCCESS=0;
@@ -67,6 +98,7 @@ struct Extent { uint32_t width,height; };
 struct Device { int device=1;uint64_t swapchain=0;int swap_format=0;Extent swap_extent{};bool swap_mutable=false;std::atomic<uint32_t> swap_spare{0};std::atomic<uint32_t> swap_slots{3};
     std::vector<VkImage> swap_images;std::vector<VkSemaphore> swap_rendered;
     std::atomic<uint64_t> swap_resize{0};std::mutex present_mu;uint64_t swapchain_generation=0;
+    std::atomic<bool> closing{false};   // (vk_internal.h: the close retired the chain; present_image must not make another)
     int instance=1;uint64_t surface=1;bool present_queue_supported=true; } dev;
 struct { int hdr=0, framegen=0; } opts;   // (the Insert menu's HDR and Frame generation rows: present_image remakes the swapchain when they change)
 unsigned image_count=4, made=0, fail_at=0;uint64_t serial=1000;
@@ -88,9 +120,13 @@ Reflex& rx(){return cached;}
 void reflex_swapchain_created(uint64_t sc) {cached.swapchain=sc;cached.latency=cached.frame_marked=true;cached.mode=1;}
 ''' + reset + r'''
 template<class... T> void logf(const char*,T...) {}
-void present_thread_drain() {}   // (RX_VK_PRESENT_THREAD off: nothing handed over)
+namespace rec { struct Settled {}; }   // (vk_replay.cpp's present_commit names the recorder's type; the fixture stands in)
+bool drain_says=true;   // (the source's present_thread_drain returns whether the presenter settled; the fixture answers)
+bool present_thread_drain() { return drain_says; }   // (RX_VK_PRESENT_THREAD off: nothing handed over)
+bool swapchain_made_ready() { return present_thread_drain(); }   // (vk_replay.cpp: the same rule, factored; the fixture answers through the drain)
 void fg_latency_swapchain_gone() {}   // (RX_VK_FG_LATENCY_LOG unset: no waits for presents)
 std::atomic<bool> presenter_surface_lost{false};   // (and nothing found lost by it)
+std::atomic<bool> output_preview_path{false};
 int vkCreateSwapchainKHR(int,const CreateInfo* ci,void*,uint64_t* out) {
     if(ci->oldSwapchain) {
         if(!chains.count(ci->oldSwapchain) || retired.count(ci->oldSwapchain))bad_chain=true;
@@ -137,6 +173,7 @@ unsigned called_width=0,called_height=0,acquires=0;
 bool preflight_fail=false,stale=false;uint64_t newer_resize=0;
 bool create_swapchain(unsigned width,unsigned height) {
     called_width=width;called_height=height;
+    if(!swapchain_made_ready())return false;   // (the real source's first statement, pinned by the assert above)
     if(newer_resize)dev.swap_resize.store(newer_resize);
     if(preflight_fail)return false;
     return recreate();
@@ -147,6 +184,16 @@ int swapchain_framegen() {return 0;}   // (vk_main.cpp: frame generation's multi
 int framegen_now() {return 0;}   // (vk_framegen.cpp: frame generation's setting as it runs, Off)
 bool swapchain_dlssg() {return false;}   // (vk_main.cpp: and DLSS-G makes its sets: no)
 std::mutex present_image_mu;
+// (longshot) the close's wiring and start's guard, verbatim from the sources: the fixture runs
+// them as the sources write them. Delete either block in vk_main.cpp and the extraction above
+// stops finding it; change its behaviour and these calls fail.
+void close_now() {
+''' + close_seq + r'''
+}
+bool startup_guard(unsigned width, unsigned height) {
+''' + start_guard_seq + r'''
+    return true;
+}
 struct PendingPresent {
     bool used;
     uint32_t index;
@@ -292,9 +339,95 @@ int main() {
     if(bad_destroy || bad_chain)return 8;
     reflex_swapchain_destroyed();
     if(cached.swapchain || cached.latency || cached.frame_marked || cached.mode!=-1)return 26;
+    // (longshot) The close itself, run as the source wires it (close_now is close_seq, verbatim
+    // from mkwvk_close_asked): it sets the flag, drains the presenter, retires under the close's
+    // locks (the Deck's Game Mode compositor makes its final display commit as the window goes
+    // away; pinned swapchain images and an un-idle device starve that commit, and the player
+    // sees the last frames as garbage over the UI). After the retire, present_image must NOT
+    // make a chain again: the window is closing, and a new chain would take the screen back
+    // from the compositor mid-transition.
+    dev.surface=3;create_result=0;idle=false;
+    if(!recreate() || !dev.swapchain)return 44;   // (a live chain to close over)
+    idle=false;
+    close_now();   // (the real close wiring: flag, drain, retire under both locks)
+    if(!idle || dev.swapchain || bad_destroy)return 42;   // (the device idled, the chain gone, destructions in order)
+    if(!dev.closing.load())return 45;   // (and the flag it sets is the close's own, not the fixture's)
+    count=acquires;
+    present_begin();   // (the real present_image prefix: under closing it returns before any acquire or create)
+    if(acquires!=count || dev.swapchain || bad_chain)return 43;
+    // (the review's catch, pinned): a close over a surface the lost-surface path ALREADY let go
+    // must not wait on the device or destroy again — after a lost device that wait is what hangs
+    // an exit instead of ending it. Retire is gated on a chain actually being held.
+    dev.closing.store(false); dev.surface=3; create_result=VK_ERROR_SURFACE_LOST_KHR; idle=false;
+    if(recreate())return 48;                       // (surface loss: the lost-surface path let the chain go)
+    if(dev.swapchain)return 49;                    // (nothing held to let go anymore)
+    idle=false; destroyed_swapchain=0;
+    close_now();                                   // (close over a window with no chain)
+    if(idle || destroyed_swapchain)return 50;      // (no device wait, no destroy: it lets go only what is held)
+    if(!dev.closing.load())return 51;              // (the flag still goes up: no present takes a chain back)
+    create_result=0;                               // (this case's surface-loss result: not the next case's)
+    // (start's guard, verbatim): a window already closing during startup gets no initial chain;
+    // a window not closing does. The lock is the close's, so the two cannot cross.
+    dev.closing.store(false); dev.swap_resize.store(0); preflight_fail=false; newer_resize=0;
+    if(!startup_guard(640,480) || !dev.swapchain)return 46;
+    close_now();
+    if(startup_guard(640,480) || dev.swapchain)return 47;
+    // (the round-one majors, pinned): the close only destroys when the presenter is proven idle,
+    // and it never hangs behind a present that holds the mutex. A close while the mutex is held
+    // and the drain answers false waits a bounded few seconds, then leaves the chain to the
+    // process exit — exactly what happened before this block existed — raising the flag all the
+    // same. When the way is clear again, the same close retires normally.
+    dev.closing.store(false); dev.swap_resize.store(0); idle=false; destroyed_swapchain=0;
+    if(!recreate())return 52;                       // (a chain held again for these cases)
+    std::atomic<bool> hold_go{true}, hold_has{false};
+    std::thread holder_t([&]{ std::lock_guard g(present_image_mu); hold_has=true; while(hold_go) std::this_thread::sleep_for(std::chrono::milliseconds(10)); });
+    while(!hold_has) std::this_thread::sleep_for(std::chrono::milliseconds(5));   // (the present really holds the mutex before the close tries)
+    drain_says=false;
+    auto t0=std::chrono::steady_clock::now();
+    close_now();                                    // (patience, then give up: no destroy under a present in flight)
+    auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-t0).count();
+    hold_go=false; holder_t.join();                 // (the present over)
+    if(ms<4500 || ms>7000)return 53;                // (the bounded wait, not a hung close)
+    if(!dev.swapchain || idle || destroyed_swapchain)return 54;   // (chain left to the exit, nothing destroyed)
+    if(!dev.closing.load())return 55;               // (the flag went up all the same)
+    drain_says=true;
+    close_now();                                    // (the present over: the close retires as usual)
+    if(dev.swapchain || !idle || !destroyed_swapchain)return 56;
+    // (and the drain's answer alone gates the destroy: mutex free, presenter stuck mid-present:
+    // destroying would leave it touching a chain that is gone)
+    dev.closing.store(false); idle=false; destroyed_swapchain=0;
+    if(!recreate())return 57;
+    drain_says=false;
+    close_now();
+    if(!dev.swapchain || idle || destroyed_swapchain)return 58;
+    drain_says=true;
+    // (the review's other catch, pinned): the queue's lock is held across vkQueueSubmit2 by
+    // queue_flush, so a submit the driver stalled leaves the image mutex free and the presenter
+    // idle: the close must not wait on that lock without end either. It waits its bounded
+    // patience, changes nothing, and retires once the queue is free.
+    dev.closing.store(false); idle=false; destroyed_swapchain=0;
+    if(!recreate())return 59;
+    const uint64_t q_chain=dev.swapchain, q_destroyed=destroyed_swapchain;
+    const bool q_idle=idle;                        // (recreate's own state: what "changed nothing" is measured from)
+    std::atomic<bool> q_go{true}, q_has{false};
+    std::thread q_holder([&]{ std::lock_guard g_q(dev.present_mu); q_has=true; while(q_go) std::this_thread::sleep_for(std::chrono::milliseconds(10)); });
+    while(!q_has) std::this_thread::sleep_for(std::chrono::milliseconds(5));   // (the queue really held before the close tries)
+    auto q0=std::chrono::steady_clock::now();
+    close_now();                                    // (patience on the queue's lock, then give up)
+    auto qms=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-q0).count();
+    q_go=false; q_holder.join();
+    if(qms<4500 || qms>7000)return 60;              // (the bounded wait, not a hung close)
+    if(dev.swapchain!=q_chain || idle!=q_idle || destroyed_swapchain!=q_destroyed)return 61;   // (nothing changed: the chain is left to the exit)
+    if(!dev.closing.load())return 62;               // (the flag went up all the same)
+    close_now();                                    // (the queue free again: the close retires as usual)
+    if(dev.swapchain || !idle || destroyed_swapchain!=q_chain)return 63;
     std::puts("PASS: per-image semaphores, retirement, query/allocation/create failures, latest-resize retry and acquire guard");
     std::puts("PASS: acquire/present/create surface loss, ordered destruction, and deferred present invalidation with handle reuse");
     std::puts("PASS: a smaller replacement blocks deferred acquire and allows the ordinary path");
+    std::puts("PASS: a close retires the chain with the device idled, and no present makes a new one after");
+    std::puts("PASS: the close and the startup guard run as the sources wire them (the flag and locks are the source's)");
+    std::puts("PASS: the close gives up its wait and skips the destroy when a present is still running");
+    std::puts("PASS: the close gives up its wait on the queue's lock too, and retires once the queue is free");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='present-semaphores-') as directory:

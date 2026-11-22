@@ -2,7 +2,8 @@
 
 host/nn_audio.c's audio_apply_gain is compiled from the source and run: full volume leaves the samples alone, a change
 ramps over one frame (no click), the frame ends at the gain asked for, nothing clips, and every channel gets the same
-gain. The mixer applies it to each frame before the output. The Volume row's curve is squared (50% is -12 dB), and Mute
+gain. The mixer applies it to each frame before the output, and the same ramp to the controller speaker's frame
+(host/pad_speaker.c: Controller only and Controller + TV sounds), so Mute in background silences the pad too. The Volume row's curve is squared (50% is -12 dB), and Mute
 in background's foreground check lets an overlay (a toast, a tray flyout) count as the game's only while the game was
 the last normal window in front, as host/nn_hid.c's game_in_front does. The option ids the host reads (HOS_OPT_VOLUME and
 HOS_OPT_MUTE_BACKGROUND) are checked against the renderer's option table (gpu/vk/vk_replay.cpp) and the menu's rows and
@@ -89,6 +90,26 @@ int main(void) {
     CHECK(audio_front_decide(0, 0, &last) == 0 && last == 0);   /* (alt-tab to a browser) */
     CHECK(audio_front_decide(0, 1, &last) == 0);   /* (a toast while the game is behind: still muted) */
     CHECK(audio_front_decide(1, 0, &last) == 1 && last == 1);   /* (back to the game) */
+    /* the controller speaker's frame (host/pad_speaker.c) gets the TV's ramp: Mute in background silences a Controller
+       only sound (on the pad's frame alone) and a Controller + TV one (on both) by the frame's end, as the TV's */
+    static float pad[FRAMES];
+    for (int i = 0; i < FRAMES; i++) pad[i] = 0.5f;
+    audio_apply_gain_mono(pad, FRAMES, 1.0f, 1.0f);
+    CHECK(pad[0] == 0.5f && pad[FRAMES - 1] == 0.5f);   /* (full volume: as it was) */
+    audio_apply_gain_mono(pad, FRAMES, 1.0f, 0.0f);   /* (Controller only, alt-tab with Mute in background) */
+    CHECK(pad[0] > 0.49f && pad[FRAMES - 1] == 0.0f);
+    for (int i = 1; i < FRAMES; i++) CHECK(pad[i] <= pad[i - 1]);
+    fill(pcm, FRAMES * CH, 20000);
+    for (int i = 0; i < FRAMES; i++) pad[i] = 0.5f;
+    audio_apply_gain(pcm, FRAMES, CH, 1.0f, 0.0f);   /* (Controller + TV: both copies, one ramp) */
+    audio_apply_gain_mono(pad, FRAMES, 1.0f, 0.0f);
+    CHECK(pcm[(FRAMES - 1) * CH] == 0 && pad[FRAMES - 1] == 0.0f);
+    for (int i = 0; i < FRAMES; i++) pad[i] = 0.5f;
+    audio_apply_gain_mono(pad, FRAMES, 0.0f, 0.0f);   /* (still muted: silence) */
+    for (int i = 0; i < FRAMES; i++) CHECK(pad[i] == 0.0f);
+    for (int i = 0; i < FRAMES; i++) pad[i] = 0.5f;
+    audio_apply_gain_mono(pad, FRAMES, 0.25f, 0.25f);   /* (Volume 50%%: a quarter, as the TV) */
+    for (int i = 0; i < FRAMES; i++) CHECK(fabsf(pad[i] - 0.125f) < 1e-6f);
     return 0;
 }
 """
@@ -100,6 +121,12 @@ def source_checks():
     gain_at, out_at = loop.find("audio_apply_gain("), loop.find("output_frame(pcm)")
     if gain_at < 0 or out_at < 0 or gain_at > out_at:
         raise SystemExit("nn_audio.c: the mixer no longer applies the player's volume before the output")
+    pad_gain, pad_write = loop.find("audio_apply_gain_mono(speaker_frame"), loop.find("hos_pad_speaker_write(speaker_frame")
+    if not (gain_at < pad_gain < pad_write):
+        raise SystemExit("nn_audio.c: the controller speaker's sounds are written before the player's volume and Mute in background")
+    render = block(audio, audio.index("static void render_frame("))
+    if "hos_pad_speaker_write(" in render:
+        raise SystemExit("nn_audio.c: render_frame hands the controller its sounds before the player's volume")
     player = block(audio, audio.index("static float audio_player_gain(void)"))
     if "rx_option(HOS_OPT_VOLUME, 100)" not in player or "rx_option(HOS_OPT_MUTE_BACKGROUND, 0)" not in player:
         raise SystemExit("nn_audio.c: the volume is not read as HOS_OPT_VOLUME (default 100) and HOS_OPT_MUTE_BACKGROUND (off)")
@@ -119,10 +146,13 @@ def source_checks():
     for default in ("int volume = 100;", "int mute_background = 0;"):
         if default not in header:
             raise SystemExit("vk_menu.h: out of the box the Audio tab is not 100% and not muted in background")
-    if not re.search(r'\{TAB_AUDIO, "Volume", &opts\.volume, 0, 100, 5, tx_percent,', menu):
-        raise SystemExit("vk_menu.cpp: the Audio tab lost its Volume row (0 to 100%, steps of 5)")
-    if not re.search(r'\{TAB_AUDIO, "Mute in background", &opts\.mute_background, 0, 1, 1, tx_onoff,', menu):
-        raise SystemExit("vk_menu.cpp: the Audio tab lost its Mute in background row")
+    rows = read("gpu", "vk", "menu", "volume.cpp")   # (the rows' module, #1633)
+    if not re.search(r'menu::tab\("audio"\)', rows) or not re.search(
+            r'\.label = "Volume",.*?\.kind = menu::Kind::Slider,\s*\.value = &opts\.volume,\s*\.lo = 0, \.hi = 100,\s*\.step = 5,'
+            r'.*?\.text = menu_text::percent', rows, re.S):
+        raise SystemExit("gpu/vk/menu/volume.cpp: the Audio tab lost its Volume row (0 to 100%, steps of 5)")
+    if not re.search(r'\.label = "Mute in background",.*?\.kind = menu::Kind::Toggle,\s*\.value = &opts\.mute_background,', rows, re.S):
+        raise SystemExit("gpu/vk/menu/volume.cpp: the Audio tab lost its Mute in background row")
     titles = re.search(r"tab_titles\[TAB_COUNT\] = \{([^}]*)\}", menu).group(1)
     if '"Audio"' not in titles:
         raise SystemExit("vk_menu.cpp: the tab strip has no Audio title")
@@ -144,14 +174,16 @@ def main():
     source_checks()
     audio = read("host", "nn_audio.c")
     fn = "\n".join(block(audio, audio.index(head)) for head in (
-        "static float audio_apply_gain(", "static float audio_volume_curve(", "static int audio_front_decide("))
+        "static float audio_apply_gain(", "static void audio_apply_gain_mono(", "static float audio_volume_curve(",
+        "static int audio_front_decide("))
     with tempfile.TemporaryDirectory(prefix="audio-volume-") as tmp:
         src, exe = Path(tmp) / "audio_volume.c", Path(tmp) / "audio_volume"
         src.write_text(FIXTURE % fn, encoding="utf-8")
         subprocess.run([args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", str(src), "-o", str(exe), "-lm"], check=True)
         subprocess.run([str(exe)], check=True)
     print("PASS: the volume ramps over a frame without clipping on a squared curve, a toast behind the game does not "
-          "unmute it, and the Audio tab's options are its own")
+          "unmute it, the controller speaker's sounds get the same volume and Mute in background, and the Audio tab's "
+          "options are its own")
 
 
 if __name__ == "__main__":

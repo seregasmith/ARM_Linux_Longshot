@@ -16,6 +16,10 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
+from menu_model_fixture import menu_text  # noqa: E402
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
@@ -34,7 +38,7 @@ def main():
 
     ui_h = (ROOT / "gpu/vk/vk_ui.h").read_text(encoding="utf-8")
     menu_h = (ROOT / "gpu/vk/vk_menu.h").read_text(encoding="utf-8")
-    menu_cpp = (ROOT / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8")
+    menu_cpp = menu_text()   # (vk_menu.cpp and its modules' rows, #1633)
 
     # 1. Glyph and prompt
     check("kCompact" in ui_h, "vk_ui.h: enum Glyph must include kCompact")
@@ -59,7 +63,8 @@ def main():
           'vk_menu.cpp: draw_tune_bar must offer {ui::kCompact, "Full menu", compact_key_name} prompt')
     # (Save my pipeline list and the Bug report, actions rather than pages, say Save: tests/test_pipeline_share.py,
     # tests/test_bug_report.py)
-    check('tune_prompts[1] = {ui::kConfirm, confirms ? (pending == &r ? "Confirm" : r.name) : &r == &rows[kBugReportRow] || is_share_row(r) ? "Save" : "Open"};' in menu_cpp,
+    # (#1633: a module's button says its own verb)
+    check('tune_prompts[1] = {ui::kConfirm, confirms ? (pending == &r ? "Confirm" : r.name) : r.setting && r.setting->verb ? r.setting->verb : "Open"};' in menu_cpp,
           "vk_menu.cpp: draw_tune_bar must use row name or Confirm for Restart/Quit")
 
     # 5. Motion tab title in compact bar

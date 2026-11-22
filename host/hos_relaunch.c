@@ -184,6 +184,10 @@ static void relaunch(void) {
 /* Shared tail after rx_close_asked returned. No process exit or restart here: the Windows stop worker must
    keep its watchdog alive until all explicit close work and the log flush have returned. */
 void hos_close_finish(void) {
+    void hos_input_movie_close(void);   /* (input_movie.c: an input recording's last run, and a playback's count) */
+    hos_input_movie_close();
+    void hos_pad_speaker_shutdown(void);   /* (longshot) host/pad_speaker.c: the DualSense's sound goes back to its jack */
+    hos_pad_speaker_shutdown();
     void hos_fs_wait_writes(void);   /* (nn_fs.c: a file the game is writing, up to 3 s) */
     hos_fs_wait_writes();
     hos_log("stop: close work done (a file the game was writing waited for, at most 3 s)");

@@ -1,7 +1,7 @@
 /* Windowless Windows stop requests. No renderer, save or log work runs on a console handler thread.
    The hidden top-level window is never shown: unlike HWND_MESSAGE, it receives enumerated/broadcast messages.
    Only OS-ending events arm a deadline. After explicit close work, this route skips DLL detach: ExitProcess
-   would kill the watchdog before detach, where a driver can hang. See docs/development.md. */
+   would kill the watchdog before detach, where a driver can hang. See docs/dev/developing.md, "Stopping a run". */
 #ifdef _WIN32
 #include <windows.h>
 

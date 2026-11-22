@@ -16,7 +16,7 @@ import struct
 import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
-GUIDE = Path('docs/images/guide')
+GUIDE = Path('docs/user/images/guide')
 LONGSHOT = 'https://git.magicbean.dev/MagicBeanDev/Longshot'
 LAUNCHER = 'https://git.magicbean.dev/MagicBeanDev/LongshotLauncher'
 SHA256 = re.compile(r'[0-9a-f]{64}\Z')

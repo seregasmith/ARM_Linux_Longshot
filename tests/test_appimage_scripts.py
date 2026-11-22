@@ -1,10 +1,10 @@
-"""The AppImage carries scripts/, so NVIDIA DLSS (nx2/make_game.py's ngx_script(), scripts/ngx_sdk.py) can be fetched from a
+"""The AppImage carries scripts/, so NVIDIA DLSS (nx2/make_game.py's ngx_script(), scripts/fetch.py) can be fetched from a
 release AppImage and not only from a source checkout. Runs the real copy block of scripts/linux/appimage.sh into a
 temporary folder; nothing is built.
 
 Issue: the comment above the copy ("the sources the player's build compiles, and the scripts") already said scripts
 belonged here, but the cp -a line itself left scripts out, so LONGSHOT_NGX_SDK/--fetch-ngx-sdk on a released AppImage
-failed with FileNotFoundError on scripts/ngx_sdk.py.
+failed with FileNotFoundError on the DLSS fetcher (scripts/ngx_sdk.py then, scripts/fetch.py now).
 
     python -I -B tests/test_appimage_scripts.py
 """
@@ -17,8 +17,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WANT = {
-    "scripts/ngx_sdk.py": "scripts/ngx_sdk.py",
-    "scripts/linux/ngx-sdk.sh": "scripts/linux/ngx-sdk.sh",
+    "scripts/fetch.py": "scripts/fetch.py",
+    "scripts/helpers.py": "scripts/helpers.py",   # (fetch.py imports it)
 }
 
 

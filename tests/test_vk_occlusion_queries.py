@@ -1,5 +1,5 @@
 """Real occlusion counts on Vulkan (RX_VK_OCC_QUERIES, gpu/vk/vk_replay.cpp): Ocarina of Time reads its samples-passed
-reports back on the CPU and leaves out of its draw lists the objects whose count was 0 (docs/development.md). The rule
+reports back on the CPU and leaves out of its draw lists the objects whose count was 0 (RX_VK_OCC_QUERIES in gpu/vk/switches.def). The rule
 under test: a count that is not known for sure stays "visible" (4096); a wrong 0 hides an object that may be in view.
 
 The real code is cut out of the sources and compiled against a fake query pool, command buffer and guest memory:
@@ -14,7 +14,7 @@ The real code is cut out of the sources and compiled against a fake query pool, 
   report stays visible; every query is begun at most once;
 - occ_queries_on() in its own process per environment: RX_VK_OCC_FIXED wins over RX_VK_OCC_QUERIES=1, and the queries
   stay on with RX_VK_ASYNC=1 (the render thread); occ_copy_wanted() likewise: the copies on by default with Intel's
-  Windows driver on a discrete GPU only, RX_VK_OCC_COPY either way, off with the parallel replay.
+  Windows driver on a discrete GPU only, RX_VK_OCC_COPY either way.
 
 The rest is checked in the source: where the helpers are called, every draw command in draw() preceded by its query's
 issue with no way out between, the guard made after StatsQuery, the stopped queues' reports made visible.
@@ -100,7 +100,12 @@ void logf(const char*, ...) {}
 '''
 
 FIXTURE = COMMON + r'''
-struct { VkDevice device = nullptr; bool occlusion_precise = true; int driver_id = 5; struct { int deviceType = 2; } props; } dev;
+// (policy.occ_copy: the copies on, as device_policy.h has them for Intel's Windows driver on a discrete GPU)
+struct {
+    VkDevice device = nullptr;
+    bool occlusion_precise = true;
+    struct { bool occ_copy = true; } policy;
+} dev;
 struct NvnState {
     bool render_enabled = true, raster_discard = false;
     uint64_t occ_next = 0, occ_first = 0, occ_limit = 0;
@@ -168,7 +173,6 @@ void vkCmdBeginQuery(VkCommandBuffer, VkQueryPool, uint32_t q, int) {
 }
 void vkCmdEndQuery(VkCommandBuffer, VkQueryPool, uint32_t q) { ends++; open_q.erase(q); }
 // RX_VK_OCC_COPY: the copies a recording's end records, and the host memory the GPU writes them to (gpu_copies runs them)
-int par_threads() { return 0; }
 #define VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 1000314000
 #define VK_STRUCTURE_TYPE_DEPENDENCY_INFO 1000314003
 #define VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT 0x1000ull
@@ -237,12 +241,12 @@ void gpu_runs() {
 // the replay's side, through vk_replay.cpp's helpers as its cases call them
 NvnState S;
 uint64_t value = 10;   // (rec_cur_value)
-void reset(NvnState& s = S) { occ_counter_reset(s, false, value); }
-std::vector<uint32_t> draws(int n, bool dry = false, NvnState& s = S) {
+void reset(NvnState& s = S) { occ_counter_reset(s, value); }
+std::vector<uint32_t> draws(int n, NvnState& s = S) {
     std::vector<uint32_t> q;
     for (int i = 0; i < n; i++) {
         DrawArgs da;
-        occ_take(s, da, dry);
+        occ_take(s, da);
         if (da.occ_pool) q.push_back(da.occ_query), sent_in[da.occ_query] = value;
     }
     return q;
@@ -445,7 +449,7 @@ int main() {
         occ_state_copied(B);
         std::set<uint32_t> in_use;
         auto take = [&](NvnState& s, int n) {
-            auto q = draws(n, false, s);
+            auto q = draws(n, s);
             for (uint32_t x : q) { CHECK(!in_use.count(x)); in_use.insert(x); }
             return q;
         };
@@ -517,7 +521,7 @@ int main() {
             reset();
             DrawArgs da;
             da.groups[0] = groups;
-            occ_take(S, da, false);
+            occ_take(S, da);
             CHECK(da.occ_pool);
             sent_in[da.occ_query] = value;
             path = how;
@@ -571,21 +575,10 @@ int main() {
     occ_end_buffer(S);
     begin(S, none);
     reset();
-    // a dry pass numbers its draws as a worker does, but attaches no query
     const NvnState before = S;
-    CHECK(draws(4, true).empty() && S.occ_next == before.occ_next + 4);
-    S = before;
     auto w = draws(4);
     CHECK(w.size() == 4 && w[0] == before.occ_next % kOccPool);
     S = before;
-    // a worker numbers from its copy and frees nothing at a reset
-    {
-        NvnState wk = before;
-        draws(2, false, wk);
-        const size_t n0 = occ_pending.size();
-        occ_counter_reset(wk, true, value);
-        CHECK(occ_pending.size() == n0 && wk.occ_first == before.occ_next + 2);
-    }
     // no draws counted while off: discarded rasterization, a false condition, or no limit
     S.raster_discard = true;
     CHECK(draws(2).empty() && S.occ_next == before.occ_next);
@@ -747,7 +740,7 @@ SWITCH_CASES = [
 ]
 
 # occ_copy_wanted() alone (RX_VK_OCC_COPY): on by default with Intel's Windows driver on a discrete GPU only, where it was
-# measured; the switch either way; off with the parallel replay. FAKE_GPU: the driver's VkDriverId and the deviceType
+# measured; the switch either way. FAKE_GPU: the driver's VkDriverId and the deviceType
 # (the default and the switch are device_policy.h's, occ_copy, which occ_copy_wanted reads: the fixture makes that GPU's
 # policy with the real environment, then asks the function cut from vk_replay.cpp. Not COMMON: device_policy.h takes the
 # Vulkan headers' own types)
@@ -756,7 +749,6 @@ COPY_SWITCH = r'''
 #include <cstdlib>
 #include "device_policy.h"
 static struct { mkwvk::DevicePolicy policy; } dev;
-int par_threads() { const char* e = getenv("RX_VK_PARALLEL"); return e ? atoi(e) : 0; }
 ''' + "%COPY%" + r'''
 int main() {
     int driver = 0, type = 0;
@@ -780,29 +772,28 @@ COPY_CASES = [
     ({"FAKE_GPU": "%d,%d" % (INTEL_WINDOWS, DISCRETE), "RX_VK_OCC_COPY": "0"}, 0),
     ({"FAKE_GPU": "%d,%d" % (AMD, DISCRETE), "RX_VK_OCC_COPY": "1"}, 1),
     ({"FAKE_GPU": "%d,%d" % (INTEL_WINDOWS, INTEGRATED), "RX_VK_OCC_COPY": "1"}, 1),
-    ({"FAKE_GPU": "%d,%d" % (INTEL_WINDOWS, DISCRETE), "RX_VK_PARALLEL": "3"}, 0),   # (its workers record the queries)
 ]
 
 
 def check_wiring(replay, draw):
     """Where the helpers are called, checked in the source"""
-    # every draw takes its query before it is recorded (the dry pass too)
+    # every draw takes its query before it is recorded
     for case in ("case NOP_DRAW: {", "case NOP_DRAW_IDX: {", "case NOP_DRAW_INDIRECT: {", "case NOP_DRAW_MESH: {"):
         body = block(replay, case)
-        take = body.index("occ_take(s, da, dry);")
-        assert take < body.index("if (s.render_enabled && !s.raster_discard && !dry) {"), case
+        take = body.index("occ_take(s, da);")
+        assert take < body.index("if (s.render_enabled && !s.raster_discard) {"), case
         assert "DrawArgs da;" not in body[take:], "%s: a second DrawArgs after the query was taken" % case
-    # a report closes its run in every mode, before the workers leave the case; the reset and report pass the submission
+    # a report closes its run; the reset and report pass the submission
     # being recorded, not the last begin_recording's value
     report = block(replay, "case NOP_REPORT_COUNTER: {")
-    assert report.index("occ_close(s, ") < report.index("if (worker) break;")
+    assert report.index("occ_close(s, ") < report.index("occ_reported(occ_run, ")
     assert "occ_reported(occ_run, c.addr, rec[1], flag_written, rec_cur_value);" in report
     reset = block(replay, "case NOP_RESET_COUNTER: {")
-    assert "occ_counter_reset(s, worker, rec_cur_value);" in reset
+    assert "occ_counter_reset(s, rec_cur_value);" in reset
     assert "occ_value" not in replay, "a global value every begin_recording overwrites"
-    # one numbering: set before a parallel replay copies its start state, written back however the replay returns
+    # one numbering: set before the replay, written back however the replay returns
     handle = block(replay, "const uint8_t* replay_handle(")
-    assert handle.index("occ_begin_buffer(state, rec_cur_value, occ_open_oldest(&state));") < handle.index("const NvnState start = state;")
+    assert handle.index("occ_begin_buffer(state, rec_cur_value, occ_open_oldest(&state));") < handle.index("replay(cmd, state, h);")
     assert handle.index("~OccEnd() { occ_end_buffer(s); }") < handle.index("replay(cmd, state, h);")
     assert "occ_begin_buffer(*cur_state" in block(replay, "void bench_replay(")
     assert "occ_state_copied(it->second);" in block(replay, "void use_queue_state(uint64_t queue) {")
@@ -815,7 +806,8 @@ def check_wiring(replay, draw):
     assert "occ_collect();" in block(replay, "Recording& begin_recording(uint64_t value)")
     # RX_VK_OCC_COPY: a recording's queries copied after its end barrier (its draws done), before it is submitted; every
     # recording's end forgets them, so none is copied by a later recording than its own
-    for marker, c in (("void maybe_split(VkCommandBuffer& cmd) {", "cmd"), ("void finish_recording(uint64_t value) {", "r.cmd")):
+    # (a part's end: split_part, which maybe_split and early_split end a part with)
+    for marker, c in (("void split_part(VkCommandBuffer& cmd) {", "cmd"), ("void finish_recording(uint64_t value) {", "r.cmd")):
         body = block(replay, marker)
         end = body.index('full_barrier(%s, "barrier (recording end)");' % c)
         assert end < body.index("occ_copy_part(%s);" % c) < body.index("submit_recording("), marker
@@ -882,13 +874,13 @@ def main():
         exe = compile_and_run(args.cxx, tmp, "copy", COPY_SWITCH.replace("%COPY%", block(replay, "bool occ_copy_wanted()")),
                               includes=policy_headers)
         for extra, want in COPY_CASES:
-            env = {k: v for k, v in os.environ.items() if not k.startswith(("RX_VK_OCC", "RX_VK_PARALLEL", "FAKE_GPU"))}
+            env = {k: v for k, v in os.environ.items() if not k.startswith(("RX_VK_OCC", "FAKE_GPU"))}
             env.update(extra)
             got = int(subprocess.run([str(exe)], check=True, capture_output=True, text=True, env=env).stdout.strip())
             if got != want:
                 sys.exit("occ_copy_wanted() with %s: %d, want %d" % (extra, got, want))
         print("PASS: occ_copy_wanted(): on by default with Intel's Windows driver on a discrete GPU only; RX_VK_OCC_COPY "
-              "either way; off with the parallel replay")
+              "either way")
     check_wiring(replay, draw)
     print("PASS: the wiring in vk_replay.cpp and draw()")
 

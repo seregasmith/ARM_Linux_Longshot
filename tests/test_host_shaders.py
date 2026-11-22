@@ -1,6 +1,6 @@
 """The checked-in host shader headers (gpu/vk/host_shaders/*_comp_spv.h) still match the .comp sources beside them.
 
-The headers are checked in so a clone builds without glslang, and scripts/host_shaders.py makes them from the sources.
+The headers are checked in so a clone builds without glslang, and scripts/shaders.py host makes them from the sources.
 This recompiles each one and compares the SPIR-V, so a source edited without remaking its header (or the other way
 round) is caught here.
 
@@ -22,7 +22,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--glslang")
     a = p.parse_args()
-    cmd = [sys.executable, "-I", "-B", str(ROOT / "scripts/host_shaders.py"), "--check"]
+    cmd = [sys.executable, "-I", "-B", str(ROOT / "scripts/shaders.py"), "host", "--check"]
     if a.glslang:
         cmd += ["--glslang", a.glslang]
     subprocess.run(cmd, check=True)

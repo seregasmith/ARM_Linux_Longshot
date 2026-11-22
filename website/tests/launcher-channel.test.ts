@@ -3,12 +3,11 @@ import test from 'node:test';
 import { installLauncherChannel, installLauncherStatus, validateLauncherVersions } from '../src/lib/launcher-channel.ts';
 
 const versions = {
-  bestChannel: 'rc',
+  bestChannel: 'stable',
   channels: {
-    stable: null,
-    rc: { tag: 'v1.0.0-rc.5', downloads: {
-      windows: 'https://git-cdn.magicbean.dev/attachments/rc-windows',
-      linux: 'https://git-cdn.magicbean.dev/attachments/rc-linux',
+    stable: { tag: 'v1.0.5', downloads: {
+      windows: 'https://git-cdn.magicbean.dev/attachments/stable-windows',
+      linux: 'https://git-cdn.magicbean.dev/attachments/stable-linux',
     } },
     nightly: { tag: 'nightly-42-abcdef12', downloads: {
       windows: 'https://git-cdn.magicbean.dev/attachments/nightly-windows',
@@ -22,7 +21,7 @@ function fixture() {
     return { textContent: kind, classList: { toggle() {} }, getAttribute: (name) => attrs.get(name) ?? null,
       setAttribute: (name, value) => attrs.set(name, value), removeAttribute: name => attrs.delete(name) };
   });
-  const picked = { value: 'rc', dataset: { note: 'Release candidate' } };
+  const picked = { value: 'stable', dataset: { note: 'For playing.' } };
   const note = { textContent: '' }, version = { textContent: '' };
   let change = () => {};
   const root = { hidden: true,
@@ -41,8 +40,8 @@ test('shows the selected launcher version and pins links to its files, including
     return Response.json(versions);
   });
   assert.equal(f.root.hidden, false);
-  assert.match(f.version.textContent, /Longshot Launcher v1\.0\.0-rc\.5/);
-  assert.equal(f.links[0].getAttribute('href'), versions.channels.rc.downloads.windows);
+  assert.match(f.version.textContent, /Longshot Launcher v1\.0\.5/);
+  assert.equal(f.links[0].getAttribute('href'), versions.channels.stable.downloads.windows);
   assert.equal(f.links[2].getAttribute('href'), null);
   assert.equal(f.links[2].getAttribute('aria-disabled'), 'true');
   assert.equal(f.links[2].getAttribute('role'), 'link');
@@ -51,17 +50,17 @@ test('shows the selected launcher version and pins links to its files, including
   assert.match(f.version.textContent, /nightly-42-abcdef12/);
   assert.equal(f.links[0].getAttribute('href'), versions.channels.nightly.downloads.windows);
   assert.equal(f.links[1].getAttribute('href'), null);
-  f.picked.value = 'rc'; f.change();
-  assert.equal(f.links[1].getAttribute('href'), versions.channels.rc.downloads.linux);
+  f.picked.value = 'stable'; f.change();
+  assert.equal(f.links[1].getAttribute('href'), versions.channels.stable.downloads.linux);
   assert.equal(f.links[1].getAttribute('aria-disabled'), null);
   assert.equal(f.links[1].textContent, 'linux');
   f.picked.value = ''; f.change();
-  assert.match(f.version.textContent, /v1\.0\.0-rc\.5/);
+  assert.match(f.version.textContent, /v1\.0\.5/);
 });
 
 test('no published releases is different from a lookup failure', async () => {
   const empty = fixture();
-  await installLauncherChannel(empty.document, async () => Response.json({ bestChannel: null, channels: { stable: null, rc: null, nightly: null } }));
+  await installLauncherChannel(empty.document, async () => Response.json({ bestChannel: null, channels: { stable: null, nightly: null } }));
   assert.match(empty.version.textContent, /No launcher release/);
   assert(empty.links.every(link => link.getAttribute('href') === null));
   const failed = fixture();
@@ -87,7 +86,7 @@ test('a channel changed during lookup uses its own version when the response arr
 test('invalid download metadata cannot replace the existing links', async () => {
   for (const href of ['javascript:alert(1)', 'https://example.com/file', 'https://secret@git.magicbean.dev/file']) {
     const bad = structuredClone(versions);
-    bad.channels.rc.downloads.windows = href;
+    bad.channels.stable.downloads.windows = href;
     assert.throws(() => validateLauncherVersions(bad));
     const f = fixture();
     await installLauncherChannel(f.document, async () => Response.json(bad));
@@ -106,17 +105,17 @@ test('platform hints never recommend a desktop Linux build to Android or ChromeO
 test('availability follows the release catalogue, including the first stable release and an empty catalogue', async () => {
   for (const available of [true, false]) {
     const f = fixture();
-    const radios = ['stable', 'rc', 'nightly'].map(value => ({ value, checked: value === 'rc', disabled: false, dataset: { note: value } }));
+    const radios = ['stable', 'nightly'].map(value => ({ value, checked: value === 'nightly', disabled: false, dataset: { note: value } }));
     f.root.querySelectorAll = () => radios;
     f.root.querySelector = selector => selector === 'input:checked' ? radios.find(r => r.checked) : f.note;
-    const catalog = available ? { bestChannel: 'stable', channels: { ...versions.channels, stable: versions.channels.rc } }
-      : { bestChannel: null, channels: { stable: null, rc: null, nightly: null } };
+    const catalog = available ? versions
+      : { bestChannel: null, channels: { stable: null, nightly: null } };
     await installLauncherChannel(f.document, async () => Response.json(catalog));
     assert.equal(f.root.hidden, false);
     if (available) {
       assert.equal(radios[0].checked, true);
       assert.equal(radios[0].disabled, false);
-      assert.equal(f.links[0].getAttribute('href'), versions.channels.rc.downloads.windows);
+      assert.equal(f.links[0].getAttribute('href'), versions.channels.stable.downloads.windows);
     } else {
       assert(radios.every(r => r.disabled));
       assert(f.links.every(link => link.getAttribute('href') === null));
@@ -128,7 +127,7 @@ test('availability follows the release catalogue, including the first stable rel
 test('untrusted sizes and release-note URLs are rejected', () => {
   for (const extra of [{ sizes: { windows: -1 } }, { sizes: { windows: NaN } }, { url: 'https://example.com/release' }, { url: 'https://git.magicbean.dev/MagicBeanDev/Other/releases/1' }]) {
     const catalog = structuredClone(versions);
-    Object.assign(catalog.channels.rc, extra);
+    Object.assign(catalog.channels.stable, extra);
     assert.throws(() => validateLauncherVersions(catalog));
   }
 });
@@ -136,10 +135,10 @@ test('untrusted sizes and release-note URLs are rejected', () => {
 
 test('timeout and invalid release metadata keep every channel reachable', async () => {
   for (const fetcher of [async () => { throw new DOMException('Timeout', 'TimeoutError'); }, async () => {
-    const bad = structuredClone(versions); bad.channels.rc.url = 'https://example.com/release'; return Response.json(bad);
+    const bad = structuredClone(versions); bad.channels.stable.url = 'https://example.com/release'; return Response.json(bad);
   }]) {
     const f = fixture();
-    const radios = ['stable', 'rc', 'nightly'].map(value => ({ value, disabled: true }));
+    const radios = ['stable', 'nightly'].map(value => ({ value, disabled: true }));
     f.root.querySelectorAll = () => radios;
     await installLauncherChannel(f.document, fetcher);
     assert.equal(f.root.hidden, false);
@@ -158,16 +157,16 @@ test('pending metadata keeps best-channel routes until the user explicitly choos
   const ready = installLauncherChannel(f.document, () => new Promise(done => { resolve = done; }));
   assert.equal(f.links[0].getAttribute('href'), '/download/launcher/windows');
   assert.equal(f.links[1].getAttribute('href'), '/download/launcher/linux');
-  f.picked.value = 'rc'; f.change();
-  assert.equal(f.links[0].getAttribute('href'), '/download/launcher/rc/windows');
+  f.picked.value = 'stable'; f.change();
+  assert.equal(f.links[0].getAttribute('href'), '/download/launcher/stable/windows');
   resolve(new Response('offline', { status: 502 }));
   await ready;
-  assert.equal(f.links[0].getAttribute('href'), '/download/launcher/rc/windows');
+  assert.equal(f.links[0].getAttribute('href'), '/download/launcher/stable/windows');
 });
 
 test('the front page names the launcher and its channel beside its version, not as the game\'s', async () => {
   const statuses = [{ textContent: '' }, { textContent: '' }];
   const document = { querySelectorAll: selector => selector === '[data-launcher-status]' ? statuses : [] };
   await installLauncherStatus(document as any, async () => Response.json(versions));
-  for (const status of statuses) assert.equal(status.textContent, 'Longshot Launcher v1.0.0-rc.5 · release candidate');
+  for (const status of statuses) assert.equal(status.textContent, 'Longshot Launcher v1.0.5 · stable');
 });

@@ -53,6 +53,11 @@ static struct {
 } dev = {{the_vendor}, {policy_flag("RX_VK_SPLIT_BEFORE_DRAW", the_vendor == 0x8086), policy_flag("RX_VK_SPLIT_UBFLUSH", the_vendor != 0x8086)}};
 [[maybe_unused]] static bool pools_mirrored() { return false; }
 static bool dump_on() { return false; }
+// (maybe_split ends a part where the game has ended its render pass, from RX_VK_PART_MIN draws, and at RX_VK_PART_MAX
+// wherever it is: here a pass is always open, so a part ends at the ceiling, by its count, as it did every RX_VK_CHUNK)
+static bool draw_pass_open() { return true; }
+static struct { int64_t at_pass_end = 0, ceiling = 0; } part_st;
+static void logf(const char*, ...) {}
 struct Recording { VkCommandBuffer cmd = 0; uint64_t part = 0; };
 static std::vector<std::vector<uint32_t>> parts;   // (the ops each part recorded)
 static Recording recs[64];
@@ -81,7 +86,6 @@ uint64_t rec_cur_value = 0;
 int rec_parts = 0;
 int64_t part_work = 0;
 constexpr int kMaxParts = 32;
-thread_local bool split_off = false;
 bool part_end_wanted = false;
 bool early_split_pending = false;
 void split_part(VkCommandBuffer& cmd);
@@ -115,7 +119,7 @@ static int replay_stream(const std::string& stream) {
     auto pass_trace_on = [] { return false; };
     auto trace_line = [](const char*) {};
     auto clear_depth_stencil = [](VkCommandBuffer, auto&, float, bool, uint32_t, uint32_t) {};
-    const bool dry = false, worker = false, early = early_on;
+    const bool early = early_on;
     for (char c : stream) {
         struct { uint32_t op; } h = {c == 'd' ? (uint32_t)NOP_DRAW : c == 'm' ? (uint32_t)NOP_DRAW_MESH : (uint32_t)NOP_DISPATCH};
         bool split_after = false;
@@ -133,7 +137,7 @@ static void check(bool ok, const std::string& what) {
     printf("%s  %s\n", ok ? "ok  " : "FAIL", what.c_str());
     fails += !ok;
 }
-constexpr size_t kEvery = 240;   // (maybe_split's count with RX_VK_CHUNK unset: the check stops when the source says another)
+constexpr size_t kEvery = 512;   // (maybe_split's ceiling, RX_VK_PART_MAX unset: the check stops when the source says another)
 static bool begins_plain(size_t i) { return parts[i].empty() || parts[i][0] == NOP_DRAW; }
 int main(int argc, char** argv) {
     const std::string mode = argc > 1 ? argv[1] : "";
@@ -165,7 +169,7 @@ int main(int argc, char** argv) {
         replay_stream(gap + "W" + "ccmmd" + "ddd");
         check(parts.size() == 1 && st_early_splits == 0, "no part ends after the writer");
         replay_stream(std::string(2 * kEvery + 10, 'd'));
-        check(parts.size() == 3 && parts[0].size() == kEvery && parts[1].size() == kEvery, "maybe_split's ends, every 240 draws");
+        check(parts.size() == 3 && parts[0].size() == kEvery && parts[1].size() == kEvery, "maybe_split's ends, every 512 draws with a pass open");
     } else {
         check(false, "a mode: before-draw, at-once or off");
     }
@@ -186,7 +190,7 @@ def main():
     replay = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
     loop = block(replay, "void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* end")
     before = between(loop, "// (the part's end maybe_split asked for", "switch (h.op) {")
-    after = block(loop, "if (early && !dry && !worker) {")
+    after = block(loop, "if (early) {")
     if "early_split(cmd);" not in after:
         raise SystemExit("FAIL: replay() no longer ends a writer's part through early_split")
     src = (FIXTURE.replace("/* COUNTERS */", between(replay, "std::atomic<int64_t> st_early_splits{0};", "/// The recording's part ends here"))
@@ -195,8 +199,8 @@ def main():
            .replace("/* SPLIT_PART */", block(replay, "void split_part(VkCommandBuffer& cmd) {"))
            .replace("/* EARLY_SPLIT */", block(replay, "void early_split(VkCommandBuffer& cmd) {"))
            .replace("/* REPLAY_BEFORE */", before).replace("/* REPLAY_AFTER */", after))
-    if 'getenv("RX_VK_CHUNK") ? atoll(getenv("RX_VK_CHUNK")) : 240;' not in block(replay, "void maybe_split(VkCommandBuffer& cmd) {"):
-        raise SystemExit("FAIL: maybe_split's count with RX_VK_CHUNK unset is no longer 240 draws and dispatches (the fixture's kEvery)")
+    if 'env_int("RX_VK_PART_MAX", 512)' not in block(replay, "void maybe_split(VkCommandBuffer& cmd) {"):
+        raise SystemExit("FAIL: maybe_split's ceiling with RX_VK_PART_MAX unset is no longer 512 draws and dispatches (the fixture's kEvery)")
     base = {k: v for k, v in os.environ.items() if not k.startswith("RX_VK_")}
     runs = (("before-draw", dict(base, VENDOR="0x8086")),                               # (Intel: the rule by default)
             ("before-draw", dict(base, VENDOR="0x1002", RX_VK_SPLIT_BEFORE_DRAW="1")),   # (asked for elsewhere)

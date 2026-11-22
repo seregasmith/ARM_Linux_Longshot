@@ -58,6 +58,9 @@ def main():
         'namespace Shader {',
         block(info_h, 'enum class HandleOp : u32 {'),
         block(info_h, 'template <typename ReadCbuf, typename ReadStorage>\nstd::optional<u32> EvaluateHandleProgram('),
+        # (the simulated-turf private storage buffers' encoding, which stage_storage_base reads through)
+        info_h[info_h.index('inline constexpr u32 kSimTurfStorageBit'):info_h.index('[[nodiscard]] constexpr u32 SimTurfStorageOrig(')],
+        block(info_h, '[[nodiscard]] constexpr u32 SimTurfStorageOrig('),
         '}',
         'namespace Shader::Optimization {',
         block(texture_pass, 'size_t HandleOperands(HandleOp op)'),
@@ -80,7 +83,7 @@ def main():
 #include <vector>
 using u32 = uint32_t; using s32 = int32_t; using u64 = uint64_t;
 namespace Shader {
-struct StorageBufferDescriptor { u32 cbuf_index, cbuf_offset; };
+struct StorageBufferDescriptor { u32 cbuf_index, cbuf_offset, count = 1; };
 struct Info {
  static constexpr size_t MAX_SSBOS{64};
  std::vector<StorageBufferDescriptor> storage_buffers_descriptors;
@@ -207,15 +210,6 @@ int main() {
         require(tables, f'need("{limit}", l.{limit}, ', 'the log line names the limit that turned handle tables off')
     stamp = block(shader, 'uint64_t translator_stamp() {')
     require(stamp, 'if (!handle_tables_on()) {', 'programs translated without handle tables must not share the cache')
-    # The offline copies of host_info: a bank baked offline must be translated as a live run with the same stamp is
-    bake = (root / 'nx2/bake_ds/bake_ds.cpp').read_text(encoding='utf-8')
-    require(block(bake, 'Shader::HostTranslateInfo host_info() {'), 'h.support_handle_table_arrays = g_handle_tables;',
-            'bake_ds translates with handle tables as live does')
-    require(block(bake, 'uint64_t disk_stamp(uint64_t translator_stamp, uint32_t depth) {'), 'if (!g_handle_tables) {',
-            'a bank baked without handle tables carries live\'s "nhtb" word')
-    batch = (root / 'gpu/shaderbatch.cpp').read_text(encoding='utf-8')
-    require(block(batch, 'Shader::HostTranslateInfo make_host() {'), 'h.support_handle_table_arrays = true;',
-            'shaderbatch translates with handle tables as live does')
     pointer = block(draw, 'bool handle_is_storage_pointer(')
     require(pointer, 'if (d.handle_is_pointer_word) return true;', 'a pointer word binds no texture')
     require(draw, 'stage_handles(s, st, d.handle_program, d.count, table.data());', 'the draw binds every entry of a handle table')

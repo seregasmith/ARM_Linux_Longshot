@@ -33,11 +33,8 @@ def main():
     flush = block(draw, "void draw_flush_recording(") if "void draw_flush_recording(" in draw else ""
     fixture = fixture.replace("/* FLUSH */", flush).replace("/* BEGIN */", block(draw, "void draw_begin_recording("))
     fixture = fixture.replace("/* SUBMIT */", block(replay, "void submit_recording("))
-    start = replay.index("        if (j->inits < 0) init_lost = true;")
-    end = replay.index("        if (res == VK_ERROR_DEVICE_LOST) device_lost();", start)
-    end += len("        if (res == VK_ERROR_DEVICE_LOST) device_lost();")
-    fixture = fixture.replace("/* SEGMENT */", replay[start:end])
-    cases = ["single", "grow", "reuse", "empty", "batch", "segments", "failed-segment", "allocation-failure", "first-stream-failure"]
+    # (the parallel replay's segment submits went with its workers, #1763: one render thread records every command buffer)
+    cases = ["single", "grow", "reuse", "empty", "batch", "allocation-failure", "first-stream-failure"]
     if a.case != "all":
         assert a.case in cases
         cases = [a.case]

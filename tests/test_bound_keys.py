@@ -7,6 +7,7 @@ only while the mouse is captured and only once the click that captured it was le
 of the game's menus has the mouse, Longshot #1306), key_move_up from the file, a
 pad_ line for a keys-only control ignored, a key taken from the control that had it, and Enter with Alt still no key.
 Gamepad checks cover old single bindings, a saved alternate, either slot pressing the same button, reassignment and clearing.
+Row resets cover both binding slots, keyboard-only and shared inputs, conflicts, and defaults with Sprint enabled.
 python -I -B tests/test_bound_keys.py   (needs a C compiler)
 """
 import shutil
@@ -100,6 +101,9 @@ static const char *hos_options_file(void) {   /* (host/options_path.c: here, bes
     return p;
 }
 static int held[256];
+static uint64_t pad_raw_game;
+static int hud_toggles;
+void hos_gameplay_hud_toggle(void) { hud_toggles++; }
 static int key(int vk) { return held[vk & 255]; }
 """
 
@@ -193,6 +197,113 @@ int main(int argc, char **argv) {
     CHECK(hos_binding(HOS_BIND_KEY, HOS_KEY_MOVE_UP, 0) == 'W' && hos_binding(HOS_BIND_KEY, HOS_SW_A, 0) == 'E');
     CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_A, 1) == -1 && bound_pad_buttons(face) == a);
     CHECK(toggle_reset);
+    /* A live shortcut may overlap the original key and both gamepad slots. It owns each physical press. */
+    CHECK(hos_binding(HOS_BIND_KEY, HOS_KEY_TOGGLE_HUD, 0) == 0);
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_KEY_TOGGLE_HUD, 0) == -1);
+    release(), hud_shortcut(1, 0);
+    held['E'] = 1;
+    hos_bind(HOS_BIND_KEY, HOS_KEY_TOGGLE_HUD, 0, 'E');
+    CHECK(hos_binding(HOS_BIND_KEY, HOS_SW_A, 0) == 'E' && !bound_down(HOS_SW_A, 0));
+    hud_shortcut(0, 0);  /* the Insert menu owns the key while capturing */
+    hud_shortcut(1, 0);  /* still held after rebinding */
+    CHECK(hud_toggles == 0);
+    release(), hud_shortcut(1, 0);
+    held['E'] = 1;
+    hud_shortcut(1, 0), hud_shortcut(1, 0);
+    CHECK(hud_toggles == 1);
+    release();
+    hos_bind(HOS_BIND_PAD, HOS_KEY_TOGGLE_HUD, 1, HOS_PAD_EAST);
+    hud_shortcut(1, 0);
+    pad_raw_game = face;
+    hud_shortcut(1, 0), hud_shortcut(1, 0);
+    CHECK(hud_toggles == 2 && bound_pad_buttons(face) == 0);
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_A, 0) == HOS_PAD_EAST);
+    hos_bind(HOS_BIND_PAD, HOS_KEY_TOGGLE_HUD, 1, -1);
+    CHECK(bound_pad_buttons(face) == a);
+    hos_bind(HOS_BIND_KEY, HOS_KEY_TOGGLE_HUD, 0, 0);
+    held['E'] = 1;
+    CHECK(bound_down(HOS_SW_A, 0));
+    for (int i = 0; i < HOS_KEY_N; i++)
+        for (int k = 0; k < 2; k++) input_keys[i][k] = key_bind[i][k], input_pads[i][k] = pad_bind[i][k];
+    input_snapshot_active = 1;
+    hos_bind(HOS_BIND_KEY, HOS_SW_A, 0, 'T');
+    CHECK(bound_down(HOS_SW_A, 0));   /* this read keeps the old binding */
+    input_snapshot_active = 0;
+    CHECK(!bound_down(HOS_SW_A, 0));
+    CHECK(!hos_binding_is_default(HOS_SW_A));
+    hos_bind(HOS_BIND_PAD, HOS_SW_A, 1, HOS_PAD_RPADDLE1);
+    hos_bind(HOS_BIND_KEY, HOS_KEY_OC_NOTE_L, 0, 'E');
+    hos_bind(HOS_BIND_PAD, HOS_KEY_OC_NOTE_L, 0, HOS_PAD_EAST);
+    CHECK(hos_reset_binding(HOS_SW_A));
+    CHECK(hos_binding_is_default(HOS_SW_A));
+    hos_bind(HOS_BIND_PAD, HOS_SW_A, 1, HOS_PAD_RPADDLE1);
+    CHECK(!hos_binding_is_default(HOS_SW_A));
+    CHECK(hos_reset_binding(HOS_SW_A) && hos_binding_is_default(HOS_SW_A));
+    CHECK(hos_binding(HOS_BIND_KEY, HOS_SW_A, 0) == 'E');
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_A, 0) == HOS_PAD_EAST && hos_binding(HOS_BIND_PAD, HOS_SW_A, 1) == -1);
+    CHECK(hos_binding(HOS_BIND_KEY, HOS_KEY_OC_NOTE_L, 0) == 'E' && hos_binding(HOS_BIND_PAD, HOS_KEY_OC_NOTE_L, 0) == HOS_PAD_EAST);
+    hos_bind(HOS_BIND_KEY, HOS_SW_ZL, 0, 'H');
+    hos_bind(HOS_BIND_KEY, HOS_SW_ZL, 1, 0);
+    CHECK(hos_reset_binding(HOS_SW_ZL));
+    CHECK(hos_binding_is_default(HOS_SW_ZL));
+    hos_bind(HOS_BIND_KEY, HOS_SW_ZL, 1, 0);
+    CHECK(!hos_binding_is_default(HOS_SW_ZL));
+    CHECK(hos_reset_binding(HOS_SW_ZL) && hos_binding_is_default(HOS_SW_ZL));
+    CHECK(hos_binding(HOS_BIND_KEY, HOS_SW_ZL, 0) == 'Z' && hos_binding(HOS_BIND_KEY, HOS_SW_ZL, 1) == VK_RBUTTON);
+    hos_bind(HOS_BIND_KEY, HOS_SW_A, 0, 'T');
+    hos_bind(HOS_BIND_KEY, HOS_SW_X, 1, 'E');
+    hos_bind(HOS_BIND_PAD, HOS_SW_A, 1, HOS_PAD_RPADDLE1);
+    CHECK(!hos_reset_binding(HOS_SW_A));
+    CHECK(hos_binding(HOS_BIND_KEY, HOS_SW_A, 0) == 'T' && hos_binding(HOS_BIND_KEY, HOS_SW_X, 1) == 'E');
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_A, 1) == HOS_PAD_RPADDLE1);
+    hos_bind(HOS_BIND_KEY, HOS_SW_X, 1, 0);
+    hos_bind(HOS_BIND_PAD, HOS_SW_X, 0, HOS_PAD_EAST);
+    CHECK(!hos_reset_binding(HOS_SW_A));
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_X, 0) == HOS_PAD_EAST && hos_binding(HOS_BIND_KEY, HOS_SW_A, 0) == 'T');
+    hos_bind(HOS_BIND_KEY, HOS_KEY_WALK, 0, 'G');
+    CHECK(hos_reset_binding(HOS_KEY_WALK));
+    CHECK(hos_binding(HOS_BIND_KEY, HOS_KEY_WALK, 0) == VK_CAPITAL);
+    hos_bind(HOS_BIND_KEY, HOS_KEY_OC_NOTE_L, 0, 'G');
+    CHECK(hos_reset_binding(HOS_KEY_OC_NOTE_L) && hos_binding(HOS_BIND_KEY, HOS_KEY_OC_NOTE_L, 0) == 0);
+    hos_bind(HOS_BIND_KEY, HOS_SW_B, 0, 'V');
+    hos_bind(HOS_BIND_PAD, HOS_SW_LS, 0, HOS_PAD_LPADDLE1);
+    hos_bind(HOS_BIND_SPRINT_ON, 0, 0, 1);
+    CHECK(!hos_binding_is_default(HOS_KEY_SPRINT));
+    CHECK(hos_reset_binding(HOS_KEY_SPRINT));
+    CHECK(hos_binding_is_default(HOS_KEY_SPRINT));
+    CHECK(hos_binding(HOS_BIND_KEY, HOS_KEY_SPRINT, 0) == VK_SHIFT);
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_KEY_SPRINT, 0) == HOS_PAD_LSTICK);
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_LS, 0) == HOS_PAD_LPADDLE1);
+    CHECK(hos_reset_binding(HOS_SW_LS));
+    CHECK(hos_binding_is_default(HOS_SW_LS));
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_LS, 0) == -1 && hos_binding(HOS_BIND_PAD, HOS_KEY_SPRINT, 0) == HOS_PAD_LSTICK);
+    CHECK(hos_binding(HOS_BIND_SPRINT_AUTO, 0, 0) & HOS_SPRINT_AUTO_PAD);
+    CHECK(hos_reset_binding(HOS_SW_B));
+    CHECK(hos_binding_is_default(HOS_SW_B));
+    CHECK(hos_binding(HOS_BIND_KEY, HOS_SW_B, 0) == 'V' && hos_binding(HOS_BIND_KEY, HOS_KEY_SPRINT, 0) == VK_SHIFT);
+    hos_bind(HOS_BIND_SPRINT_ON, 0, 0, 0);
+    hos_bind(HOS_BIND_PAD, -1, 0, 0);
+    uint64_t conflicts;
+    const uint64_t a_row = UINT64_C(1) << HOS_SW_A;
+    CHECK(!hos_rebind_control(HOS_BIND_KEY, HOS_SW_X, 0, 'E', 0, &conflicts) && conflicts == a_row);
+    CHECK(hos_binding(HOS_BIND_KEY, HOS_SW_X, 0) == VK_SPACE && hos_binding(HOS_BIND_KEY, HOS_SW_A, 0) == 'E');
+    hos_bind(HOS_BIND_KEY, HOS_SW_Y, 0, 'E');
+    CHECK(!hos_rebind_control(HOS_BIND_KEY, HOS_SW_X, 0, 'E', a_row, &conflicts) &&
+          conflicts == (UINT64_C(1) << HOS_SW_Y));
+    CHECK(hos_binding(HOS_BIND_KEY, HOS_SW_Y, 0) == 'E' && hos_binding(HOS_BIND_KEY, HOS_SW_X, 0) == VK_SPACE);
+    CHECK(hos_rebind_control(HOS_BIND_KEY, HOS_SW_X, 0, 'E', conflicts, &conflicts));
+    CHECK(hos_binding(HOS_BIND_KEY, HOS_SW_X, 0) == 'E' && hos_binding(HOS_BIND_KEY, HOS_SW_Y, 0) == 0);
+    hos_bind(HOS_BIND_PAD, HOS_SW_A, 1, HOS_PAD_RPADDLE1);
+    CHECK(!hos_rebind_control(HOS_BIND_PAD, HOS_SW_X, 0, HOS_PAD_EAST, 0, &conflicts) && conflicts == a_row);
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_X, 0) == HOS_PAD_NORTH && hos_binding(HOS_BIND_PAD, HOS_SW_A, 0) == HOS_PAD_EAST);
+    CHECK(hos_rebind_control(HOS_BIND_PAD, HOS_SW_X, 0, HOS_PAD_EAST, conflicts, &conflicts));
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_X, 0) == HOS_PAD_EAST && hos_binding(HOS_BIND_PAD, HOS_SW_A, 0) == HOS_PAD_RPADDLE1);
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_A, 1) == -1);
+    CHECK(!hos_rebind_control(HOS_BIND_PAD, HOS_SW_Y, 1, HOS_PAD_EAST, 0, &conflicts));
+    CHECK(hos_rebind_control(HOS_BIND_PAD, HOS_SW_Y, 1, HOS_PAD_EAST, conflicts, &conflicts));
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_Y, 1) == HOS_PAD_EAST && hos_binding(HOS_BIND_PAD, HOS_SW_X, 0) == -1);
+    CHECK(hos_rebind_control(HOS_BIND_PAD, HOS_KEY_OC_NOTE_L, 0, HOS_PAD_EAST, 0, &conflicts) && conflicts == 0);
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_Y, 1) == HOS_PAD_EAST);
     if (!fails) printf("PASS\n");
     return fails != 0;
 }
@@ -206,9 +317,12 @@ class BoundKeysTests(unittest.TestCase):
             self.skipTest("no C compiler")
         hid = (ROOT / "host" / "nn_hid.c").read_text(encoding="utf-8")
         code = [block(hid, "static int kmap_down("),
-                between(hid, "static const char *const bind_names[HOS_KEY_N]", "\nvoid hos_bind("),   # (its definition)
-                block(hid, "static uint64_t bound_pad_buttons("),
-                between(hid, "static int mouse_vk_slot(", "static int bound_down(")]
+                between(hid, "static const char *const bind_names[HOS_KEY_N]", "void hos_bind(int set, int button, int slot, int code) {"),
+                block(hid, "int hos_rebind_control(int set, int button, int slot, int code, uint64_t approved, uint64_t *conflicts) {"),
+                block(hid, "static void binding_defaults("), block(hid, "int hos_binding_is_default("),
+                block(hid, "int hos_reset_binding(int button) {"),
+                block(hid, "static uint64_t hud_pad_mask("), block(hid, "static uint64_t bound_pad_buttons("),
+                between(hid, "static int mouse_vk_slot(", "static int bound_down("), block(hid, "static void hud_shortcut(")]
         code = "\n".join(code).replace("GetModuleFileNameA(NULL,", "GetModuleFileNameA(0,")
         read = block(hid, "static void read_input(")
         for needle in ("bound_down(HOS_KEY_MOVE_UP,", "bound_down(HOS_KEY_CAM_RIGHT,", "mouse_buttons_arm(", "bound_down(i, 1)"):

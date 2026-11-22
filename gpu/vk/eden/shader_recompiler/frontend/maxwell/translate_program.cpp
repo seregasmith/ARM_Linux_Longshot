@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <algorithm>
 #include <array>
 #include <bitset>
@@ -29,6 +30,7 @@ extern thread_local u32 g_nvn2_compute_ssbo_base;
 extern thread_local u32 g_nvn2_compute_ssbo_count;
 extern thread_local u32 g_nvn2_compute_layout_end;
 extern thread_local bool g_nvn2_miss_log_this;
+extern std::atomic<u32> g_table_check_unchecked;
 }
 
 namespace Shader::Maxwell {
@@ -196,8 +198,15 @@ void AddNVNStorageBuffers(IR::Program& program) {
     static const bool miss_log{std::getenv("RX_VK_MISS_LOG") != nullptr && std::atoi(std::getenv("RX_VK_MISS_LOG")) != 0};
     // (compute only: the driver crashed compiling a mesh program with it; and only the program vk_shader.cpp names when
     // RX_VK_MISS_LOG_PROG is set: Optimization::g_nvn2_miss_log_this)
-    if (miss_log && (program.stage == Stage::Compute || program.stage == Stage::Mesh || program.stage == Stage::Task) &&
-        Optimization::g_nvn2_miss_log_this && descs.size() < Info::MAX_SSBOS) {
+    // (longshot, RX_VK_GP_TABLE=2: the vertex, fragment and compute stages' loads checked against the page table record there too)
+    static const bool table_check{std::getenv("RX_VK_GP_TABLE") != nullptr && std::atoi(std::getenv("RX_VK_GP_TABLE")) == 2};
+    const bool graphics{program.stage == Stage::VertexB || program.stage == Stage::Fragment || program.stage == Stage::Compute};
+    if (table_check && graphics && program.info.uses_global_memory && descs.size() >= Info::MAX_SSBOS)
+        Optimization::g_table_check_unchecked.fetch_add(1, std::memory_order_relaxed);   // (no room for the check's buffer)
+    if (((miss_log && (program.stage == Stage::Compute || program.stage == Stage::Mesh || program.stage == Stage::Task) &&
+          Optimization::g_nvn2_miss_log_this) ||
+         (table_check && graphics && program.info.uses_global_memory)) &&
+        descs.size() < Info::MAX_SSBOS) {
         descs.push_back({
             .cbuf_index = driver_cbuf,
             .cbuf_offset = 0xff0U,

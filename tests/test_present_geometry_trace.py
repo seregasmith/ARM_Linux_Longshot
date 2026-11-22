@@ -27,6 +27,8 @@ def main():
         trace = source[start:source.index("    menu_record(", start)]
     fixture = (ROOT / "tests/present_geometry_trace_test.cpp").read_text(encoding="utf-8")
     fixture = fixture.replace("/* ACTUAL_DRAW */", draw).replace("/* ACTUAL_TRACE */", trace)
+    if a.source.resolve() == ROOT or "colour_vision_sdr(" in draw:
+        fixture = "#define TEST_COLOUR_VISION\n" + fixture
     with tempfile.TemporaryDirectory(prefix="present-geometry-trace-") as temp:
         cpp, exe = Path(temp) / "fixture.cpp", Path(temp) / "fixture.exe"
         cpp.write_text(fixture, encoding="utf-8")

@@ -68,11 +68,14 @@ VKAPI_ATTR VkResult VKAPI_CALL vkGetSemaphoreCounterValue(VkDevice, VkSemaphore,
 }
 static uint64_t completed() { uint64_t v = 0; vkGetSemaphoreCounterValue(dev.device, timeline, &v); return v; }
 enum { FR_VALUE, FR_WAIT };
-static void queue_flush_for(int) {}
+static uint64_t queue_flush_for(int, uint64_t = 0) { return 0; }   // (the parts' wait before it: none here)
 namespace fps_stats { enum { kGpuWait }; }
 static int fps_gpu_wait_kind() { return fps_stats::kGpuWait; }   // (main's #928: the kind of GPU wait, outside the game's fence wait)
 struct FpsWait { explicit FpsWait(int) {} };
 static bool by_recording = true;
+// (vk_replay.cpp, RX_VK_RECORDER_PARTS: no recorder thread here, a recording's submit made before it can be waited for)
+[[maybe_unused]] static bool wait_seq_submitted(uint64_t, uint64_t&) { return true; }
+namespace rec { struct Settled { Settled() {} ~Settled() {} }; }
 static void wait_rec_seq(uint64_t seq, uint64_t timeout_ns, int* ok);
 namespace {
 /* PIECES */

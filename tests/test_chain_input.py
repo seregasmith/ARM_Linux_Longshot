@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-import chain
+from profiling import chain  # noqa: E402
 
 
 class CaptureInput(unittest.TestCase):
@@ -23,11 +23,8 @@ class CaptureInput(unittest.TestCase):
 
     def main_capture(self, records):
         path = self.capture(b"HOSCHAIN1\nthread 0 Presenter\nrecords %d\n" % len(records) + b"".join(records))
-        old_argv = sys.argv
-        self.addCleanup(setattr, sys, "argv", old_argv)
-        sys.argv = ["chain.py", str(path)]
         with contextlib.redirect_stdout(io.StringIO()) as output:
-            chain.main()
+            chain.run(str(path))
         return output.getvalue()
 
     def test_single_present_has_no_frame(self):

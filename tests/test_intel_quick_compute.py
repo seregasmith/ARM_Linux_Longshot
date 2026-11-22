@@ -12,6 +12,9 @@ python -I -B tests/test_intel_quick_compute.py
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+import sys  # noqa: E402
+sys.path.insert(0, str(ROOT / "tests"))
+from menu_model_fixture import menu_text  # noqa: E402
 
 
 def block(text, marker, start_at=0):
@@ -80,9 +83,11 @@ def main():
          "jobs_push_serial([q] { compute_optimize(*q); });") < first.index("const VkPipeline optimized ="),
          "the first dispatch of a precompiled quick pipeline does not queue its optimized build once, before binding")
 
-    menu = (ROOT / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8")
+    # (vk_menu.cpp and its modules, their rows as table lines: menu_text, #1633)
+    menu = menu_text(ROOT)
     need('{TAB_DEBUG, "Intel quick compute builds", &opts.intel_quick, 0, 1, 1, tx_onoff,' in menu, "no Intel quick compute builds row")
-    need("(v != &opts.intel_quick || intel_compiler_row())" in block(menu, "bool row_shown(int i) {"),
+    intel = (ROOT / "gpu/vk/menu/intel.cpp").read_text(encoding="utf-8")   # (the row's own visibility, #1633)
+    need(".shown = MENU_HOOK(intel_compiler_row)" in intel[intel.index('.key = "intel_quick_compute_builds"'):],
          "the quick builds row is not limited to Intel graphics on Windows")
     need('if (const char* e = getenv("RX_VK_COMPUTE_QUICK_FIRST")) env_override(&opts.intel_quick, !env_value_off(e));'
          in block(menu, "void menu_init() {"), "RX_VK_COMPUTE_QUICK_FIRST does not set the row")
@@ -92,9 +97,12 @@ def main():
     need("int intel_quick = 1;" in header, "quick compute builds are not on by default")
 
     # (the weak laptop button: integrated graphics only, the lightest rows, the restart asked for, saved)
-    need('{TAB_DEBUG, "Set up for a weak laptop", nullptr, 0, 0, 0, nullptr,' in menu, "no Set up for a weak laptop button")
-    need("(!is_laptop_row(rows[i]) || laptop_row())" in block(menu, "bool row_shown(int i) {") and
-         "return dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;" in block(menu, "bool laptop_row() {"),
+    # (the row: gpu/vk/menu/laptop.cpp's, #1633; its action vk_menu.cpp's weak_laptop_apply)
+    laptop = (ROOT / "gpu/vk/menu/laptop.cpp").read_text(encoding="utf-8")
+    need('.label = "Set up for a weak laptop"' in laptop and ".on_activate = MENU_HOOK(weak_laptop_apply)" in laptop,
+         "no Set up for a weak laptop button")
+    need(".shown = MENU_HOOK(laptop_row)" in laptop and
+         "return dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;" in laptop,
          "the weak laptop button shows on a dedicated card")
     apply = block(menu, "void weak_laptop_apply() {")
     for want, why in (("apply_preset(1);", "Minimum's rows and mip trimming"),
@@ -108,10 +116,11 @@ def main():
         need(want in apply, "the weak laptop button does not set " + why)
     need(apply.index("apply_preset(1);") < apply.index("opts.resolution = "), "Minimum's 50% is set over the 33%")
     tick = block(menu, "void menu_tick(")
-    need("else if (press[7] && is_laptop_row(r)) weak_laptop_apply(), press[7] = false, changed = true;" in tick,
-         "Enter on the weak laptop button does nothing")
+    # (#1633: a module's button: its press its on_activate, its cell its text, the Debug tab's layout drawing it)
+    need("r.setting->on_activate(), press[7] = false, changed = true;" in tick, "Enter on the weak laptop button does nothing")
     rows = block(menu, "void draw_debug_rows(")
-    need('choice_cell(c, va, vb, laptop_applied ? "Applied" : "Apply", selected, false, false);' in rows,
+    need("r.setting->kind == menu::Kind::Action && r.setting->text" in rows and
+         '.text = MENU_HOOK([](int) { return std::string(laptop_applied ? "Applied" : "Apply"); })' in laptop,
          "the weak laptop button is drawn without its value")
     auto = (ROOT / "gpu/vk/auto_settings.h").read_text(encoding="utf-8")
     need("RES_ULTRA_PERFORMANCE = 6" in auto, "the button's 33% is not auto_settings.h's RES_ULTRA_PERFORMANCE")

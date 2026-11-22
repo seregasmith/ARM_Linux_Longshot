@@ -86,6 +86,12 @@ static int fake_frame_info(int64_t *replayed, int64_t *draws, int *w, int *h) {
     *replayed = fake_frame(), *draws = draws_total, *w = 1280, *h = 720;
     return 1;
 }
+static int picture_ready;
+static int fake_picture(HosControlPicture *out) {
+    if (!__atomic_load_n(&picture_ready, __ATOMIC_RELAXED)) return 0;
+    *out = (HosControlPicture){2560, 1440, 1920, 1080};
+    return 1;
+}
 typedef struct { char path[1100]; void (*done)(void *, int64_t, int); void *ctx; int64_t after; } Shot;
 static void *shot_thread(void *p) {
     Shot *s = (Shot *)p;
@@ -249,7 +255,7 @@ static HosControlGame game = {
     .renderer = fake_renderer, .version = "test", .map = fake_map, .destination = fake_destination,
     .teleport = fake_teleport, .teleport_result = fake_teleport_result, .teleport_cancel = fake_teleport_cancel,
     .age = fake_age, .oot_state = fake_state, .oot_sample_ask = fake_sample_ask,
-    .oot_sample_cancel = fake_sample_cancel, .oot_sample = fake_sample};
+    .oot_sample_cancel = fake_sample_cancel, .oot_sample = fake_sample, .picture = fake_picture};
 
 static void *game_thread(void *unused) {
     (void)unused;
@@ -757,6 +763,11 @@ int main(int argc, char **argv) {
     ask(c, "{\"id\":1,\"cmd\":\"status\"}\n", "1", line, sizeof line, 2000);
     CHECK(strstr(line, "\"ok\":true") && strstr(line, "\"frame\":") && strstr(line, "\"version\":\"test\"") &&
           strstr(line, "\"renderer\":\"fake\"") && strstr(line, "\"window\":{\"width\":1280,\"height\":720}"));
+    CHECK(strstr(line, "\"game_picture\":null"));
+    __atomic_store_n(&picture_ready, 1, __ATOMIC_RELAXED);
+    ask(c, "{\"id\":\"picture\",\"cmd\":\"status\"}\n", "\"picture\"", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"window\":{\"width\":1280,\"height\":720}") &&
+          strstr(line, "\"game_picture\":{\"texture_width\":2560,\"texture_height\":1440,\"width\":1920,\"height\":1080}"));
     puts("PASS: status");
 
     /* malformed requests: an error, and the connection goes on */

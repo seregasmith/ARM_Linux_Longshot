@@ -14,6 +14,10 @@ from unittest import mock
 SOURCE = Path(__file__).resolve().parents[1] / "nx2" / "build.py"
 
 
+
+# (a vk_mem_alloc.h nx2/build.py takes: it declares vmaGetAllocationInfo2, VMA 3.1's, which gpu/vk/vk_vma.cpp calls)
+VMA_31 = "/* authored fixture: VMA 3.1 */\nVMA_CALL_PRE void VMA_CALL_POST vmaGetAllocationInfo2(void);\n"
+
 class CpmDiscoveryTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="longshot-cpm-fixture-")
@@ -41,7 +45,7 @@ class CpmDiscoveryTests(unittest.TestCase):
         vma = root / "vulkanmemoryallocator" / "authored-version"
         header = vma / "include" / "vk_mem_alloc.h"
         header.parent.mkdir(parents=True)
-        header.write_text("/* authored fixture */\n", encoding="utf-8")
+        header.write_text(VMA_31, encoding="utf-8")
         return {"ffmpeg": str(ffmpeg), "vulkanheaders": str(vulkan),
                 "spirv-headers": str(spirv), "vulkanmemoryallocator": str(vma)}
 
@@ -127,7 +131,7 @@ class CpmDiscoveryTests(unittest.TestCase):
         for rel in ("include/vulkan/vulkan.h", "include/spirv/unified1/spirv.h", "include/vk_mem_alloc.h"):
             path = sysroot / rel
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("/* sys */\n", encoding="utf-8")
+            path.write_text(VMA_31 if rel.endswith("vk_mem_alloc.h") else "/* sys */\n", encoding="utf-8")
         with self.build(extra_env={
             "LONGSHOT_VULKAN_HEADERS": str(sysroot / "include"),
             "LONGSHOT_SPIRV_HEADERS": str(sysroot / "include"),
@@ -140,6 +144,20 @@ class CpmDiscoveryTests(unittest.TestCase):
             self.assertEqual(build.header_package("vulkanmemoryallocator", "vk_mem_alloc.h", "LONGSHOT_VMA_HEADERS"),
                              str(sysroot))
 
+    def test_a_vma_older_than_3_1_is_passed_over(self):
+        # (gpu/vk/vk_vma.cpp calls vmaGetAllocationInfo2, VMA 3.1: an older one, a distribution's 3.0, failed the renderer's
+        # build there. It is no package: the next place is tried, and with none the build says VMA is missing)
+        old = self.base / "old-vma"
+        (old / "include").mkdir(parents=True)
+        (old / "include" / "vk_mem_alloc.h").write_text("/* authored fixture: VMA 3.0 */\n", encoding="utf-8")
+        with self.build(extra_env={"LONGSHOT_VMA_HEADERS": str(old / "include")}) as build:
+            self.assertNotEqual(build.header_package("vulkanmemoryallocator", "vk_mem_alloc.h", "LONGSHOT_VMA_HEADERS"),
+                                str(old))
+        expected = self.cache(self.bundled)
+        with self.build(extra_env={"LONGSHOT_VMA_HEADERS": str(old / "include")}) as build:
+            self.assertEqual(build.header_package("vulkanmemoryallocator", "vk_mem_alloc.h", "LONGSHOT_VMA_HEADERS"),
+                             expected["vulkanmemoryallocator"])
+
     def test_system_usr_without_cpm(self):
         if not (Path("/usr/include/vulkan/vulkan.h").is_file() and
                 Path("/usr/include/spirv/unified1/spirv.h").is_file()):
@@ -149,7 +167,8 @@ class CpmDiscoveryTests(unittest.TestCase):
                 build.header_package("vulkanheaders", "vulkan/vulkan.h", "LONGSHOT_VULKAN_HEADERS"), "/usr")
             self.assertEqual(
                 build.header_package("spirv-headers", "spirv/unified1/spirv.h", "LONGSHOT_SPIRV_HEADERS"), "/usr")
-            if Path("/usr/include/vk_mem_alloc.h").is_file():
+            usr_vma = Path("/usr/include/vk_mem_alloc.h")
+            if usr_vma.is_file() and "vmaGetAllocationInfo2" in usr_vma.read_text(encoding="utf-8", errors="replace"):
                 self.assertEqual(
                     build.header_package("vulkanmemoryallocator", "vk_mem_alloc.h", "LONGSHOT_VMA_HEADERS"), "/usr")
             else:

@@ -1,7 +1,10 @@
 """Whether the pipeline cache's file is read at the start (gpu/vk/pcache_load.h, used by vk_draw.cpp's pcache_load_off), issue
 388: not read by default on Linux with NVIDIA's own driver, 20 GB of RAM or less and programs loaded at their create calls,
-where NVIDIA's own shader cache is on and its folder holds 512 MB or more; read as before everywhere else; RX_VK_PCACHE_LOAD
-says either way.
+where NVIDIA's own shader cache is on and its folder holds 512 MB or more; on Windows with NVIDIA's own driver and programs
+loaded at create, 20 GB of RAM or less, where %LOCALAPPDATA%/NVIDIA/GLCache holds 512 MB or more; read as before elsewhere;
+RX_VK_PCACHE_LOAD says either way. Read, too, where NVIDIA's cache may not grow to 4 GB (gpu/vk/nvidia_cache_limit.h: Windows'
+Shader Cache Size, 1 GB on the players' PCs whose caches sat at 1025 MB, or a smaller __GL_SHADER_DISK_CACHE_SIZE on Linux): a
+"warm" 1 GB cache drops the pipelines a start builds as it fills, and cannot answer them.
 
 Two parts, no game or GPU:
 - the rule's table (pcache_load::choose), compiled and run;
@@ -10,7 +13,7 @@ Two parts, no game or GPU:
   found where its driver keeps it (__GL_SHADER_DISK_CACHE_PATH's GLCache, XDG_CACHE_HOME, HOME, the earlier drivers' .nv),
   its size alone counted (an empty NVIDIA folder beside a full Mesa folder reads the file), a cache turned off, missing or
   not readable read as cold, NVK left alone, and the log line. The 600 MB files are sparse: they take no disk space.
-  POSIX only for the folder cases (pcache_load_off reads the file on Windows whatever the folders hold: checked there).
+  POSIX: the Linux folder cases; Windows: the Windows ones (LOCALAPPDATA's NVIDIA/GLCache; AMD's driver reads the file).
 And Turnip (Mesa's driver for Adreno) on such a PC: its own cache (MESA_SHADER_CACHE_DIR's folder, or Mesa's under ~/.cache)
 counts as NVIDIA's does, and a --prepare-shaders run builds into it alone, the file neither read nor written
 (pcache_driver_builds, the exit code's tens: what is built for the driver's cache alone goes through caches of its own).
@@ -66,29 +69,55 @@ int main() {
     NEED(!choose(0, true, true, true, pc16, M, 1200).load, "RX_VK_PCACHE_LOAD=0 holds in a preparing run too, as before");
     NEED(!needs_cache(0, false, true, true, pc16) && !needs_cache(1, false, true, true, pc16), "the switch walks no folder");
     // Turnip: Mesa's own cache counts as NVIDIA's, and the preparation builds into it alone
-    c = choose(-1, false, true, false, pc16, M, 1200, true);
+    c = choose(-1, false, true, false, pc16, M, 1200, false, 0, true);
     NEED(!c.load && c.why == Why::kSmallPcTurnip && builds_into_driver(c.why), "16 GB, Turnip, create, warm Mesa cache: not read");
-    NEED(choose(-1, false, true, false, pc16, M, kWarmMb - 1, true).why == Why::kColdDriverCache, "Turnip, a cold Mesa cache: read");
-    NEED(choose(-1, false, true, false, 32000, M, 1200, true).why == Why::kRam, "Turnip on 32 GB: read");
-    NEED(choose(-1, false, false, false, pc16, M, 1200, true).why == Why::kStart, "Turnip, programs before the title: read");
-    NEED(choose(-1, false, true, false, pc16, Cache::kOff, 1200, true).why == Why::kDriverCacheOff, "Turnip, Mesa's cache off: read");
-    c = choose(-1, true, true, false, pc16, M, 0, true);
+    NEED(choose(-1, false, true, false, pc16, M, kWarmMb - 1, false, 0, true).why == Why::kColdDriverCache, "Turnip, a cold Mesa cache: read");
+    NEED(choose(-1, false, true, false, 32000, M, 1200, false, 0, true).why == Why::kRam, "Turnip on 32 GB: read");
+    NEED(choose(-1, false, false, false, pc16, M, 1200, false, 0, true).why == Why::kStart, "Turnip, programs before the title: read");
+    NEED(choose(-1, false, true, false, pc16, Cache::kOff, 1200, false, 0, true).why == Why::kDriverCacheOff, "Turnip, Mesa's cache off: read");
+    c = choose(-1, true, true, false, pc16, M, 0, false, 0, true);
     NEED(!c.load && c.why == Why::kPreparingIntoDriver && builds_into_driver(c.why),
          "a Turnip preparation on 16 GB builds into Mesa's cache alone, however empty");
-    NEED(choose(-1, true, true, false, pc16, Cache::kOff, 0, true).why == Why::kPreparing, "Mesa's cache off: the preparation reads and writes the file");
-    NEED(choose(-1, true, true, false, pc16, Cache::kUnknown, 0, true).why == Why::kPreparing, "Mesa's cache not measured: the file");
-    NEED(choose(-1, true, true, false, 32000, M, 0, true).why == Why::kPreparing, "a Turnip preparation on 32 GB: the file");
-    NEED(choose(-1, true, false, false, pc16, M, 0, true).why == Why::kPreparing, "a Turnip preparation, programs before the title: the file");
-    NEED(choose(1, true, true, false, pc16, M, 0, true).load && !choose(0, false, true, false, pc16, M, 1200, true).load,
+    NEED(choose(-1, true, true, false, pc16, Cache::kOff, 0, false, 0, true).why == Why::kPreparing, "Mesa's cache off: the preparation reads and writes the file");
+    NEED(choose(-1, true, true, false, pc16, Cache::kUnknown, 0, false, 0, true).why == Why::kPreparing, "Mesa's cache not measured: the file");
+    NEED(choose(-1, true, true, false, 32000, M, 0, false, 0, true).why == Why::kPreparing, "a Turnip preparation on 32 GB: the file");
+    NEED(choose(-1, true, false, false, pc16, M, 0, false, 0, true).why == Why::kPreparing, "a Turnip preparation, programs before the title: the file");
+    NEED(choose(1, true, true, false, pc16, M, 0, false, 0, true).load && !choose(0, false, true, false, pc16, M, 1200, false, 0, true).load,
          "the switch over Turnip's rule");
-    NEED(needs_cache(-1, true, true, false, pc16, true) && needs_cache(-1, false, true, false, pc16, true) &&
-         !needs_cache(-1, true, true, false, 32000, true) && !needs_cache(0, true, true, false, pc16, true),
+    NEED(needs_cache(-1, true, true, false, pc16, false, true) && needs_cache(-1, false, true, false, pc16, false, true) &&
+         !needs_cache(-1, true, true, false, 32000, false, true) && !needs_cache(0, true, true, false, pc16, false, true),
          "Mesa's folder looked at with Turnip, the preparation's too, only where the rest would leave the file");
     for (Why w : {Why::kSwitch, Why::kPreparing, Why::kStart, Why::kNotLinuxNvidia, Why::kRam, Why::kDriverCacheOff,
                   Why::kDriverCacheUnknown, Why::kColdDriverCache, Why::kSmallPc})
         NEED(!builds_into_driver(w), "only Turnip's rule builds for the driver's cache through caches of their own");
+    // Windows with NVIDIA's own driver: not read on a small PC where its GLCache folder is warm (Linux's RAM rule)
+    c = choose(-1, false, true, false, pc16, M, 1200, true);
+    NEED(!c.load && c.why == Why::kWindowsNvidia, "Windows NVIDIA, 16 GB, create, warm GLCache: not read");
+    NEED(!choose(-1, false, true, false, kSmallRamMb, M, kWarmMb, true).load, "Windows NVIDIA at the limits: not read");
+    NEED(choose(-1, false, true, false, 32000, M, 1200, true).why == Why::kRam, "Windows NVIDIA with 32 GB: read");
+    NEED(choose(-1, false, true, false, 0, M, 1200, true).why == Why::kRam, "Windows NVIDIA, RAM not known: read");
+    NEED(needs_cache(-1, false, true, false, pc16, true) && !needs_cache(-1, false, true, false, 32000, true) &&
+         !needs_cache(-1, false, true, false, 0, true), "Windows NVIDIA looks at its GLCache folder on a small PC only");
+    NEED(choose(-1, false, true, false, pc16, M, kWarmMb - 1, true).why == Why::kColdDriverCache, "Windows: a nearly empty GLCache: read");
+    NEED(choose(-1, false, true, false, pc16, Cache::kUnknown, 0, true).why == Why::kDriverCacheUnknown, "Windows: GLCache not measured: read");
+    NEED(choose(-1, false, false, false, pc16, M, 1200, true).why == Why::kStart, "Windows: programs loaded before the title: read");
+    NEED(choose(-1, true, true, false, pc16, M, 1200, true).why == Why::kPreparing, "Windows: a --prepare-shaders run: read");
+    NEED(choose(1, false, true, false, pc16, M, 1200, true).load, "Windows: RX_VK_PCACHE_LOAD=1 reads it");
+    NEED(!needs_cache(1, false, true, false, pc16, true) && !needs_cache(-1, false, false, false, pc16, true) &&
+         !needs_cache(-1, true, true, false, pc16, true), "Windows: the switch, a start or a preparation walk no folder");
+    NEED(choose(-1, false, true, false, pc16, M, 1200, false).why == Why::kNotLinuxNvidia, "Windows AMD or Intel: read");
+    // a cache kept small (the 1 GB default players' logs show, 1025 MB "warm"): read, on Windows and Linux
+    c = choose(-1, false, true, false, pc16, M, 1025, true, 1024);
+    NEED(c.load && c.why == Why::kDriverCacheSmall, "Windows NVIDIA, 16 GB, a 1 GB Shader Cache Size: read");
+    NEED(choose(-1, false, true, true, pc16, M, 1025, false, 1024).why == Why::kDriverCacheSmall, "Linux NVIDIA, a 1 GB limit: read");
+    NEED(choose(-1, false, true, false, pc16, M, 1200, true, kDriverRoomMb - 1).why == Why::kDriverCacheSmall, "just under 4 GB: read");
+    NEED(!choose(-1, false, true, false, pc16, M, 1200, true, kDriverRoomMb).load, "4 GB: not read");
+    NEED(!choose(-1, false, true, false, pc16, M, 1200, true, 10240).load, "10 GB (what the launcher sets): not read");
+    NEED(!choose(-1, false, true, false, pc16, M, 1200, true, 0xFFFFFFFFull).load, "Unlimited: not read");
+    NEED(!choose(-1, false, true, false, pc16, M, 1200, true, 0).load, "a limit not known: as before, not read");
+    NEED(!choose(0, false, true, false, pc16, M, 1200, true, 1024).load, "RX_VK_PCACHE_LOAD=0 wins over a small limit");
     for (Why w : {Why::kSwitch, Why::kPreparing, Why::kStart, Why::kNotLinuxNvidia, Why::kRam, Why::kDriverCacheOff,
-                  Why::kDriverCacheUnknown, Why::kColdDriverCache, Why::kSmallPc, Why::kPreparingIntoDriver, Why::kSmallPcTurnip})
+                  Why::kDriverCacheUnknown, Why::kColdDriverCache, Why::kSmallPc, Why::kWindowsNvidia, Why::kDriverCacheSmall, Why::kPreparingIntoDriver, Why::kSmallPcTurnip})
         NEED(why_text(w)[0] != 0, "every reason has its words for the log");
     if (!fails) std::printf("ok\n");
     return fails != 0;
@@ -99,6 +128,7 @@ int main() {
 # (FAKE_AT_CREATE=0: before the title) and the RAM (FAKE_RAM_MB, through sysconf). Exit 10: not read, 11: read
 ADAPTER = r'''
 #include "pcache_load.h"
+#include "nvidia_cache_limit.h"
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -120,9 +150,31 @@ static long fake_sysconf(int name) {
     return name == _SC_PAGE_SIZE ? 4096 : name == _SC_PHYS_PAGES ? mb * 256 : -1;
 }
 #define sysconf fake_sysconf
+#else
+#include <windows.h>
+// (the RAM, as pcache_load_off asks Windows for it: FAKE_RAM_MB, none when unset)
+static BOOL fake_memory_status(MEMORYSTATUSEX* m) {
+    const char* e = getenv("FAKE_RAM_MB");
+    if (!e) return FALSE;
+    m->ullTotalPhys = (DWORDLONG)atoll(e) << 20;
+    return TRUE;
+}
+#define GlobalMemoryStatusEx fake_memory_status
 #endif
-enum VkDriverId { VK_DRIVER_ID_NVIDIA_PROPRIETARY = 4, VK_DRIVER_ID_MESA_TURNIP = 18, VK_DRIVER_ID_MESA_NVK = 24 };
+enum VkDriverId { VK_DRIVER_ID_AMD_PROPRIETARY = 1, VK_DRIVER_ID_NVIDIA_PROPRIETARY = 4, VK_DRIVER_ID_MESA_TURNIP = 18, VK_DRIVER_ID_MESA_NVK = 24 };
 struct { VkDriverId driver_id = VK_DRIVER_ID_NVIDIA_PROPRIETARY; } dev;
+// (NVIDIA's cache limit: Linux's __GL_SHADER_DISK_CACHE_SIZE read as vk_draw.cpp's nvidia_limit reads it; Windows' Shader Cache
+// Size, from the driver's settings there, stood in by FAKE_LIMIT_MB)
+static nvidia_cache_limit::Limit nvidia_limit() {
+#ifdef _WIN32
+    nvidia_cache_limit::Limit l;
+    l.where = "Shader Cache Size in the NVIDIA Control Panel";
+    if (const char* m = getenv("FAKE_LIMIT_MB")) l.mb = strtoull(m, nullptr, 10);
+    return l;
+#else
+    return nvidia_cache_limit::linux_limit(getenv("__GL_SHADER_DISK_CACHE_SIZE"));
+#endif
+}
 bool pcache_driver_builds = false;
 bool programs_load_at_create() { return !env_value_off(getenv("FAKE_AT_CREATE") ? getenv("FAKE_AT_CREATE") : "1"); }
 void logf(const char* fmt, ...) {
@@ -136,6 +188,7 @@ void logf(const char* fmt, ...) {
 int main() {
     if (const char* d = getenv("FAKE_DRIVER"); d && !std::strcmp(d, "nvk")) dev.driver_id = VK_DRIVER_ID_MESA_NVK;
     if (const char* d = getenv("FAKE_DRIVER"); d && !std::strcmp(d, "turnip")) dev.driver_id = VK_DRIVER_ID_MESA_TURNIP;
+    if (const char* d = getenv("FAKE_DRIVER"); d && !std::strcmp(d, "amd")) dev.driver_id = VK_DRIVER_ID_AMD_PROPRIETARY;
     const bool off = pcache_load_off();
     // (decided once; the tens: built for the driver's cache alone through caches of their own)
     return off == pcache_load_off() ? (off ? 10 : 11) + (pcache_driver_builds ? 10 : 0) : 2;
@@ -157,8 +210,11 @@ def check_source(src):
     for needle, why in (
             ('#include "pcache_load.h"', "vk_draw.cpp does not include pcache_load.h"),
             ("dev.driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY", "NVIDIA's own driver is not told apart (NVK has Mesa's cache)"),
-            ("pcache_load::choose(sw, preparing, at_create, linux_nvidia, ram_mb, cache.cache, cache.bytes >> 20, linux_turnip)",
-             "pcache_load_off does not decide through the rule"),
+            ("pcache_load::choose(sw, preparing, at_create, linux_nvidia, ram_mb, cache.cache,\n"
+             "                                                               cache.bytes >> 20, windows_nvidia, limit_mb, linux_turnip)",
+             "pcache_load_off does not decide through the rule (with Windows NVIDIA's arm and NVIDIA's cache limit)"),
+            ("looked && !linux_turnip ? nvidia_limit()", "pcache_load_off does not ask for NVIDIA's cache limit where it looks at the cache"),
+            ('pcache_load::nvidia_cache_windows(getenv("LOCALAPPDATA")', "Windows does not look at NVIDIA's GLCache folder"),
             ("return !choice.load;", "pcache_load_off does not return the rule's answer"),
             ("dev.driver_id == VK_DRIVER_ID_MESA_TURNIP", "Turnip is not told apart"),
             ("static const bool off", "the answer is not decided once a run")):
@@ -186,6 +242,11 @@ def cases():
     small = {"FAKE_RAM_MB": "15757"}
     return [
         ("warm", dict(small, HOME="h"), {"h/" + nv: MB600}, [], 10, ["not read", "600 MB in", "RX_VK_PCACHE_LOAD=1 reads it"], []),
+        # (hos_main.c's 10 GiB, and a player's 1 GiB: a cache that drops what a start builds)
+        ("warm-10g", dict(small, HOME="h", __GL_SHADER_DISK_CACHE_SIZE="10737418240"), {"h/" + nv: MB600}, [], 10,
+         ["not read", "up to 10240 MB (__GL_SHADER_DISK_CACHE_SIZE)"], []),
+        ("warm-1g", dict(small, HOME="h", __GL_SHADER_DISK_CACHE_SIZE="1073741824"), {"h/" + nv: MB600}, [], 11,
+         ["read", "under 4 GB", "up to 1024 MB"], ["not read"]),
         # (the review's case: NVIDIA's folder empty and fresh, Mesa's full: the file is read)
         ("mesa-only", dict(small, HOME="h", __GL_SHADER_DISK_CACHE_PATH="p", MESA_SHADER_CACHE_DIR="m"),
          {"h/" + mesa: MB600, "m/part0/mesa_cache.db": MB600}, ["p/GLCache"], 11, ["read", "nearly empty", "0 MB in"], []),
@@ -242,6 +303,61 @@ def cases():
          {"m/c.db": MB600}, [], 11, ["32000 MB of RAM"], ["MB in"]),
         ("nvidia-builds-into-its-file", dict(small, HOME="h"), {"h/" + nv: MB600}, [], 10, ["not read"], []),
     ]
+
+
+def windows_cases():
+    """(name, env, files, dirs, expected exit, words the line has, words it lacks): LOCALAPPDATA's NVIDIA/GLCache"""
+    gl = "NVIDIA/GLCache/dae675479948b9c5/4738267965884b64/b4217564bad97491.bin"
+    small = {"FAKE_RAM_MB": "15757"}
+    return [
+        ("win-warm", dict(small, LOCALAPPDATA="l"), {"l/" + gl: MB600}, [], 10,
+         ["not read", "Windows with NVIDIA's own driver", "15757 MB of RAM", "600 MB in", "RX_VK_PCACHE_LOAD=1 reads it"], []),
+        ("win-1gb", dict(small, LOCALAPPDATA="l", FAKE_LIMIT_MB="1024"), {"l/" + gl: MB600}, [], 11,
+         ["read", "under 4 GB", "up to 1024 MB (Shader Cache Size in the NVIDIA Control Panel)"], ["not read"]),
+        ("win-10gb", dict(small, LOCALAPPDATA="l", FAKE_LIMIT_MB="10240"), {"l/" + gl: MB600}, [], 10,
+         ["not read", "up to 10240 MB"], []),
+        ("win-32gb", dict(LOCALAPPDATA="l", FAKE_RAM_MB="32000"), {"l/" + gl: MB600}, [], 11,
+         ["read", "more than 20 GB", "32000 MB of RAM"], ["MB in"]),
+        ("win-ram-unknown", dict(LOCALAPPDATA="l"), {"l/" + gl: MB600}, [], 11, ["read", "RAM not known"], ["MB in"]),
+        ("win-cold", dict(small, LOCALAPPDATA="l"), {"l/" + gl: 64 << 20}, [], 11, ["read", "nearly empty", "64 MB in"], []),
+        ("win-none", dict(small, LOCALAPPDATA="l"), {}, ["l"], 11, ["nearly empty", "0 MB in"], []),
+        ("win-dx-only", dict(small, LOCALAPPDATA="l"), {"l/NVIDIA/DXCache/x.bin": MB600}, [], 11, ["nearly empty"], []),
+        ("win-no-localappdata", dict(small), {}, [], 11, ["could not be measured"], []),
+        ("win-amd", dict(small, LOCALAPPDATA="l", FAKE_DRIVER="amd"), {"l/" + gl: MB600}, [], 11, ["not NVIDIA's own driver"],
+         ["MB in"]),
+        ("win-start", dict(small, LOCALAPPDATA="l", FAKE_AT_CREATE="0"), {"l/" + gl: MB600}, [], 11, ["before the title"],
+         ["MB in"]),
+        ("win-prepare", dict(small, LOCALAPPDATA="l", LONGSHOT_PREPARE_ONLY="1"), {"l/" + gl: MB600}, [], 11,
+         ["--prepare-shaders"], ["MB in"]),
+        ("win-switch-on", dict(small, LOCALAPPDATA="l", RX_VK_PCACHE_LOAD="1"), {"l/" + gl: MB600}, [], 11,
+         ["RX_VK_PCACHE_LOAD=1"], ["MB in"]),
+        ("win-switch-off", dict(LOCALAPPDATA="l", FAKE_RAM_MB="32000", RX_VK_PCACHE_LOAD="0"), {}, ["l"], 10,
+         ["not read", "RX_VK_PCACHE_LOAD=0"], ["MB in", "reads it"]),
+    ]
+
+
+def run_windows(exe, root):
+    failed = []
+    keep = {k: v for k, v in os.environ.items() if k in ("PATH", "SYSTEMROOT", "TMP", "TEMP")}
+    for name, env, files, dirs, want, has, lacks in windows_cases():
+        base = root / name
+        base.mkdir()
+        for rel, size in files.items():
+            sparse(base / rel, size)
+        for rel in dirs:
+            (base / rel).mkdir(parents=True, exist_ok=True)
+        e = dict(keep)
+        for k, v in env.items():
+            e[k] = str(base / v) if k == "LOCALAPPDATA" else v
+        r = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30, env=e, cwd=base)
+        line = r.stdout.strip()
+        ok = r.returncode == want and line.count("\n") == 0 and all(w in line for w in has) and not any(w in line for w in lacks)
+        print(("ok   " if ok else "FAIL ") + name + ": " + line)
+        if not ok:
+            failed.append(name)
+        for rel in files:   # (NTFS keeps no holes by default: the space goes back at once)
+            (base / rel).unlink()
+    return failed
 
 
 def run_adapter(exe, root):
@@ -314,17 +430,14 @@ def main():
         folders = tmp / "folders"
         folders.mkdir()
         if os.name == "nt":
-            r = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30,
-                               env=dict(os.environ, FAKE_RAM_MB="15757"))
-            failed = [] if r.returncode == 11 and "NVIDIA's own driver" in r.stdout else ["windows"]
-            print(r.stdout.strip())
+            failed = run_windows(exe, folders)
         else:
             failed = run_adapter(exe, folders)
     if failed:
         print("FAIL: " + ", ".join(failed))
         return 1
-    print("pipeline cache file: not read on a small Linux PC with NVIDIA's own driver and its warm cache, programs loaded at "
-          "create; read as before elsewhere")
+    print("pipeline cache file: not read on a small PC (Linux or Windows) with NVIDIA's own driver and its warm cache, "
+          "programs loaded at create; read as before elsewhere")
     return 0
 
 

@@ -1,5 +1,5 @@
 // (longshot) AMD FSR 3.1's inputs: the scene's camera and depth, made into colour, depth and motion at the render size by
-// one pass (shaders/fsr3_prep.comp); see vk_fsr3_inputs.h for what comes from #841 and what does not yet.
+// one pass (shaders/fsr3_prep.comp); see vk_fsr3_inputs.h for what comes from the shared chain and what does not yet.
 //
 // The camera is taken exactly as vk_temporal.cpp's temporal_note_scene_draw takes it, from the draws into the scene's
 // colour target: their vertex stage's uniform buffer 3 holds the target's size at 0x120, this frame's view-projection at 0x30 (row major,

@@ -102,10 +102,15 @@ class PrepareShadersTests(unittest.TestCase):
         env = make_game.game_env({"LONGSHOT_X": "1", "PYTHONPATH": "p", "APPIMAGE": "a", "APPDIR": "d", "ARGV0": "0", "OWD": "o",
                                   "LD_LIBRARY_PATH": "l", "PATH": "/usr/bin", "HOME": "/home/p"})
         self.assertEqual(env, {"PATH": "/usr/bin", "HOME": "/home/p"})
+        # (the game's own switches it keeps: the shader store's folder, or 0 for none, prepared where the game plays them)
+        for store in ("/mnt/fast/shaders", "0"):
+            self.assertEqual(make_game.game_env({"LONGSHOT_SHADER_STORE": store, "LONGSHOT_X": "1"}), {"LONGSHOT_SHADER_STORE": store})
         # (the shell launcher can't import it: the same names there)
         launch = (ROOT / "builder" / "linux" / "longshot-launch").read_text(encoding="utf-8")
         names = re.search(r"\$1 ~ /\^\(([A-Z_|0-9]+)\)/ \|\| \$1 == \"LD_LIBRARY_PATH\"", launch).group(1).split("|")
         self.assertEqual(tuple(names), make_game.GAME_ENV_DROP)
+        kept = re.findall(r'\$1 != "([A-Z_0-9]+)"', launch)
+        self.assertEqual(tuple(kept), make_game.GAME_ENV_KEEP)
 
 
 class RunSilenceTests(unittest.TestCase):

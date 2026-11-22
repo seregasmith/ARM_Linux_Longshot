@@ -135,10 +135,10 @@ void fps_presented() {
             f.gpu_ms = (float)d(gpu, last_gpu);
             if (rt_running.load(std::memory_order_relaxed)) {   // (the render thread's frame over the same span)
                 double waits = 0;
-                for (int k = fs::kRtWorkers; k < fs::kRtParts; k++)
+                for (int k = fs::kRtGpu; k < fs::kRtParts; k++)
                     waits += f.rt[k] = (float)std::min(ms, d(rt_wait[k].load(std::memory_order_relaxed), last_rt[k]));
                 const double scale = waits > ms && waits > 0 ? ms / waits : 1.0;
-                for (int k = fs::kRtWorkers; k < fs::kRtParts; k++) f.rt[k] = (float)(f.rt[k] * scale);
+                for (int k = fs::kRtGpu; k < fs::kRtParts; k++) f.rt[k] = (float)(f.rt[k] * scale);
                 f.rt[fs::kRtWork] = (float)std::max(0.0, ms - waits * scale);
             }
             f.pipelines = (uint16_t)std::clamp<int64_t>(pipes - last_pipes, 0, 65535);

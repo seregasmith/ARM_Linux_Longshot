@@ -1,4 +1,5 @@
-"""scripts/ngx_sdk.py: its per-platform file table, the SHA-256 checks and NVIDIA's license gate, without the network.
+"""scripts/fetch.py dlss (NVIDIA's DLSS SDK): its per-platform file table, the SHA-256 checks and NVIDIA's license gate,
+without the network.
 
 Run with: python -I tests/test_ngx_sdk.py
 """
@@ -13,9 +14,10 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("ngx_sdk_under_test", ROOT / "scripts" / "ngx_sdk.py")
-ngx_sdk = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(ngx_sdk)
+spec = importlib.util.spec_from_file_location("fetch_under_test", ROOT / "scripts" / "fetch.py")
+fetch = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fetch)
+dlss = fetch.DLSS
 
 
 def digest(data):
@@ -28,25 +30,25 @@ class Opener:
         self.contents, self.asked = contents, []
 
     def __call__(self, url, timeout=None):
-        if timeout != ngx_sdk.TIMEOUT:
+        if timeout != fetch.TIMEOUT:
             raise AssertionError("urlopen without the timeout (%r)" % (timeout,))
-        path = url[len(ngx_sdk.BASE) + 1:]
+        path = url[len(dlss.base) + 1:]
         self.asked.append(path)
         return io.BytesIO(self.contents[path])
 
 
 class TableTests(unittest.TestCase):
     def test_pinned_release(self):
-        self.assertRegex(ngx_sdk.COMMIT, r"^[0-9a-f]{40}$")
-        self.assertTrue(ngx_sdk.BASE.startswith("https://raw.githubusercontent.com/NVIDIA/DLSS/" + ngx_sdk.COMMIT))
+        self.assertRegex(dlss.commit, r"^[0-9a-f]{40}$")
+        self.assertTrue(dlss.base.startswith("https://raw.githubusercontent.com/NVIDIA/DLSS/" + dlss.commit))
 
     def test_every_file_has_a_sha256(self):
-        for platform in ngx_sdk.PLATFORMS:
-            for path, sha, _ in ngx_sdk.files(platform):
+        for platform in dlss.platforms:
+            for path, sha, _ in dlss.files(platform):
                 self.assertRegex(sha, r"^[0-9a-f]{64}$", path)
 
     def test_windows_files(self):
-        table = {rel: (path, sha) for path, sha, rel in ngx_sdk.files("windows")}
+        table = {rel: (path, sha) for path, sha, rel in dlss.files("windows")}
         self.assertEqual(table["lib/nvsdk_ngx_s.lib"],
                          ("lib/Windows_x86_64/x64/nvsdk_ngx_s.lib",
                           "7b9a5239c1145af5f645ab472aa066f9ea79db36ac819562312aae69d65f3765"))
@@ -64,7 +66,7 @@ class TableTests(unittest.TestCase):
         self.assertFalse([p for p, _ in table.values() if "Linux" in p])
 
     def test_linux_files(self):
-        table = {rel: path for path, _, rel in ngx_sdk.files("linux")}
+        table = {rel: path for path, _, rel in dlss.files("linux")}
         self.assertEqual(table["lib/libnvsdk_ngx.a"], "lib/Linux_x86_64/libnvsdk_ngx.a")
         self.assertEqual(table["runtime/libnvidia-ngx-dlss.so.310.9.16"], "lib/Linux_x86_64/rel/libnvidia-ngx-dlss.so.310.9.16")
         self.assertEqual(table["runtime/libnvidia-ngx-dlssg.so.310.9.16"],
@@ -72,34 +74,34 @@ class TableTests(unittest.TestCase):
         self.assertFalse([p for p in table.values() if "Windows" in p])
 
     def test_build_only_leaves_out_the_runtimes(self):
-        for platform in ngx_sdk.PLATFORMS:
-            full = {rel for _, _, rel in ngx_sdk.files(platform)}
-            build = {rel for _, _, rel in ngx_sdk.files(platform, runtime=False)}
-            self.assertEqual(full - build, {"runtime/" + ngx_sdk.runtime_name(platform, k) for k in ngx_sdk.RUNTIMES})
+        for platform in dlss.platforms:
+            full = {rel for _, _, rel in dlss.files(platform)}
+            build = {rel for _, _, rel in dlss.files(platform, runtime=False)}
+            self.assertEqual(full - build, {"runtime/" + dlss.runtime_name(platform, k) for k in dlss.RUNTIMES})
             self.assertEqual(len(full - build), 2)   # (DLSS's and DLSS Frame Generation's)
 
     def test_platforms_share_the_headers_and_one_folder(self):
-        linux = {rel for _, _, rel in ngx_sdk.files("linux")}
-        windows = {rel for _, _, rel in ngx_sdk.files("windows")}
+        linux = {rel for _, _, rel in dlss.files("linux")}
+        windows = {rel for _, _, rel in dlss.files("windows")}
         self.assertEqual({r for r in linux if not r.startswith(("lib/", "runtime/"))},
                          {r for r in windows if not r.startswith(("lib/", "runtime/"))})
-        self.assertEqual(len(linux & windows), len(ngx_sdk.COMMON))   # (both platforms' libraries fit in one SDK folder)
+        self.assertEqual(len(linux & windows), len(dlss.common))   # (both platforms' libraries fit in one SDK folder)
 
     def test_library_and_runtime_paths(self):
         sdk = os.path.join("x", "sdk")
-        self.assertEqual(ngx_sdk.library(sdk, "windows"), os.path.join(sdk, "lib", "nvsdk_ngx_s.lib"))
-        self.assertEqual(ngx_sdk.library(sdk, "linux"), os.path.join(sdk, "lib", "libnvsdk_ngx.a"))
-        self.assertEqual(ngx_sdk.runtime(sdk, "windows"), os.path.join(sdk, "runtime", "nvngx_dlss.dll"))
-        self.assertEqual(ngx_sdk.runtime_name("windows"), "nvngx_dlss.dll")
-        self.assertEqual(ngx_sdk.runtime(sdk, "windows", "framegen"), os.path.join(sdk, "runtime", "nvngx_dlssg.dll"))
-        self.assertEqual(ngx_sdk.runtime_name("linux", "framegen"), "libnvidia-ngx-dlssg.so.310.9.16")
+        self.assertEqual(dlss.library(sdk, "windows"), os.path.join(sdk, "lib", "nvsdk_ngx_s.lib"))
+        self.assertEqual(dlss.library(sdk, "linux"), os.path.join(sdk, "lib", "libnvsdk_ngx.a"))
+        self.assertEqual(dlss.runtime(sdk, "windows"), os.path.join(sdk, "runtime", "nvngx_dlss.dll"))
+        self.assertEqual(dlss.runtime_name("windows"), "nvngx_dlss.dll")
+        self.assertEqual(dlss.runtime(sdk, "windows", "framegen"), os.path.join(sdk, "runtime", "nvngx_dlssg.dll"))
+        self.assertEqual(dlss.runtime_name("linux", "framegen"), "libnvidia-ngx-dlssg.so.310.9.16")
 
     def test_host_platform(self):
         with mock.patch.dict(os.environ, {"RX_TARGET": "windows"}):
-            self.assertEqual(ngx_sdk.host_platform(), "windows")
+            self.assertEqual(fetch.host_platform(), "windows")
         if os.name != "nt":
             with mock.patch.dict(os.environ, {"RX_TARGET": ""}):
-                self.assertEqual(ngx_sdk.host_platform(), "linux")
+                self.assertEqual(fetch.host_platform(), "linux")
 
 
 class FetchTests(unittest.TestCase):
@@ -109,42 +111,42 @@ class FetchTests(unittest.TestCase):
         self.sdk = os.path.join(self.temp.name, "sdk")
         self.good = {"lib/Windows_x86_64/x64/nvsdk_ngx_s.lib": b"lib", "LICENSE.txt": b"license",
                      "lib/Windows_x86_64/rel/nvngx_dlss.dll": b"runtime"}
-        self.table = [(p, digest(d), ngx_sdk.destination(p)) for p, d in self.good.items()]
+        self.table = [(p, digest(d), dlss.destination(p)) for p, d in self.good.items()]
 
     def test_fetch_checks_and_skips_what_is_there(self):
         opener = Opener(self.good)
-        with mock.patch.object(ngx_sdk, "files", lambda platform, runtime=True: self.table):
-            ngx_sdk.fetch(self.sdk, "windows", opener, say=lambda *_: None)
+        with mock.patch.object(dlss, "files", lambda platform, runtime=True: self.table):
+            dlss.fetch(self.sdk, "windows", opener, say=lambda *_: None)
             self.assertEqual(sorted(opener.asked), sorted(self.good))
-            self.assertEqual(Path(ngx_sdk.library(self.sdk, "windows")).read_bytes(), b"lib")
+            self.assertEqual(Path(dlss.library(self.sdk, "windows")).read_bytes(), b"lib")
             opener.asked.clear()
-            ngx_sdk.fetch(self.sdk, "windows", opener, say=lambda *_: None)   # (all there and right: nothing downloaded)
+            dlss.fetch(self.sdk, "windows", opener, say=lambda *_: None)   # (all there and right: nothing downloaded)
             self.assertEqual(opener.asked, [])
 
     def test_wrong_download_is_not_kept(self):
         bad = dict(self.good, **{"lib/Windows_x86_64/x64/nvsdk_ngx_s.lib": b"not nvidia's"})
-        with mock.patch.object(ngx_sdk, "files", lambda platform, runtime=True: self.table):
-            with self.assertRaisesRegex(ValueError, "nvsdk_ngx_s.lib is not the file expected"):
-                ngx_sdk.fetch(self.sdk, "windows", Opener(bad), say=lambda *_: None)
-        lib = ngx_sdk.library(self.sdk, "windows")
+        with mock.patch.object(dlss, "files", lambda platform, runtime=True: self.table):
+            with self.assertRaisesRegex(ValueError, r"nvsdk_ngx_s\.lib: not the file pinned"):   # (scripts/helpers.py's check)
+                dlss.fetch(self.sdk, "windows", Opener(bad), say=lambda *_: None)
+        lib = dlss.library(self.sdk, "windows")
         self.assertFalse(os.path.exists(lib))
         self.assertFalse(os.path.exists(lib + ".part"))
 
     def test_wrong_file_there_is_downloaded_again(self):
-        lib = ngx_sdk.library(self.sdk, "windows")
+        lib = dlss.library(self.sdk, "windows")
         os.makedirs(os.path.dirname(lib))
         Path(lib).write_bytes(b"old")
         path = "lib/Windows_x86_64/x64/nvsdk_ngx_s.lib"
-        self.assertTrue(ngx_sdk.fetch_one(path, digest(b"lib"), lib, Opener(self.good)))
+        self.assertTrue(dlss.fetch_one(path, digest(b"lib"), lib, Opener(self.good)))
         self.assertEqual(Path(lib).read_bytes(), b"lib")
 
     def test_runtime_into_the_game_folder(self):
-        rt = ngx_sdk.runtime(self.sdk, "windows")
+        rt = dlss.runtime(self.sdk, "windows")
         os.makedirs(os.path.dirname(rt))
         Path(rt).write_bytes(b"runtime")
-        Path(ngx_sdk.runtime(self.sdk, "windows", "framegen")).write_bytes(b"framegen")
+        Path(dlss.runtime(self.sdk, "windows", "framegen")).write_bytes(b"framegen")
         game = os.path.join(self.temp.name, "game")
-        dst = ngx_sdk.install_runtime(self.sdk, "windows", os.path.join(game, "ngx"))
+        dst = dlss.install_runtime(self.sdk, "windows", os.path.join(game, "ngx"))
         self.assertEqual(dst, os.path.join(game, "ngx", "nvngx_dlss.dll"))
         self.assertEqual(Path(dst).read_bytes(), b"runtime")
         self.assertEqual(Path(game, "ngx", "nvngx_dlssg.dll").read_bytes(), b"framegen")   # (beside it: where NGX looks)
@@ -153,33 +155,33 @@ class FetchTests(unittest.TestCase):
 
     def test_an_older_sdk_folder_still_installs_dlss(self):
         # (an SDK folder fetched before frame generation's runtime was in the table: DLSS's goes in, fetch() adds the other)
-        rt = ngx_sdk.runtime(self.sdk, "windows")
+        rt = dlss.runtime(self.sdk, "windows")
         os.makedirs(os.path.dirname(rt))
         Path(rt).write_bytes(b"runtime")
         game = os.path.join(self.temp.name, "game")
-        dst = ngx_sdk.install_runtime(self.sdk, "windows", os.path.join(game, "ngx"))
+        dst = dlss.install_runtime(self.sdk, "windows", os.path.join(game, "ngx"))
         self.assertEqual(os.listdir(os.path.join(game, "ngx")), ["nvngx_dlss.dll"])
         self.assertEqual(Path(dst).read_bytes(), b"runtime")
 
 
 class LicenseTests(unittest.TestCase):
     def test_notice_names_nvidia_and_the_license(self):
-        self.assertIn("NVIDIA", ngx_sdk.NOTICE)
-        self.assertIn(ngx_sdk.LICENSE_URL, ngx_sdk.NOTICE)
-        self.assertIn("Never share", ngx_sdk.NOTICE)
+        self.assertIn("NVIDIA", dlss.notice)
+        self.assertIn(dlss.license_url, dlss.notice)
+        self.assertIn("Never share", dlss.notice)
 
     def test_flag_or_a_yes(self):
-        self.assertTrue(ngx_sdk.accepted(True, ask=lambda _: self.fail("asked"), interactive=False))
-        self.assertFalse(ngx_sdk.accepted(False, ask=lambda _: self.fail("asked"), interactive=False))
-        self.assertTrue(ngx_sdk.accepted(False, ask=lambda _: "yes", interactive=True))
-        self.assertFalse(ngx_sdk.accepted(False, ask=lambda _: "", interactive=True))
-        self.assertFalse(ngx_sdk.accepted(False, ask=lambda _: "no", interactive=True))
+        self.assertTrue(dlss.accepted(True, ask=lambda _: self.fail("asked"), interactive=False))
+        self.assertFalse(dlss.accepted(False, ask=lambda _: self.fail("asked"), interactive=False))
+        self.assertTrue(dlss.accepted(False, ask=lambda _: "yes", interactive=True))
+        self.assertFalse(dlss.accepted(False, ask=lambda _: "", interactive=True))
+        self.assertFalse(dlss.accepted(False, ask=lambda _: "no", interactive=True))
 
     def test_nothing_downloaded_without_acceptance(self):
-        with mock.patch.object(ngx_sdk, "fetch", side_effect=AssertionError("fetched")), \
-                mock.patch.object(ngx_sdk, "accepted", return_value=False), \
+        with mock.patch.object(dlss, "fetch", side_effect=AssertionError("fetched")), \
+                mock.patch.object(dlss, "accepted", return_value=False), \
                 mock.patch("sys.stdout", io.StringIO()), mock.patch("sys.stderr", io.StringIO()) as err:
-            self.assertEqual(ngx_sdk.main(["--platform", "windows", "x"]), 2)
+            self.assertEqual(fetch.main(["dlss", "--platform", "windows", "x"]), 2)
         self.assertIn("not accepted", err.getvalue())
 
 

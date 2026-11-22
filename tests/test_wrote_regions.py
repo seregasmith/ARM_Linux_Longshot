@@ -48,7 +48,12 @@ def check_source():
             "gpu_wrote.forget(tex->id, tex->gpu, tex->gpu + tex->guest_size);" not in block(tex, "void forget_gpu(Texture* tex) {"):
         raise SystemExit("drawn image storage tracking no longer follows texture ownership")
     touch = block(tex, "Texture* texture_touch(Texture* tex, bool for_sampling) {")
-    if "if (up_ok) {\n        if (gpu_dirty) tex->gpu_wrote_seen = gpu_dirty;" not in touch:
+    success = block(touch, "if (up_ok) {")
+    dirty = block(success, "if (gpu_dirty) {")
+    failure = block(touch, "} else {\n        // (longshot) a BC3 image")
+    if "tex->gpu_wrote_seen = gpu_dirty;" not in dirty or \
+            touch.count("tex->gpu_wrote_seen =") != 2 or \
+            "tex->gpu_wrote_seen = seen_before;" not in failure:
         raise SystemExit("a failed upload must leave the write available for a retry")
     for needle in ("gpu_wrote.newest(lo, hi, tex.gpu_written ? tex.id : 0)", "newest <= tex.gpu_wrote_seen"):
         if needle not in into:

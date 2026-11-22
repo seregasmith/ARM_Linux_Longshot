@@ -10,7 +10,7 @@ involved. Python's standard library, and llvm-mingw's llvm-objdump and llvm-read
     python -I scripts/check_windows_files.py --wine <wine> <zip>
         each started under Wine, nothing downloaded: the setup's --play of an empty folder ("error No built game to start"),
         the builder's --cli with no Python ("error The build tools could not start"). A sign that they load and their
-        imports and .NET resolve, not a test of what they do (RELEASING.md, "Needs a Windows tester")
+        imports and .NET resolve, not a test of what they do (docs/dev/reference/releases.md, "Windows tester")
 
 Prints what is wrong, and exits 1, when anything is.
 """
@@ -29,7 +29,9 @@ TOP = ("LongshotBuilder.exe", "VERSION", "recomplauncher.json", "tools.lock")
 BUILDER = ("LongshotBuilder.exe", "LongshotBuilder.dll", "LongshotBuilder.deps.json", "LongshotBuilder.runtimeconfig.json",
            "LongshotBuilder-Setup.exe", "LICENSE",
            "hostfxr.dll", "hostpolicy.dll", "coreclr.dll", "clrjit.dll", "System.Private.CoreLib.dll",
-           "tools/nx2/make_game.py", "tools/scripts/tools.py", "tools/version.txt")
+           "tools/nx2/make_game.py", "tools/scripts/tools.py", "tools/scripts/fetch.py", "tools/scripts/helpers.py",
+           "tools/version.txt",
+           "tools/third_party/renhdrum/renhdrum.dll")   # (RenHDrum, some controllers' vibration: scripts/renhdrum.py build)
 # (the libraries the setup may import: Windows' own, and the UCRT's api-ms-win-crt-*; never llvm-mingw's libc++ or winpthread)
 SETUP_IMPORTS = re.compile(r"^(kernel32|user32|gdi32|advapi32|shell32|ole32|comctl32|winhttp|bcrypt|shlwapi|oleaut32)\.dll$"
                            r"|^api-ms-win-crt-[a-z0-9-]+\.dll$", re.I)
@@ -112,6 +114,10 @@ def files(a):
             bad("the builder's apphost has not the assembly's version resource (no \"Longshot Builder\" in it)")
         if b"LongshotBuilder.dll" not in data:
             bad("the builder's apphost does not name LongshotBuilder.dll (the SDK did not write it)")
+        rh = os.path.join(b, "tools", "third_party", "renhdrum", "renhdrum.dll")   # (a player's build puts it beside the game)
+        head = run(a.objdump, "-p", rh) if os.path.isfile(rh) else "file format pei-x86-64"   # (missing: BUILDER says so)
+        if "file format coff-x86-64" not in head and "file format pei-x86-64" not in head:
+            bad("tools/third_party/renhdrum/renhdrum.dll is not an x86-64 PE file: Windows refuses it with a \"Bad Image\" box")
         dll = run(a.objdump, "-p", os.path.join(b, "LongshotBuilder.dll"))
         if "file format pei-x86-64" not in dll and "file format pei-i386" not in dll and "file format coff" not in dll:
             bad("LongshotBuilder.dll is not a PE file")

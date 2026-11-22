@@ -12,7 +12,8 @@ another project's releases. Previous repository curation is not reused.
 The site's build collects the feed (`src/lib/progress-feed.mjs`, `buildFeed()`), once per build, and publishes it as
 `/progress-feed.json` (`src/pages/progress-feed.json.ts`) and in the front page's release and activity panels. Nothing
 is committed and no server runs: the data is as fresh as the last build, and the website workflow rebuilds it every
-hour. Each API request allows 30 seconds (including its JSON body) and up to three attempts for timeouts, temporary
+hour. Each API request allows 120 seconds (including its JSON body: a busy forge can take more than 30 seconds to
+list 100 open pull requests) and up to three attempts for timeouts, temporary
 network errors, HTTP 408/429 and HTTP 500/502/503/504. Retries wait 1 then 2 seconds, or a longer `Retry-After` up to
 30 seconds. Authentication errors, invalid JSON, private sources and unsafe pagination fail without retries.
 

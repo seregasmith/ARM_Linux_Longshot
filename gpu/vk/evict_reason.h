@@ -1,7 +1,7 @@
 // Why the eviction pass let a texture go, and whether its texels went with it (vk_texture.cpp). tests/test_evict_reason.py
 //
 // The "N textures retired" line said how many went, not why: a 9070 XT's log at 3.3 GB of its 6 GB budget retired 28,000
-// textures with the ground garbled until a restart (#bug-reporting, worklist "ground and outdoor textures garble"), and the
+// textures with the ground garbled until a restart (#bug-reporting: "ground and outdoor textures garble"), and the
 // log could not tell budget evictions from the render-target sweeps, nor say whether a texture the GPU drew left with the only
 // copy of its texels. Each pass now counts its textures by reason, and the ones whose texels exist nowhere else.
 #pragma once
@@ -21,8 +21,8 @@ enum Reason : int {
 inline Reason classify(bool shifted, bool overwritten) { return shifted ? DEAD : overwritten ? DRAWN_OVER : BUDGET; }
 
 // A texture the GPU drew, that nothing drew over, going without a write-back into its memory: its image held the only copy, and
-// one made again over that storage is not uploaded (the storage counts as the GPU's). That is how a terrain chunk's normal map
-// came back empty before (issues 107, 386)
+// one made again over that storage is not uploaded (the storage counts as the GPU's): a terrain chunk's normal map would come
+// back empty
 inline bool texels_lost(bool gpu_written, bool overwritten, bool flushed) { return gpu_written && !overwritten && !flushed; }
 
 // A write-back before eviction puts an image's texels over all of its storage and marks those pages written. It is stale when

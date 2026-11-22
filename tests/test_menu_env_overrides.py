@@ -11,6 +11,10 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
+from menu_model_fixture import menu_model_prelude, output_engine, unbroken  # noqa: E402
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
@@ -58,7 +62,16 @@ FIXTURE = r"""
 #include "longshot_env.h"   // (gpu/vk/compat: env_value_off, the switches' rule)
 #include "hos_wide_size.h"   // (host/: the output sizes the menu accepts, hos_output_size_valid)
 #include "display_modes.h"   // (gpu/vk/: the sizes the Output resolution offers)
+#include "vk_fsr4.h"
 using namespace mkwvk;
+namespace mkwvk {
+int fsr4_model_env() {
+    const char* value = std::getenv("RX_VK_FSR4_MODEL");
+    return value && std::strcmp(value, "lite") == 0 ? 1 : -1;
+}
+Fsr4Model live_model = FSR4_MODEL_AUTO;
+void fsr4_set_model(Fsr4Model model) { live_model = model; }
+}
 // (the screen's display modes: HOS_DISPLAY_MODES names them here)
 std::vector<display_modes::Size> screen_modes() { return {}; }
 void outputs_sync() {}   // (the rows' ends and the Aspect ratio from the sizes read: not what this checks)
@@ -75,10 +88,13 @@ static int setenv(const char* name, const char* value, int) { return _putenv_s(n
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL %d: %s\n", __LINE__, #x); return 1; } } while (0)
 /* OPTIONS */
 Options opts;
+std::mutex options_save_mu;
 /* TABS */
 /* ROW */
 /* OUTPUTS */
 const char* tx(int) { return ""; }
+// (the FSR 4 model row is gpu/vk/menu/upscaler.cpp's: saved under its module's key)
+const menu::Setting fsr4_model_setting{.key = "fsr4_model", .label = "FSR 4 model", .value = &opts.fsr4_model};
 Row rows[] = {
     {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx, ""},
     {TAB_GRAPHICS, "Frame pacing", &opts.pace, 0, 1, 1, tx, ""},
@@ -86,6 +102,7 @@ Row rows[] = {
     {TAB_GRAPHICS, "Render resolution", &opts.resolution, 0, 6, 1, tx, ""},
     {TAB_GRAPHICS, "Window scaling filter", &opts.upscale, 0, 2, 1, tx, ""},
     {TAB_GRAPHICS, "Sharpness", &opts.sharpness, 0, 100, 10, tx, ""},
+    {TAB_GRAPHICS, "FSR 4 model", &opts.fsr4_model, 0, 1, 1, tx, "", nullptr, false, false, -1, false, &fsr4_model_setting},
     {TAB_GAMEPLAY, "Game speed", &opts.realtime, 0, 1, 1, tx, ""},
 };
 std::string ini_file;
@@ -102,11 +119,12 @@ std::vector<gpu_choice::Card> gpu_device_cards;
 std::string gpu_saved_card;
 bool gpu_card_missing = false;
 struct { int steps = 0; bool went_down = false; } auto_tuning;   // (and its tuning's steps)
-constexpr int HOS_KEY_N = 1, HOS_SW_N = 1, HOS_BIND_PAD = 0, HOS_BIND_KEY = 1;
-constexpr int HOS_KEY_OC_NOTE_L = 1, HOS_KEY_OC_NOTE_X = 1;   /* (the note rows: past this stub's one row) */
+constexpr int HOS_KEY_N = 1, HOS_SW_N = 1, HOS_BIND_PAD = 0, HOS_BIND_KEY = 1, HOS_BIND_SPRINT_AUTO = 2;
+constexpr int HOS_KEY_OC_NOTE_L = 1, HOS_KEY_OC_NOTE_X = 1, HOS_KEY_TOGGLE_HUD = 1, HOS_KEY_SPRINT = 1;   /* outside the stub's one row */
 const char* const bind_names[1] = {"a"};
 struct Host { int (*binding)(int, int, int); } host_value{nullptr}, *host = &host_value;
 bool can_bind() { return host->binding != nullptr; }
+bool toggle_on(int b) { return ((opts.hold_toggle >> b) & 1) != 0; }   // (the Controls page's Toggle column, as vk_menu.cpp's)
 void logf(const char*, ...) {}   // (save()'s line when the file cannot be written)
 /* INI_KEY */
 /* SAVE */
@@ -143,7 +161,10 @@ int main(int argc, char** argv) {
     setenv("RX_VK_FRAMEGEN_MULT", "4", 1);
     setenv("HOS_OUTPUT_RES", "2400x1350", 1);
     setenv("RX_VK_ASTC_RGBA8", "1", 1);
+    opts.fsr4_model = 0;
+    setenv("RX_VK_FSR4_MODEL", "lite", 1);
     env_part();
+    CHECK(live_model == FSR4_MODEL_LITE);
     CHECK(opts.astc_rgba8 == 1);
     // This run follows the environment
     CHECK(opts.pace == 1 && opts.realtime == 1 && opts.resolution == 0 && opts.upscale == 2 && opts.framegen == 4);
@@ -152,6 +173,7 @@ int main(int argc, char** argv) {
     opts.sharpness = 40;
     save();
     CHECK(has("sharpness=40\n"));
+    CHECK(has("fsr4_model=0\n"));
     CHECK(has("pad_a=1,17\n") && has("key_a=69,0\n") && has("toggle_a=1\n"));
     CHECK(has("frame_pacing=0\n"));
     CHECK(has("game_speed=0\n"));
@@ -189,6 +211,11 @@ int main(int argc, char** argv) {
     opts.hold_toggle = 1;
     save();
     CHECK(has("toggle_a=1\n") && !has("toggle_a=0\n"));
+    setenv("RX_VK_FSR4_MODEL", "", 1);
+    opts.fsr4_model = 1;
+    live_model = FSR4_MODEL_AUTO;
+    env_part();
+    CHECK(live_model == FSR4_MODEL_LITE);
     std::puts("PASS: the environment's rows last for the run; the options file keeps the player's");
 }
 """
@@ -202,8 +229,6 @@ def fixture(source):
     row = re.search(r"struct Row \{.*?\n\};", menu, re.S)
     if not options or not tabs or not row:
         raise SystemExit("the menu's options, tabs, or row definition is missing")
-    outputs_from = menu.index("struct Out {")
-    outputs_to = menu.index("dm::Size size_of(Out o)", outputs_from)
     helpers_from = menu.index("struct EnvOverride {")
     save = definition(menu, "void save")
     init = definition(menu, "void menu_init")
@@ -220,9 +245,9 @@ def fixture(source):
         "/* OPTIONS */": options.group(0),
         "/* TABS */": tabs.group(0),
         "/* ROW */": row.group(0),
-        "/* OUTPUTS */": menu[outputs_from:outputs_to],
+        "/* OUTPUTS */": output_engine(source, "dm::Size size_of(Out o)"),   # (the output module's, #1633)
         "/* INI_KEY */": definition(menu, "const char* ini_key"),
-        "/* SAVE */": menu[helpers_from:menu.index("std::string ini_path() {")] + save,
+        "/* SAVE */": unbroken(menu[helpers_from:menu.index("std::string ini_path() {")]) + save,
         "/* ENV */": env,
     }
     result = FIXTURE
@@ -239,7 +264,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="menu-env-") as tmp:
         src = Path(tmp) / "menu_env.cpp"
         exe = Path(tmp) / ("menu_env.exe" if os.name == "nt" else "menu_env")
-        src.write_text(fixture(args.source), encoding="utf-8")
+        src.write_text(menu_model_prelude(args.source) + fixture(args.source), encoding="utf-8")
         if Path(args.cxx).name.lower() in ("cl", "cl.exe", "clang-cl", "clang-cl.exe"):
             command = [args.cxx, "/nologo", "/std:c++20", "/EHsc", "/D_CRT_SECURE_NO_WARNINGS", "/I" + str(args.source / "host"), "/I" + str(args.source / "gpu" / "vk" / "compat"), "/I" + str(args.source / "gpu" / "vk"), str(src),
                        "/Fo" + str(Path(tmp) / "menu_env.obj"), "/Fe" + str(exe)]

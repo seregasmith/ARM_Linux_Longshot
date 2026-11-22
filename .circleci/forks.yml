@@ -1,4 +1,4 @@
-# Fork doorbell and stale approval sweep (magicbeandev/ci). Docs: docs/ci.md.
+# Fork doorbell and stale approval sweep (magicbeandev/ci). Docs: docs/dev/reference/ci.md.
 version: 2.1
 setup: true
 parameters:

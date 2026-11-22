@@ -18,6 +18,9 @@ from pathlib import Path
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 ROOT = Path(__file__).resolve().parents[1]
+import sys  # noqa: E402
+sys.path.insert(0, str(ROOT / "tests"))
+from menu_model_fixture import menu_text, output_engine  # noqa: E402
 
 
 def block(text, start):
@@ -186,9 +189,8 @@ int main() {
 
 
 def fixture(source):
-    menu = (source / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
-    outputs_from = menu.index("struct Out {")
-    outputs_to = menu.index("dm::Size size_of(Out o)", outputs_from)
+    # (vk_menu.cpp and its modules, #1633: the Aspect ratio's and Output resolution's steps are gpu/vk/menu/output.cpp's)
+    menu = menu_text(source)
     # (a size of another shape than the one chosen: menu_setting_set moves the Aspect ratio to its shape before the walk)
     setter_text = definition(menu, "int menu_setting_set")
     if "aspect_for_choice(want)" not in setter_text:   # (its shape: test_output_resolution checks aspect_for_choice)
@@ -200,7 +202,7 @@ def fixture(source):
     if "walk_to(" not in setter:
         raise SystemExit("menu_setting_set no longer walks the list rows with walk_to")
     replacements = {
-        "/* OUTPUTS */": menu[outputs_from:outputs_to],
+        "/* OUTPUTS */": output_engine(source, "dm::Size size_of(Out o)"),   # (the output module's, #1633)
         "/* STEP_OUTPUT */": definition(menu, "int step_output_choice"),
         "/* WALK */": block(menu, walk.start()),
     }

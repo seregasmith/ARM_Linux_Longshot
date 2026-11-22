@@ -1,7 +1,7 @@
 # A test run of the standalone build (mkw-recomp's work/run-vk.ps1, for longshot.exe): the Vulkan back end
 # (the only renderer), headless unless -Window (then it never takes focus), High priority (-Priority), muted unless
 # -Sound, screenshots every -ShotEvery presents into work\runs\<name>\shots. Extra environment: -Env "A=1;B=2".
-# -BuildName "what this tests": shown under the version at the Insert menu's top right (LONGSHOT_BUILD_NAME).
+# -BuildName "what this tests": shown under the version in the menu and on the start-up screen (LONGSHOT_BUILD_NAME).
 #
 # Guards (the PC is the user's, and one game runs at a time): no run while Rainbow Six Siege is open, nor while
 # another session's mkw.exe or longshot.exe runs (-Force overrides both); the game is stopped when its working set passes

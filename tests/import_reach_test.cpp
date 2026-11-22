@@ -18,6 +18,7 @@
 #if HAVE_REACH
 #include "gpu/vk/import_reach.h"
 #endif
+#include "gpu/vk/import_hold.h"   // (pool_lookup's held-retry line names ImportHolds::kGapMs)
 
 namespace mkwvk {
 static unsigned checks;
@@ -72,7 +73,6 @@ static uint64_t span_bytes;
 static uint64_t import_span() { return span_bytes; }   // (RX_VK_IMPORT_SPAN_MB=0: the planned range is the chunks of the binding alone)
 static unsigned bg_starts;
 static void bg_start() { ++bg_starts; }
-static void rb_hazard_locked(uint64_t, uint64_t) {}
 static bool mem_check_on() { return false; }   // (RX_VK_MEM_CHECK off: memory_note_gpu_write's hook)
 static void mem_check_gpu_only(uint64_t, uint64_t) {}
 
@@ -96,6 +96,7 @@ static int64_t st_bg_waits, st_prefetch_sent, st_prefetch_used, st_prefetch_drop
 static std::vector<Pool*> mirror_wanted, sparse_wanted;
 static uint64_t mem_rec_value = 7, mirror_epoch = 10;
 static int failures;
+[[maybe_unused]] static std::atomic<int64_t> st_imports_made{0}, st_imports_refused{0}, st_imports_held{0};   // (pool_lookup's attempts, #859)
 static thread_local bool import_cooling;
 static thread_local VkResult import_result = VK_SUCCESS;
 static Pool* pool_lookup(uint64_t, uint64_t);

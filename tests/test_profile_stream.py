@@ -1,6 +1,6 @@
-"""Game-free profile output and bounded input reading: python -I -B tests/test_profile_stream.py."""
+"""Game-free output of scripts/perf.py stacks (one thread's HOS_SAMPLE_FILE stacks) and bounded input reading:
+python -I -B tests/test_profile_stream.py."""
 import contextlib
-import importlib.util
 import io
 import os
 from pathlib import Path
@@ -10,9 +10,8 @@ import unittest
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("profile_under_test", ROOT / "scripts" / "prof.py")
-prof = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(prof)
+sys.path.insert(0, str(ROOT / "scripts"))
+from profiling import analyses, symbols  # noqa: E402
 
 
 class IteratedFile(io.TextIOWrapper):
@@ -39,13 +38,9 @@ class ProfileTests(unittest.TestCase):
                     return profile
                 return real_open(path, *args, **kwargs)
 
-            args = ["prof.py", "synthetic-profile", "40", skip]
-            if only is not None:
-                args.append(only)
             output = io.StringIO()
-            with mock.patch.object(prof, "BUILD", folder), mock.patch.object(sys, "argv", args), \
-                    mock.patch("builtins.open", side_effect=open_input), contextlib.redirect_stdout(output):
-                prof.main()
+            with mock.patch("builtins.open", side_effect=open_input), contextlib.redirect_stdout(output):
+                analyses.stacks("synthetic-profile", symbols.Names(folder), 40, float(skip), only)
             self.assertTrue(profile.closed)
             return output.getvalue()
 
@@ -77,8 +72,8 @@ class ProfileTests(unittest.TestCase):
                     with os.fdopen(writer, "wb") as output:
                         output.write(b"a.dll+1\r\n\r\nb.dll+2\r\nc.dll+3")
                     with mock.patch.object(profile, "seekable", return_value=True), \
-                            mock.patch.object(prof, "open", return_value=profile, create=True):
-                        self.assertEqual(list(prof.profile_lines("synthetic-pipe", skip)), expected)
+                            mock.patch.object(analyses, "open", return_value=profile, create=True):
+                        self.assertEqual(list(analyses.profile_lines("synthetic-pipe", skip)), expected)
 
     def test_symbol_resolution_and_filter(self):
         maps = " 0001:00000000 ?draw@renderer@@ 0000000140000010 f\n"

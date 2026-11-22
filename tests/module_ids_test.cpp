@@ -67,6 +67,21 @@ int main(int argc, char** argv) {
         t.open(path, 77, other);
         CHECK(t.size() == 1 && t.has(20, 5));
     }
+    {   // a stamp `also` takes (the same translator, an earlier program cache format): read, and appended to as it is
+        std::remove(path.c_str());
+        module_ids::Store old;
+        old.open(path, 77, other);
+        CHECK(old.add(30, 1, a, 32) && old.flush());
+        module_ids::Store s;
+        s.open(path, 79, other, [](uint64_t kept) { return kept == 77; });
+        CHECK(s.size() == 1 && s.has(30, 1));
+        CHECK(s.add(31, 0, b, 20) && s.flush());
+        module_ids::Store t;
+        t.open(path, 77, other);
+        CHECK(t.size() == 2 && t.has(30, 1) && t.has(31, 0));
+        t.open(path, 79, other, [](uint64_t kept) { return kept == 78; });   // (one it does not take: another program cache)
+        CHECK(t.size() == 0);
+    }
     std::printf("module_ids: ok\n");
     return 0;
 }

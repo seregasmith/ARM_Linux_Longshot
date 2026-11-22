@@ -9,6 +9,10 @@ python -I -B tests/test_audio_output_menu.py [--cxx clang++]
 import argparse
 import os
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
+from menu_model_fixture import menu_model_prelude, menu_model_member, menu_text, output_engine  # noqa: E402
 import re
 import subprocess
 import tempfile
@@ -16,6 +20,18 @@ import tempfile
 RUN_ALL_ARGS = ["--cxx", "g++"]
 
 ROOT = Path(__file__).resolve().parents[1]
+
+HINT_HELPERS = r"""
+/// A row's hints from a table, the value lo first (nullptr: none for that value)
+const char* hint_in(const char* const* t, int n, int lo, int v, int variant) {
+    return variant <= 0 && v - lo >= 0 && v - lo < n ? t[v - lo] : nullptr;
+}
+#define MENU_HINTS(fn, lo, ...)                                                                                              \
+    const char* fn(int v, int variant) {                                                                                     \
+        static const char* const t[] = {__VA_ARGS__};                                                                        \
+        return hint_in(t, (int)(sizeof t / sizeof t[0]), lo, v, variant);                                                    \
+    }
+"""
 
 FIXTURE = r"""
 #include <algorithm>
@@ -48,13 +64,17 @@ static void au_unlock(void) {}
 static int device_channels, device_asked;
 static int au_device_channels(void) { device_asked++; return device_channels; }
 HOST
-struct Row { int tab; const char* name; int* value; };
-struct { int output_res, vsync, resolution, fps_cap, upscale, dlss, dlss_pre_bloom, handheld, ultrawide, audio_output; } opts;   // (ultrawide: the Aspect ratio row's key)
+struct Row { int tab; const char* name; int* value; MODEL_MEMBER};
+struct { int output_res, vsync, resolution, fps_cap, upscale, dlss, dlss_pre_bloom, handheld, ultrawide, audio_output, vibration, rumble; } opts;   // (ultrawide: the Aspect ratio row's key; vibration, rumble: the Vibration rows' keys)
 int monitor_pick; // Unexercised fullscreen selector referenced by the real ini_key().
 MENU
 int main(int argc, char **argv) {
     assert(argc == 7);
-    const Row output_row = {1, "Speaker layout", &opts.audio_output};
+    static mkwvk::menu::Setting speaker;   /* (the row as its module describes it, gpu/vk/menu/audio.cpp: #1633) */
+    speaker.key = "audio_output";
+    speaker.restart_value = speaker_restart_value;
+    Row output_row = {1, "Speaker layout", &opts.audio_output};
+    output_row.setting = &speaker;
     for (int v = 0; v <= 3; v++) {
         opts.audio_output = v;
         assert(row_restart_value(output_row) == (v == 3 ? 1 : v));
@@ -121,27 +141,34 @@ def main():
 
     audio = (ROOT / "host/nn_audio.c").read_text(encoding="utf-8")
     menu = (ROOT / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8")
+    # (the Audio tab's rows and their code: gpu/vk/menu/audio.cpp's, #1633; the rows as table lines, menu_text)
+    module = (ROOT / "gpu/vk/menu/audio.cpp").read_text(encoding="utf-8")
     # (tab, name, value, lo, hi, step, text, help, then hint, restart: read once at the start, preset_exempt)
     row = re.search(r'\{TAB_(\w+), "([^"]+)", &opts\.audio_output, (-?\d+), (-?\d+), (\d+), (\w+),\s*"[^{}]*?", '
-                    r'(\w+), (true|false), (true|false)\},', menu)
+                    r'(\w+), (true|false), (true|false)\},', menu_text(ROOT))
     assert row, "the Insert menu has no Speaker layout row"
     tab, name, lo, hi, step, text, hint, restart, exempt = row.groups()
     assert (tab, lo, hi, step, text, hint, restart, exempt) == \
         ("AUDIO", "0", "3", "1", "tx_audio_output", "hn_audio_output", "true", "true"), row.groups()
     host = between(audio, "/* (longshot) The Insert menu's Audio output", "/* The device's format,")
-    hints = re.search(r'MENU_HINTS\(hn_audio_output,.*?\)\n(?=\S)', menu, re.S)
-    assert hints, "no MENU_HINTS(hn_audio_output, ...)"
-    menu_part = between(menu, "/// A row's hints from a table", "const char* tx_framegen(") + hints.group(0) + \
-        between(menu, "const char* tx_audio_output(int v) {", "const char* tx_robust(") + \
+    hints = re.search(r'MODULE_HINTS\(hn_audio_output,.*?\)\n(?=\S)', module, re.S)
+    assert hints, "no MODULE_HINTS(hn_audio_output, ...)"
+    restart = re.search(r'^int speaker_restart_value\(int v\) \{.*\}\n', module, re.M)
+    assert restart, "gpu/vk/menu/audio.cpp: no speaker_restart_value"
+    # (the module's hints by a MENU_HINTS of the fixture's own, the same table as menu_module.h's MODULE_HINTS)
+    menu_part = HINT_HELPERS + \
+        hints.group(0).replace("MODULE_HINTS(", "MENU_HINTS(") + restart.group(0) + \
+        between(module, "const char* tx_audio_output(int v) {", "void refresh_outputs() {") + \
         between(menu, "const char* ini_key(const Row& r) {", "// (longshot) the controls, kept by the host")
-    menu_part += between(menu, "struct Out {", "/// The choice of size w x h:")
+    menu_part += output_engine(ROOT, "/// The choice of size w x h:")   # (the output module's, #1633)
     menu_part += between(menu, "int row_restart_value(const Row& r) {", "void restart_init() {")
     assert "restart_state.add(row_restart_value(rows[i]))" in menu
     assert "now[restart_slot[i]] = row_restart_value(rows[i]);" in menu
     with tempfile.TemporaryDirectory(prefix="audio-output-menu-") as tmp:
         work = Path(tmp)
         source, exe = work / "fixture.cpp", work / "fixture.exe"
-        source.write_text(FIXTURE.replace("HOST", host).replace("MENU", menu_part), encoding="utf-8")
+        source.write_text(menu_model_prelude() + FIXTURE.replace("MODEL_MEMBER", menu_model_member()).replace("HOST", host)
+                          .replace("MENU", menu_part), encoding="utf-8")
         subprocess.run([args.cxx, "-std=c++17", "-Wall", "-Wextra", "-Werror", "-I" + str(ROOT), str(source), "-o", str(exe)], check=True)
         for saved, env_channels, device, want, asked, log in CASES:
             ini = work / "longshot_options.ini"

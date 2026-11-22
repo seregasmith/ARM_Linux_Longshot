@@ -15,9 +15,9 @@
    taken off, and rates under 0.007 turns a second count as none, as the console's standard zero-drift mode does (the
    Motion deadzone row: Low and High are its tight 0.002 and loose 0.01).
    Motion sensitivity X/Y and Invert motion X/Y scale the angular velocity before it is used: its part about the
-   world's up (the turn, X) and the rest (the tilt, Y). At 100% and not inverted the state is Eden's own. Earlier
-   versions sent a partial state (a yaw rate and a tilt matrix, the rest neutral, spluton's and Link-22's findings in
-   issue 112), and every way the pad could be held at the start needed its own case; the full state needs none.
+   world's up (the turn, X) and the rest (the tilt, Y). At 100% and not inverted the state is Eden's own. A partial state
+   (a yaw rate and a tilt matrix, the rest neutral) would need its own case for every way the pad could be held at the
+   start; the full state needs none.
 
    The filter, the frame and the orientation matrix follow Eden's src/hid_core/frontend/motion_input.cpp and
    src/input_common/drivers/sdl_driver.cpp (Copyright 2020 yuzu Emulator Project, GPL-2.0-or-later; Copyright 2026 Eden

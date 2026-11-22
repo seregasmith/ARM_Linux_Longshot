@@ -54,7 +54,9 @@ class FolderTests(unittest.TestCase):
                                                    "a": SimpleNamespace(fsr=False, no_fsr=False, update=None, fetch_fsr_runtime=False)})
             self.assertEqual((out / "longshot").read_bytes(), (ROOT / "builder" / "linux" / "longshot-folder").read_bytes())
             self.assertTrue((out / "longshot").stat().st_mode & stat.S_IXUSR)
-            self.assertEqual(sorted(p.name for p in out.iterdir()), ["bin", "image.bin", "longshot"])
+            # (beside them the finish's note of what it copied in, and the vendored code's licences)
+            self.assertEqual(sorted(p.name for p in out.iterdir()),
+                             sorted([make_game.INSTALLED_NOTE, "bin", "image.bin", "licenses", "longshot"]))
             self.assertEqual(sorted(p.name for p in (out / "bin").iterdir()), sorted(make_game.BESIDE))
             self.assertEqual((out / "bin" / "longshot").read_bytes(), b"new longshot")
 

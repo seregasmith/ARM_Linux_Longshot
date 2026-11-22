@@ -21,14 +21,13 @@ a64emit.dll, __pycache__) are not part of it. Standard library only; no game dat
 """
 import argparse
 import hashlib
-import io
 import os
 import re
 import subprocess
 import sys
-import tarfile
-import urllib.request
-import zipfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # (python -I leaves the script's folder off the path)
+import helpers  # noqa: E402
 
 NOTE = "PROVENANCE.md"
 RULE = ("Don't modify third_party/: its parts are unmodified upstream copies with their notices in PROVENANCE.md. Add a new "
@@ -55,9 +54,8 @@ def ignored(root, paths):
     """The paths (relative to root, with /) .gitignore leaves out: by its rules alone, tracked or not"""
     if not paths or git(root, "rev-parse", "--show-toplevel") is None:
         return set()
-    # (-z and bytes, both ways: in text mode Windows sent each path with a \r, which matches no rule; and without -z git
-    # quotes a path with a non-ASCII byte in its answer, "third_party/x/\303\251.dll", which matches none of ours. Either
-    # way an ignored file was hashed with the part)
+    # (-z and bytes, both ways: text mode on Windows adds a \r to each path, and without -z git quotes a non-ASCII one;
+    # neither matches a rule, so an ignored file would be hashed with the part)
     out = subprocess.run(["git", "check-ignore", "--no-index", "-z", "--stdin"], cwd=root,
                          input="".join(p + "\0" for p in paths).encode("utf-8"), capture_output=True)
     return set(out.stdout.decode("utf-8").split("\0")) - {""}
@@ -158,27 +156,12 @@ def update(root, which):
                              % (part, NOTE))
         line = "tree-sha256: %s" % tree_hash(root, part)
         body = TREE.sub("", text).rstrip("\n")
-        with open(note_path(root, part), "w", encoding="utf-8", newline="\n") as f:
-            f.write(body + "\n\n" + line + "\n")
+        helpers.write_text(note_path(root, part), body + "\n\n" + line + "\n")
         print("third_party/%s: %s" % (part, line))
 
 
-def archive_files(data):
-    """{path: bytes} of a .tar(.gz/.xz/.bz2) or .zip archive's files"""
-    if data[:4] == b"PK\x03\x04":
-        with zipfile.ZipFile(io.BytesIO(data)) as z:
-            return {i.filename: z.read(i) for i in z.infolist() if not i.is_dir()}
-    out = {}
-    with tarfile.open(fileobj=io.BytesIO(data)) as t:
-        for m in t.getmembers():
-            if m.isfile():
-                out[m.name] = t.extractfile(m).read()
-    return out
-
-
 def upstream(root, which, fetch=None):
-    fetch = fetch or (lambda url: urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "longshot-check"}),
-                                                         timeout=120).read())
+    fetch = fetch or helpers.read_url
     problems = []
     for part in which or parts(root):
         fields = {}
@@ -194,7 +177,7 @@ def upstream(root, which, fetch=None):
             problems.append("third_party/%s: %s is not the archive its note names (sha256 %s, want %s)"
                             % (part, url, hashlib.sha256(data).hexdigest(), want))
             continue
-        archive = archive_files(data)
+        archive = helpers.archive_files(data)
         ours = set(fields.get("local", []))
         differ = []
         for rel, full in files(root, part):
@@ -216,7 +199,7 @@ def upstream(root, which, fetch=None):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--root", default=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    p.add_argument("--root", default=helpers.ROOT)
     p.add_argument("--base")
     p.add_argument("--update", nargs="*")
     p.add_argument("--upstream", nargs="*")

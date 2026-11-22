@@ -22,8 +22,9 @@ struct Id {
 
 class Store {
 public:
-    /// The file read (missing, of another stamp or driver, or cut short at its end: what reads is kept, the rest is not)
-    void open(const std::string& path, uint64_t stamp, const uint8_t uuid[16]) {
+    /// The file read (missing, of another stamp or driver, or cut short at its end: what reads is kept, the rest is not). A stamp
+    /// `also` takes is the same as `stamp` (vk_programs.cpp: this translator under an earlier program cache format)
+    void open(const std::string& path, uint64_t stamp, const uint8_t uuid[16], bool (*also)(uint64_t) = nullptr) {
         std::lock_guard lk(mu_);
         path_ = path, stamp_ = stamp;
         std::memcpy(uuid_, uuid, 16);
@@ -31,8 +32,10 @@ public:
         FILE* f = fopen(path.c_str(), "rb");
         if (!f) return;
         uint8_t head[kHead];
-        if (fread(head, 1, kHead, f) == kHead && !std::memcmp(head, kMagic, 8) && !std::memcmp(head + 8, &stamp, 8) &&
-            !std::memcmp(head + 16, uuid, 16)) {
+        const bool whole = fread(head, 1, kHead, f) == kHead;
+        uint64_t kept = 0;
+        if (whole) std::memcpy(&kept, head + 8, 8);
+        if (whole && !std::memcmp(head, kMagic, 8) && (kept == stamp || (also && also(kept))) && !std::memcmp(head + 16, uuid, 16)) {
             fresh_ = false;
             uint8_t e[kEntry];
             while (fread(e, 1, kEntry, f) == kEntry) {

@@ -1,4 +1,4 @@
-/* (longshot) The game's Voice Language option, kept after a restart (issue 430).
+/* (longshot) The game's Voice Language option, kept after a restart.
 
    The game's voice resource (its update, f_80a9ca30) picks the voice files' language in two places only:
    - at its first update, the default of the text language (f_809d48c0): applied at once, and written to the option
@@ -6,10 +6,10 @@
    - after that, whenever GameDataMgr lists the option among the flags written since its last pass (f_80a9d1c0(mgr, hash),
      the list at mgr+0x288): the option's value is read and applied (f_80a9d330).
    option.sav is read about half a second later, and its values replace the options' without being listed. So a Voice Language
-   saved in an earlier session stood in the option (the game's Options screen showed it) while the voices stayed the text
-   language's default: English under English text with Japanese chosen. Changing the option in a session wrote it, and
-   was applied; the next start lost it again. Seen in a run (v3.0.0-rc.4, en-US, option.sav holding Japanese): the option
-   English at frame 4 with USen applied, the saved value from frame 70 on, the voice files opened still USen_*.
+   saved in an earlier session stands in the option (the game's Options screen shows it) while the voices stay the text
+   language's default: English under English text with Japanese chosen. Changing the option in a session writes it, and
+   is applied; the next start loses it again (the saved value is in the option from about frame 70, the voice files already
+   opened in the default's).
 
    nx2/oot_patches.py makes the update's one call of f_80a9d1c0 come here, with the game's function. Its answer stands, and
    it is also yes when the option's value is not the one it had at the update before: then the game's own branch reads the

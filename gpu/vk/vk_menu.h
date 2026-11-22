@@ -25,6 +25,7 @@ struct Options {
     int hdr = 0;          // (longshot) HDR10 out (vk_framegen.cpp framegen_hdr): 0 off, 1 the SDR picture expanded, 2 the game's own (native) HDR; when the display has it (the swapchain made again at once)
     int hdr_white = 200;  // HDR paper white, nits (the picture's white)
     int hdr_peak = 1000;  // HDR peak brightness, nits (its brightest highlights)
+    int colour_vision = 0;  // (colour vision correction: Off, Protan, Deutan, Tritan)
     int hdr_contrast = 100;   // HDR contrast in percent around mid grey, as RenoDX grades it; 100 none (vk_framegen.cpp framegen_hdr)
     int hdr_tonemap = 0;  // (longshot) the scene's tone mapper with Native HDR: 0 the game's (Vanilla), 1 PsychoV35, as RenoDX's zelda-oot-oz
                           // (ir_opt/scene_tonemap_pass.h; vk_shader.cpp scene_tonemap_for)
@@ -45,11 +46,14 @@ struct Options {
     int dlss_model = 0;   // DLSS's network, by its preset: 0 K (transformer; E, the CNN, under 7 GB of video memory), 1 M, 2 L
                           // (second-generation transformer), 3 NVIDIA's default (upscaler_rows.h model_preset; vk_dlss.cpp).
                           // RX_VK_DLSS_PRESET over it
+    int fsr4_model = 0;   // (longshot) AMD FSR 4's network: 0 Auto (AMD's own pick for this GPU), 1 Lite (the faster INT8
+                          // network; upscaler_rows.h FSR4_MODEL_LITE; vk_fsr4.cpp). RX_VK_FSR4_MODEL over it
     int dlss_pre_bloom = 0;   // (longshot) DLAA before the bloom: 0 off (DLAA after the game's bloom and tone map), 1 on
                               // (vk_temporal.cpp pre_bloom_wanted; DLAA only). Saved as dlss_pre_bloom; RX_VK_DLSS_PRE_BLOOM over it
     int sharpness = 0;    // 0 to 100
     int anisotropy = 4;   // (longshot) Anisotropic filtering: 0 the game's own (1x or 2x), 1 2x, 2 4x, 3 8x, 4 16x (the
                           // device's limit at most; gpu/vk/vk_draw.cpp aniso_override, RX_VK_ANISO over it)
+    int grass_distance = 0;   // short blades: 0 the game's, 1 2x, 2 3x, 3 4x (RX_VK_GRASS_DISTANCE over it)
     int shadow_res = 0;   // (longshot) Shadow resolution, the sun's cascades: 0 Auto (the size for the card's memory,
                           // menu_shadow_res), 1 the game's (1600), 2 2200, 3 3072 (host/oot_shadow.c: HOS_OPT_SHADOW_RES, 56).
                           // The Quality presets set it back to Auto (apply_preset)
@@ -60,24 +64,33 @@ struct Options {
                           // options_version 6: host/hos_wide_size.h hos_aspect_on). In the menu, from menu_init on: a place in
                           // vk_menu.cpp's output_shapes, the shapes of the sizes offered, the monitor's own marked; another shape than
                           // 16:9 and the monitor's is output_res's own (outputs_sync, save)
-    int hud_layout = 0;   // the HUD on a screen not 16:9: 0 its corners at the screen's edges, 1 in the middle 16:9 (HOS_OPT_HUD_LAYOUT)
+    int hud_layout = 0;   // edges, middle 16:9, custom
+    int hud_health_x = 0, hud_health_y = 0, hud_health_scale = 100;
+    int hud_buttons_x = 0, hud_buttons_y = 0, hud_buttons_scale = 100;
+    int hud_minimap_x = 0, hud_minimap_y = 0, hud_minimap_scale = 100;
     int wide_menus = 1;   // ultrawide: the pause, item and map menus 0 at full width (stretched), 1 in the middle 16:9 with the sides
-                          // blurred, 2 with black bars (nx2/oot_wide.py, vk_framegen.cpp)
+                          // blurred, 2 with black bars (nx2/oot_wide.py, vk_framegen.cpp), 3 Extended: at their
+                          // 16:9 size with their side panes at the screen's edges (host/hos_wide_ui.c)
     int show_fps = 0;     // (longshot) the FPS counter: 0 Off, 1 FPS, 2 Frame time, 3 Graph, 4 Breakdown (fps_stats.h; saved as fps_counter=, an old On is 1)
     int fps_corner = 0;   // (longshot) its corner: 0 top right, 1 top left, 2 bottom right, 3 bottom left
     int fps_size = 0;     // (longshot) its size: 0 Auto (the window's height and Menu size), 1 Small, 2 Medium, 3 Large (fixed)
     int fps_version_always = 0;   // (longshot) the version and the hardware lines at every level of the counter, not only at Dev
     // (longshot) which of the Dev level's lines show: fps_stats.h's DevLine order, then the CPU, GPU and driver lines; all by default
-    int fps_dev_show[12] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+    int fps_dev_show[13] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};   // (the Dev lines, then the footer's CPU, GPU and driver, and its render lines)
     int menu_shortcut = 2;   // 0 Insert or F1, 1 F1 only, 2 Insert, F1 or Esc (F1 always opens the menu). 2 by default, as a PC
                              // game's pause menu; an older file's 0, the default it then was, moves to 2 (options_version 5)
     int compact_menu_key = 0; // 0 Right Shift, 1 Right Ctrl (key to switch to or open the compact menu)
+    int menu_theme = 0;   // (longshot) the overlays' look: 0 Modern dark, 1 Classic (the game's tan and gold; gpu/vk/vk_ui.h set_theme)
     int menu_size = 2;   // (longshot) the overlays' size: 1 Small, 2 Medium, 3 Large (gpu/vk/vk_ui.h unit; an older file's 0 Auto: Medium)
     int fullscreen = 0;   // borderless, at the monitor's size: F11 is the same setting
     int gpu_device = 0;   // graphics card index: 0 Auto, 1..N device 0..N-1 (gpu/vk/vk_main.cpp; RX_VK_DEVICE)
     int pad_background = 0;   // the controllers count while another window has the focus (host/nn_hid.c; HOS_INPUT_BACKGROUND)
     int mouse_native = 0; // the mouse turns the camera's own angles (host/mouse_native.c); 0: as the right stick; 2: off (never captured)
     int disable_camera_centering = 0; // 0: stock movement-follow turning; 1: keep the player's horizontal direction
+    int sprint = 0; // 1: Sprint's key and button run (host/oot_sprint.c, HOS_OPT_SPRINT), and turning it on gave them
+                    // Shift and the left stick's press (vk_menu.cpp apply_sprint_layout); 0, the default: they do nothing
+    int sprint_toggle = 1; // the Controls page's Toggle for Sprint (toggle_sprint=, HOS_OPT_SPRINT_TOGGLE): 1, the default, a
+                           // press turns it on and the next or Link's state off; 0: Sprint while its key or button is held
     int mouse_sens = 100; // the mouse's sensitivity in percent: 0.1 degrees a count at 100 with native look (host/nn_hid.c)
     int mouse_invert = 0; // the mouse's up and down swapped
     int mouse_invert_x = 0; // the mouse's left and right swapped (HOS_OPT_MOUSE_INVERT_X, 61)
@@ -88,13 +101,16 @@ struct Options {
     int text_speed = 0;   // how fast dialogue prints: 0 the game's, 1 2x, 2 4x, 3 instant (host/nn_vi.c, nx2/oot_patches.py; HOS_TEXT_SPEED)
     int transition_autosave = 1;
     int damage_taken = 1; // 0 Half, 1 Normal, 2 Double, 3 Quadruple (host/oot_damage.c)
+    int input_replay_sync = 1;   // Drift correction (menu/input_recording.cpp): 0 Off, 1 every update, 2 every second, 3 every 5 s
     int fov = 100;        // vertical gameplay field of view, 50..150% of the game's current angle (host/oot_fov.c)
     int text_size = 0;    // dialogue and signs' text size: 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% (host/oot_text_size.c,
                           // nx2/oot_patches.py; HOS_TEXT_SIZE)
     int camera_speed = 100;   // (longshot) the right stick's camera turn in percent of the game's, 50 to 400 (host/nn_vi.c, nx2/oot_patches.py: HOS_OPT_CAMERA_SPEED, 48)
     int invert_cam_x = 0; // right-stick camera horizontal inversion: 0 normal, 1 inverted
     int invert_cam_y = 0; // right-stick camera vertical inversion: 0 normal, 1 inverted
-    int rumble = 100;     // the controllers' rumble in percent of the game's: 0 Off, 25 to 150 (host/pad_sdl.c)
+    int rumble = 100;     // Vibration strength: percent of what the game asks for, 25 to 200 (host/pad_sdl.c; rumble_strength=)
+    int vibration = 0;    // (longshot) Vibration: 0 Auto, 1 Basic (the motors), 2 Off (host/vibration.h)
+    int ds_hd_haptics = 1;   // (longshot) DualSense HD Haptics: its speaker and triggers too, 1 on (HOS_OPT_DS_HD_HAPTICS)
     int stick_dead_zone = 0;  // circular stick cutoff: 0 XInput's 7849 (~24%), 1..5 5% to 30% (host/nn_hid.c)
     int hold_toggle = 0;  // enabled Switch buttons (1 << HOS_SW_*); persisted as toggle_<button>, not one mask entry
     int pad_layout = 0;   // 0 Nintendo (default), 1 Xbox / PC, 2 Swap Face Buttons, 3 Switch 2 Pro (every button the pad's own), 4 Custom
@@ -105,6 +121,14 @@ struct Options {
     int gyro_inv_x = 0;   // the motion aim's horizontal turned around
     int gyro_inv_y = 0;   // the motion aim's vertical turned around
     int gyro_deadzone = 1;   // the motion's deadzone: 0 tight, 1 standard (the console's default), 2 loose
+    // (longshot) the Controller speaker page: a DualSense's own speaker (host/pad_speaker.c; HOS_OPT_PAD_SPEAKER_*)
+    int pad_speaker_sync = 0;   // -100 to 150 ms: above 0 the controller waits (a later TV), below 0 the TV's copy of the Controller + TV sounds does
+    int pad_speaker_volume = 100;   // its volume in percent, 0 to 200: 100 is twice the mixer's level (a small speaker)
+    int pad_speaker_headphones = 2;   // headphones in its jack: 0 left out, 1 the controller's sounds there, 2 all sound there (the TV silent)
+    int pad_speaker_headphone_volume = 80;   // their volume in percent, 0 to 100 (the pad's own headphone volume)
+    // where each kind of sound plays, host/audio_source.h's classes in order from Navi's voice: 0 Off (the game's
+    // sound alone), 1 the controller only, 2 the controller and the TV
+    int pad_speaker[12] = {1, 2, 1, 2, 1, 2, 2, 1, 1, 1, 1, 1};
     int prompts = 0;      // the button icons: 0 Auto (the controller), 1 Switch, 2 Xbox, 3 PS4, 4 PS5, 5 Steam Deck (host/prompts.c)
     int robust = 0;       // bounds-checked buffer access: 0 Auto (on), 1 Off, 2 On (gpu/vk/vk_main.cpp; RX_VK_ROBUST)
     int present_queue = 0;   // (longshot) Present queue (Debug tab): 0 Off, 1 On, the presents on a compute family's queue of
@@ -126,7 +150,7 @@ struct Options {
                           // VRAM budgets: one rule by the card (texture_budget.h, mirror_budget.h)
     int audio_output = 0; // (longshot) the speakers the game mixes for: 0 Auto (the default output's), 1 Stereo, 2 5.1, 3 Mono; layout read at the start (host/nn_audio.c; HOS_AUDIO_CHANNELS)
     int discord = 1;   // (longshot) the Discord status (host/discord_rpc.c): 1 on, shown while a Discord client runs on this PC
-    int debug_tools = 0;   // (longshot) the Debug tab's tools (#785: flight, free camera, teleport, inventory): 0 off; HOS_OOT_CHEATS=1 also turns them on
+    int debug_tools = 0;   // (longshot) the Debug tab's tools (flight, free camera, teleport, inventory): 0 off; HOS_OOT_CHEATS=1 also turns them on
     int volume = 100;     // (longshot) the game's sound in percent, 0 to 100 (host/nn_audio.c: HOS_OPT_VOLUME, 27)
     int mute_background = 0;   // (longshot) no sound while another window has the focus (host/nn_audio.c: HOS_OPT_MUTE_BACKGROUND, 28)
     int skip_opening = 0;   // (longshot) skip the new-game opening (host/hos_main.c hos_oot_opening: HOS_OPT_SKIP_OPENING, 52). Off
@@ -136,6 +160,7 @@ struct Options {
     int mic = 1;          // (longshot) the ocarina's microphone: 0 Off, 1 the system's default, 2.. a device as host->mic_name lists it (host/nn_audio_in.c)
     int microphone_gain = 100; // software capture gain, 0..400%; leaves the system's input volume alone
     int skip_title = 0;   // (longshot) start with the most recent save, pressing through the title and its file list (host/oot_autoload.c); read at the start
+    int reshade = 0;      // (longshot) the ReShade preset: 0 Off, 1 Warm, 2 Cool, 3 User (its file in reshade/selected.txt), 4.. the others (reshade/fx_builtin.h)
 };
 extern Options opts;
 constexpr int kAutoPreset = 6;   // (the Quality preset Auto (this PC): menu_auto_for_gpu, auto_settings.h)
@@ -146,6 +171,9 @@ void menu_auto_tune(double gpu_ms, double draws, double fps);   // (the replay's
 /// (longshot) The V-Sync row as this run applies it: RX_VK_FIFO=1 is On and RX_VK_IMMEDIATE=1 Off, whatever the row says
 /// (for the run only: the row keeps the player's choice). 0 Auto, 1 On, 2 Off
 int menu_vsync();
+/// The persisted colour correction mode, shared between menu edits and presentation.
+void menu_colour_vision_changed(int mode);
+int menu_colour_vision_mode();
 /// (longshot) The Threaded rendering row as this run resolved it, once, at the start (threaded_rendering.h's rule: On, or what
 /// Auto picks for this PC), in its two halves: menu_render_thread, the render thread (On; Auto from 4 cores), and
 /// menu_recorder_thread, the recorder thread (On; Auto from 6 cores, never without the render thread). What the row says,
@@ -156,8 +184,13 @@ bool menu_recorder_thread();
 void menu_set_gpu_count(int count);
 std::string driver_text();   // (vk_main.cpp: the driver as it names itself, for the log and Save my pipeline list)
 std::string device_name_text();   // (vk_main.cpp: the GPU the game runs on, as its driver names it)
+bool output_preview_request(uint32_t width, uint32_t height);
+int output_preview_seconds();
+bool output_preview_answer(bool keep);
+uint64_t output_preview_take_rebuilt_size();
 void menu_tick();             // (each frame shown: the keys, while the game's window has the focus)
 bool menu_is_open();
+int menu_grass_distance();   // renderer's atomic snapshot of the live row
 /// (longshot) The game's scene tone mapped by PsychoV35: HDR set to Native on an HDR display, and the Tone mapper row so
 bool scene_tonemap_on();
 bool resolution_auto();       // (the game's dynamic resolution: Resolution Auto)
@@ -170,6 +203,8 @@ int menu_player_flight();
 int menu_free_camera();
 int menu_link_speed();   // (Movement speed in percent, 100 while the tools are off)
 int menu_transition_autosave();
+void menu_sync_hud_placement();
+int menu_hud_option(int id);
 /// The memory tier the settings go by (1 Minimum ... 5 Ultra): the preset Custom came from (memory_budget), else the preset's,
 /// else, for Custom with none (Custom chosen on the preset row, or an options file from before memory_budget), Auto (this PC)'s
 /// tier for this PC; 0 before the card is known
@@ -177,13 +212,14 @@ int menu_memory_tier();
 int menu_shadow_res();   // (Shadow resolution, HOS_OPT_SHADOW_RES: the size drawn, Auto resolved)
 int menu_damage_taken();   // (Damage taken, HOS_OPT_DAMAGE_TAKEN: 1, Normal, while the tools are off)
 int menu_take_cheat_action();
+int menu_vibration_status_option();   // (longshot) what plays the controller used last (HOS_OPT_VIBRATION_STATUS)
 void menu_note_frame(bool game_frame, int shown = 1);   // (the frame rates the FPS counter shows)
 /// The game's picture's size (the Output resolution, its crop) and the window's, at each present: the Window scaling filter
 /// row says when it is not needed
 void menu_note_present_sizes(uint32_t picture_w, uint32_t picture_h, uint32_t window_w, uint32_t window_h);
 /// Over the window's image `index` (TRANSFER_DST_OPTIMAL before and after), w x h: the start-up screen, the menu and the FPS
 /// counter, drawn with Dear ImGui (vk_imgui.h, vk_ui.h). Nothing recorded while none of them shows
-void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h);
+void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h, int colour_vision);
 void menu_rumble_tick();   // (once a present: the Rumble strength row's own rumble)
 /// (headless shots, RX_VK_SHOT_MENU) The menu and the counter over another image: TRANSFER_DST_OPTIMAL before and after,
 /// R8G8B8A8_UNORM with colour-attachment use, view a view of it
@@ -194,5 +230,8 @@ struct StartupView;
 void startup_screen(const StartupView* view);
 /// The start-up screen's fade to black as it ends: 0 none, 1 black (vk_main.cpp prepare_with_screen)
 void startup_fade_to(float f);
+/// (longshot) The Upscaler row's one-time questions (NGX's start among them) asked on a thread of their own, once a run, as the
+/// start-up screen asks them: for a run with no window, whose start-up screen never shows (vk_temporal.cpp temporal_prewarm)
+void upscalers_probe_start();
 
 } // namespace mkwvk

@@ -83,6 +83,38 @@ class Case(unittest.TestCase):
 
 
 class Discovery(Case):
+    def test_ownership_file_is_not_a_save_or_pending_work(self):
+        work = self.hs.parent.parent / "save-work"
+        work.mkdir()
+        lock = work / (UID + ".lock")
+        lock.touch()
+        (work / (UID + ".journal.failed")).write_bytes(b"retired")
+        self.assertEqual(oot.find_saves(work), {})
+        self.assertEqual(oot.find_saves(lock), {})
+        self.assertEqual(oot.find_saves(self.hs.parent.parent), {UID: str(self.hs)})
+        self.assertIsNone(oot.pending_commit(str(self.hs)))
+        with contextlib.redirect_stdout(io.StringIO()):
+            oot.copy_saves(str(self.hs), str(self.li), str(self.backups), False, False)
+        self.assertEqual((self.li / "option.sav").read_bytes(), b"option-HS")
+        self.assertTrue(lock.exists())
+        self.assertFalse(any(p.name.endswith(".lock") for p in self.li.rglob("*")))
+
+    def test_save_work_is_never_copied(self):
+        work = self.data / "longshot" / "save-work" / UID
+        make_save(work, b"WORK")
+        self.assertEqual(oot.find_saves(work), {})
+        self.assertEqual(oot.find_saves(work.parent), {})
+        self.assertEqual(oot.find_saves(self.data / "longshot"), {UID: str(self.hs)})
+        with self.assertRaisesRegex(oot.Fail, "working copy"):
+            oot.copy_saves(str(work), str(self.li), str(self.backups), False, True)
+        with self.assertRaisesRegex(oot.Fail, "working copy"):
+            oot.copy_saves(str(self.li), str(work), str(self.backups), False, True)
+        journal = work.with_name(UID + ".journal")
+        journal.write_text("R option.sav\nE\n")
+        with self.assertRaisesRegex(oot.Fail, "commit is waiting"):
+            oot.copy_saves(str(self.hs), str(self.li), str(self.backups), False, True)
+
+
     def test_every_entry_on_linux(self):
         make_save(eden_save(self.data / "eglantine"), b"EG")
         nx = self.home / "Games" / "Ocarina" / "profile" / "save" / ACCOUNT
@@ -1144,7 +1176,7 @@ class RepoSaves(unittest.TestCase):
         self.assertEqual(oot.repo_save_problems(oot.REPO_SAVES), [])
 
 class WindowsDefault(Case):
-    """The Windows default for Longshot is the launcher's %APPDATA%\\Longshot\\save (docs/saves.md); the old game folder
+    """The Windows default for Longshot is the launcher's %APPDATA%\\Longshot\\save (docs/user/saves.md); the old game folder
     (%USERPROFILE%\\Games\\Longshot\\user\\save, the 2.x Builder's and a build started on its own) is still found and said."""
 
     def setUp(self):

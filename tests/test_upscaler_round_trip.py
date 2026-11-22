@@ -12,6 +12,10 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
+from menu_model_fixture import menu_model_prelude, menu_text, unbroken  # noqa: E402
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +44,7 @@ FIXTURE = r'''
 #include "upscaler_rows.h"
 #include "auto_settings.h"
 #include "monitor_choice.h"
+#include <atomic>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -70,9 +75,11 @@ void menu_debug_rows(int, int) { CHECK(false); }
 /* OPTIONS */
 /* AUTO_PRESET */
 Options opts;
+std::mutex options_save_mu;
 bool debug_warning = false;
 int debug_warning_choice = 0;
 void sync_transition_autosave() {}
+std::atomic<int> grass_distance_now{0};   // (vk_menu.cpp: the Grass distance row's value for the renderer)
 
 /* TABS */
 /* ROW */
@@ -89,6 +96,10 @@ const std::vector<Out>& outputs() {
 }
 int custom_index() { return 0; }
 int output_choice(int v) { return v; }
+struct Picture { unsigned w, h; };
+Picture output_preview_target{};
+Picture picture_for(int) { return {}; }
+bool request_native_preview(Picture) { return false; }
 int parse_output(const char*) { return 0; }
 int step_output_choice(int v, int dir) { return v + dir; }
 int output_for_aspect(int) { return opts.output_res; }
@@ -111,7 +122,7 @@ const char* hn_dlss_model(int, int) { return ""; }
 const char* tx_preset(int) { return ""; }
 const char* hn_preset(int, int) { return ""; }
 Row rows[] = {/* UPSCALER_ROW */, /* RESOLUTION_ROW */, /* MODEL_ROW */, /* PRESET_ROW */};
-constexpr int kRows = sizeof rows / sizeof rows[0];
+[[maybe_unused]] constexpr int kRows = sizeof rows / sizeof rows[0];   // (#1633: the cut functions take std::size(rows))
 /* OVERRIDES */
 int monitor_pick;
 std::string monitor_want, monitor_saved_name;
@@ -133,12 +144,16 @@ std::string mic_key(const char* v) { return v; }
 void mic_tell_host() {}
 void refresh_mics() {}
 int rumble_step(int v) { return v; }
-constexpr int HOS_KEY_N = 1, HOS_SW_N = 1, HOS_SW_PLUS = 10, HOS_SW_MINUS = 11, HOS_BIND_PAD = 0, HOS_BIND_KEY = 1;
-constexpr int HOS_KEY_OC_NOTE_L = 1, HOS_KEY_OC_NOTE_X = 1;
+constexpr int HOS_KEY_N = 1, HOS_SW_N = 1, HOS_SW_PLUS = 10, HOS_SW_MINUS = 11, HOS_BIND_PAD = 0, HOS_BIND_KEY = 1, HOS_BIND_SPRINT_AUTO = 2;
+constexpr int HOS_KEY_OC_NOTE_L = 1, HOS_KEY_OC_NOTE_X = 1, HOS_KEY_TOGGLE_HUD = 1, HOS_KEY_SPRINT = 1;   /* outside the stub's one row */
 const char* bind_names[1] = {"a"};
 struct Host { int (*binding)(int, int, int); float (*aspect_ratio)(); void (*audio_output_select)(const char*);
               void (*monitor_select)(const char*); } *host = nullptr;
 bool can_bind() { return false; }
+// (the Controls page's Toggle column, as vk_menu.cpp's: the Switch's buttons but Plus and Minus; the stub's Sprint is past them)
+bool has_toggle(int b) { return b < HOS_SW_N && b != HOS_SW_PLUS && b != HOS_SW_MINUS; }
+bool toggle_on(int b) { return ((opts.hold_toggle >> b) & 1) != 0; }
+void toggle_set(int b, bool on) { if (b == HOS_KEY_SPRINT) opts.sprint_toggle = on; else opts.hold_toggle = on ? opts.hold_toggle | (1 << b) : opts.hold_toggle & ~(1 << b); }
 // No hardware profile or measured tuning owns the manual round trips.
 uint64_t auto_for = 0, auto_fp = 0, auto_tuned = 0;
 #include "gpu_choice.h"   // (the GPU device row saved as the card itself, which save() writes)
@@ -393,7 +408,8 @@ int main(int argc, char** argv) {
 
 
 def fixture(source):
-    menu = (source / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8")
+    # (vk_menu.cpp and its modules, their rows as table lines, #1633: the upscaler rows are gpu/vk/menu/upscaler.cpp's)
+    menu = menu_text(source) if (source / "gpu/vk/menu").is_dir() else (source / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8")
     header = (source / "gpu/vk/vk_menu.h").read_text(encoding="utf-8")
     init = definition(menu, "void menu_init")
     load_at = init.index('    if (FILE* f = fopen(ini_path().c_str(), "r")) {')
@@ -404,7 +420,7 @@ def fixture(source):
         "AUTO_PRESET": header[auto_at:header.index(";", auto_at) + 1],
         "TABS": block(menu, menu.index("enum MenuTab {")) + ";",
         "ROW": block(menu, menu.index("struct Row {")) + ";",
-        "OVERRIDES": menu[menu.index("struct EnvOverride {"):menu.index("std::string ini_path() {")],
+        "OVERRIDES": unbroken(menu[menu.index("struct EnvOverride {"):menu.index("std::string ini_path() {")]),
         "LOAD": init[load_at:init.index("    first_start = !has_options;", load_at)],
         "SCALE": definition(menu, "int twelfths") + "\n" + definition(menu, "void game_size"),
         "TEXT": definition(menu, "const char* tx_resolution") + "\n" + definition(menu, "const char* hn_resolution"),
@@ -433,7 +449,7 @@ def main():
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="upscaler-round-trip-") as tmp:
         src, exe = Path(tmp) / "fixture.cpp", Path(tmp) / "fixture.exe"
-        src.write_text(fixture(args.source), encoding="utf-8")
+        src.write_text(menu_model_prelude(args.source) + fixture(args.source), encoding="utf-8")
         include = str((args.source / "gpu/vk").resolve())
         if Path(args.cxx).name.lower() in ("cl", "cl.exe", "clang-cl", "clang-cl.exe"):
             command = [args.cxx, "/nologo", "/std:c++20", "/EHsc", "/I" + include,

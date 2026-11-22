@@ -26,13 +26,15 @@ import capstone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # (python -I leaves the script folder off)
 import long_paths  # noqa: E402
-long_paths.install()   # (paths past 260 characters on Windows, before anything reads a file: #1115)
+long_paths.install()   # (paths past 260 characters on Windows, before anything reads a file)
 import kit
 import nso2  # noqa: F401  (DT_RELR)
 import insn
 import fastvec   # (longshot) TBL/EXT, vector loads, DUP and FMUL by element as single vector instructions
 import oot_patches   # (longshot) the game's patches: asked which functions they change (nx2/guest_locals.py)
 import guest_locals as local_regs   # (longshot) registers and flags as C locals (A64_LOCAL_REGS, A64_LOCAL_FLAGS): nx2/guest_locals.py
+import vecfp   # (longshot) SSE fast paths for the lane-by-lane float forms (A64_VECFP): wraps insn's translate
+import cmpflags   # (longshot) a subtraction's V as N xor (a < b), so signed compares fold to one (A64_SUB_V): wraps translate
 import fastfp   # (longshot) fast float regions (A64_FASTFP): its emit_function, under lift_fixes' and poll's wrappers
 import dead_flags   # (longshot) the kit's dead_flags, answered at once for a function that writes no flag
 import walk   # (longshot) the kit's walk, with one shared entry per plain op's word
@@ -40,6 +42,7 @@ import discover   # (longshot) the discovery's walks in new processes where ther
 import lift_fixes
 import entry_hooks
 import suyu_rt_fixes
+import fpxkeep   # (longshot) NaN and infinite operands, exact-zero multiply-adds kept off the software bodies (A64_FPXKEEP)
 import chunks
 import standalone
 import adr_entries  # noqa: E402
@@ -53,7 +56,10 @@ import a64_rtgen
 
 insn.install()
 fastvec.install()   # (around the kit's vectorize_fpx, op_text and fpx_header)
+vecfp.install()   # (around insn's translate: the forms main's passes leave lane by lane, behind SSE fast paths)
+cmpflags.install()   # (around that translate: text only, after the forms are chosen)
 fastfp.install()   # (before lift_fixes and poll wrap emit_function: theirs go around this one)
+fastfp.set_patched(oot_patches.mentioned_addresses)   # (the functions the patches edit: no stores in their regions)
 local_regs.install(oot_patches.touches)   # (around fastfp's emit_function and the kit's localize_regs; the defaults; the patches asked)
 local_regs.install_plain()   # (around those: the functions the patches name keep the kit's context-flag text)
 dead_flags.install()
@@ -61,6 +67,7 @@ walk.install()
 lift_fixes.install()
 entry_hooks.install()   # (host/*.c's ENTRY_HOOK_SYM hooks at the entry of their SDK functions: add() below)
 suyu_rt_fixes.install()
+fpxkeep.install()   # (after fastvec's: it edits the kit's lane routes and wraps fpx_header around fastvec's)
 
 
 def module_of(img, pc):
@@ -192,6 +199,8 @@ def main():
         oot_fov.install(L, img, next((m["build_id"] for m in meta["modules"] if m["name"] == "main"), ""))
         import oot_shadow   # (the sun's shadow resolution, after the game sizes its cascades)
         oot_shadow.install(L, img, next((m["build_id"] for m in meta["modules"] if m["name"] == "main"), ""))
+        import oot_shadow_fit   # (the sun's nearest cascade kept steady: a world-fixed basis, a square on whole texels)
+        oot_shadow_fit.install(L, img, next((m["build_id"] for m in meta["modules"] if m["name"] == "main"), ""))
         import oot_jitter   # (the temporal upscalers' camera jitter, DLSS's and FSR 3.1's: none unless one runs, host/rx_backend.c)
         oot_jitter.install(L, img)
     discover.discover(L, img_dir, chunks.file_jobs(), max_insns=a.max_func)

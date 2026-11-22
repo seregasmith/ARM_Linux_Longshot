@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 FIXTURE = r"""
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <deque>
@@ -56,11 +57,15 @@ static uint64_t pool_cap() { return cap; }
 static std::set<VkImage> freed, pooled;
 static void destroy_image(VkImage i, VmaAllocation) { if (i) freed.insert(i); }
 static void destroy_buffer(VkBuffer, VmaAllocation) {}
+// (vk_vma.cpp: the reaper's thread destroys it; here at once, as RX_VK_REAPER=0 does)
+static void destroy_image_later(VkImage i, VmaAllocation a, std::vector<VkImageView>, VkBuffer, VmaAllocation,
+                                std::vector<VkDeviceMemory>) { destroy_image(i, a); }
 struct { bool in_pass = false; } compact;
 
 namespace {
 /* DEAD */
 std::deque<Dead> dead;
+std::atomic<uint64_t> dead_pooled_n{0};   // (vk_texture.cpp: render targets' images in the dead list on their way to the pool)
 void pool_put(Dead& d) { pooled.insert(d.image); }
 /* DESTROY_LATER */
 void dead_list(uint64_t completed) {
@@ -87,6 +92,7 @@ int main() {
         const Texture t = evict(true, 5, 9);
         CHECK(pooled.count(&the_image), "a render target's image the GPU is done with was not pooled as it was evicted");
         CHECK(dead.empty(), "it also waits in the dead list, for the next present");
+        CHECK(dead_pooled_n == 0, "it is counted as on its way to the pool though it is there");
         CHECK(t.views.empty(), "its views stayed with the texture, not with the image in the pool");
         CHECK(total_bytes == 0, "its bytes were not taken off the textures' total");
         CHECK(destroy_gen > 1, "what was resolved to it was not made stale (destroy_gen)");
@@ -97,10 +103,12 @@ int main() {
         evict(true, 11, 9);
         CHECK(!pooled.count(&the_image) && !freed.count(&the_image), "an image the GPU may still read was pooled or destroyed");
         CHECK(dead.size() == 1 && dead.front().pool_key, "it is not in the dead list as a render target's image");
+        CHECK(dead_pooled_n == 1, "it is not counted as on its way to the pool (dead_pooled_n)");
         dead_list(10);
         CHECK(!pooled.count(&the_image), "it was pooled before the GPU was past it");
         dead_list(11);
         CHECK(pooled.count(&the_image) && dead.empty(), "it was not pooled once the GPU was past it");
+        CHECK(dead_pooled_n == 0, "it is still counted as on its way to the pool once pooled");
     }
     {   // (a texture not made for a target, and a target with the pool off: destroyed by the dead list, as before)
         evict(false, 5, 9);

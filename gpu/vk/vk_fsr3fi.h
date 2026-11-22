@@ -13,7 +13,7 @@
 //
 // FSR 3.1's interpolation has no phase input of its own (ffx_frameinterpolation.h fixes t at 0.5): AMD's passes make the
 // midpoint and only the midpoint. The passes here are AMD's with t taken from the constant block instead
-// (scripts/fsr3_shaders.py FI_PATCHES), so a set has as many made frames as the multiplier asks, each at its own place
+// (scripts/shaders.py FI_PATCHES), so a set has as many made frames as the multiplier asks, each at its own place
 // between the two game frames (1/3 and 2/3 at 3x; at Auto, each display refresh's), and the same passes keep the HUD where
 // it is (the game draws it into the same picture and has no HUD-less colour). The optical flow and the dilated inputs are
 // once a game frame; the rest once a made frame.
@@ -101,5 +101,10 @@ struct Inputs {
 
 /// Forgets the sequence, so the next frame is made with the reset flag set: a cut, a load, a resize.
 void reset();
+
+/// (longshot) Frame generation off or not this one (vk_framegen.cpp framegen_idle): the images let go once the GPU is done with
+/// them, and those of earlier sizes too (free_dead ran only in generate). The next generate makes them again. Every present
+/// while it is idle: nothing to do once they are gone
+void release();
 
 } // namespace mkwvk::fsr3fi

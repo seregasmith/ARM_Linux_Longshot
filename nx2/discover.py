@@ -1,7 +1,7 @@
 """(longshot) The discovery's walks in new processes where there is no fork (Windows), with the kit's result.
 
-a64_lift.Lifter.discover walks every entry in address order (~35 s of one core for OoT on a Ryzen 5 5600, the biggest part of a
-Windows lift left after #1116 and #1128), then retries the jump tables it missed, finds the PLT stubs and the setjmp owners.
+a64_lift.Lifter.discover walks every entry in address order (~35 s of one core for OoT on a Ryzen 5 5600, a big part of a
+Windows lift), then retries the jump tables it missed, finds the PLT stubs and the setjmp owners.
 Here its first loop's walks are made by processes, the entries cut into parts of consecutive addresses (at unwind-range starts),
 each part walked in order by a lifter of its own; the kit's discover then runs as it is, its first loop given those bodies
 (the rest, from the retry on, walks as always).

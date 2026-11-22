@@ -78,6 +78,15 @@ void WriteStorageByCasLoop(EmitContext& ctx, const IR::Value& binding, const IR:
 }
 } // Anonymous namespace
 
+// The descriptor's range in bytes. Private simulated-turf buffers use it as their one source of truth: allocation, producer
+// guards and readers therefore cannot disagree when a buffer grows, shrinks or falls back to the game's own range.
+Id EmitStorageBufferLength(EmitContext& ctx, const IR::Value& binding) {
+    if (!binding.IsImmediate()) throw NotImplementedException("Dynamic storage buffer length");
+    const Id ssbo{ctx.ssbos[binding.U32()].U32};
+    const Id words{ctx.OpArrayLength(ctx.U32[1], ssbo, 0U)};
+    return ctx.OpShiftLeftLogical(ctx.U32[1], words, ctx.Const(2u));
+}
+
 // (longshot) 8- and 16-bit loads through a pointer no storage buffer was found for: the aligned 32-bit word by the same
 // search as LoadGlobal32, and the byte or half of it the address names (the console's loads are naturally aligned). They
 // threw "not implemented": 30 of OoT's mesh programs (LoadGlobalS16) were left untranslated on every card, issue 351

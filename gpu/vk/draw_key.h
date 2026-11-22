@@ -8,7 +8,7 @@
 //
 // The keys pipeline_key() makes are kept on players' disks (the pipeline state list, the predicted keys, the notes): a change
 // to mix() or to what pipeline_key() mixes, or in which order, makes every one of them a key nothing asks for.
-// tests/test_pipeline_key_values.py holds keys worked out apart from this file; nx2/bake.py restates the chain in Python.
+// tests/test_pipeline_key_values.py holds keys worked out apart from this file.
 #pragma once
 #include <cstddef>
 #include <cstdint>

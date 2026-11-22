@@ -67,7 +67,10 @@ def check_source():
         raise SystemExit("gpu_clock_device_created: the Deck's APU must be known before the default is chosen")
     need("gpu_clock_device_created", held, ["VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU"])
     need("auto_profile", profile, ["hw.integrated"])
-    need("docs/development.md", (ROOT / "docs/development.md").read_text(encoding="utf-8"), ["`RX_VK_GPU_CLOCK=1`"])
+    # (its documentation is its row in gpu/vk/switches.def, which names the value that holds the peak clock)
+    row = next((l for l in (ROOT / "gpu/vk/switches.def").read_text(encoding="utf-8").splitlines()
+                if l.startswith("SW(RX_VK_GPU_CLOCK,")), "")
+    need("gpu/vk/switches.def: RX_VK_GPU_CLOCK's row", row, ["1, peak or standard"])
 
 
 STABLE_PSTATE_DEFINE = re.compile(r"^#define\s+AMDGPU_CTX_(?:OP_(?:GET|SET)_STABLE_PSTATE|STABLE_PSTATE_\w+)\b.*$",

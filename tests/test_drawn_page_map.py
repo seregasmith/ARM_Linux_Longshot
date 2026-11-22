@@ -18,7 +18,7 @@ first-upload seed out of the source as they are, over a fake GPU mapping and fak
   one of no size: no page walk, as before. A texture clear's texture has its map from its first upload (resolve() samples
   it before the clear), so what the CPU writes after the clear is taken alone, as before.
 Of texture_touch only those lines run: not its epoch test, gpu_dirty (a GPU buffer's write over the storage),
-RX_VK_REUPLOAD_DIM, upload_seg (a parallel replay's later segment) or the guard of its live check.
+RX_VK_REUPLOAD_DIM or the guard of its live check.
 
 python -I -B tests/test_drawn_page_map.py [--cxx g++] [--source path/to/vk_texture.cpp]
 """
@@ -35,26 +35,20 @@ RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 ROOT = Path(__file__).resolve().parents[1]
 ENV_ON_H = ROOT / "gpu" / "vk" / "compat" / "longshot_env.h"
 
-# The reasons texture_written is given, each by one writer: the file it is in, and where that writer's lock is. With a
-# reason, texture_written notes the page map of a virtual-pool texture that has none, and texture_dirty changes the map
-# (page_map, runs, map_sig) there: each of these writers was checked by hand to hold the ParLock of a parallel replay
-# (RX_VK_PARALLEL), or to be its dry pass, which runs on the replay thread before the workers. Another writer given one of
-# these reasons is one more to check: it fails the check until it has a reason of its own here. The writers that give no
-# reason ("?") note none: the upscaler's stand-ins (vk_draw.cpp upscale_stub, temporal_rejected_network), which run without
-# that lock, and the texture clear (vk_xfer.cpp clear_tex), which needs none: resolve() samples its texture first
-# (texture_get(t, true)).
+# The reasons texture_written is given, each by one writer: the file it is in, and where it runs. With a reason,
+# texture_written notes the page map of a virtual-pool texture that has none, and texture_dirty changes the map (page_map,
+# runs, map_sig) there: each of these writers was checked by hand to run on the recording thread, the one that changes the
+# map. Another writer given one of these reasons is one more to check: it fails the check until it has a reason of its own
+# here. The writers that give no reason ("?") note none: the upscaler's stand-ins (vk_draw.cpp upscale_stub,
+# temporal_rejected_network), and the texture clear (vk_xfer.cpp clear_tex), which needs none: resolve() samples its texture
+# first (texture_get(t, true)).
 NOTED_BY = {
-    "a storage image of a draw": ("gpu/vk/vk_draw.cpp", "build_descriptors: a ParLock on the same line"),
-    "a pass's colour target": ("gpu/vk/vk_draw.cpp", "begin_pass: ParLock(marks), left out only when every target is "
-                               "marked this frame (texture_marked: a pass drew it this frame, so its map is noted)"),
+    "a storage image of a draw": ("gpu/vk/vk_draw.cpp", "build_descriptors, on the recording thread"),
+    "a pass's colour target": ("gpu/vk/vk_draw.cpp", "begin_pass, on the recording thread"),
     "a pass's depth target": ("gpu/vk/vk_draw.cpp", "begin_pass: as the colour targets"),
-    "the dry pass (a draw's target)": ("gpu/vk/vk_draw.cpp", "dry_mark_written: the dry pass"),
-    "the dry pass (a draw's depth)": ("gpu/vk/vk_draw.cpp", "dry_mark_written: the dry pass"),
-    "the dry pass (a dispatch's storage image)": ("gpu/vk/vk_draw.cpp", "dry_mark_written: the dry pass"),
-    "a buffer-to-texture copy": ("gpu/vk/vk_xfer.cpp", "copy_b2t: the ParLock of NOP_COPY_B2T and NOP_COPY_T2B "
-                                 "(vk_replay.cpp)"),
-    "a copy into a BC texture": ("gpu/vk/vk_xfer.cpp", "copy_t2t: the ParLock of NOP_COPY_T2T (vk_replay.cpp)"),
-    "a texture-to-texture copy": ("gpu/vk/vk_xfer.cpp", "copy_t2t: the ParLock of NOP_COPY_T2T (vk_replay.cpp)"),
+    "a buffer-to-texture copy": ("gpu/vk/vk_xfer.cpp", "copy_b2t: NOP_COPY_B2T and NOP_COPY_T2B (vk_replay.cpp)"),
+    "a copy into a BC texture": ("gpu/vk/vk_xfer.cpp", "copy_t2t: NOP_COPY_T2T (vk_replay.cpp)"),
+    "a texture-to-texture copy": ("gpu/vk/vk_xfer.cpp", "copy_t2t: NOP_COPY_T2T (vk_replay.cpp)"),
 }
 
 FIXTURE = r'''#include <algorithm>
@@ -91,15 +85,29 @@ struct Texture {   // (the fields the code cut out uses, as gpu/vk/vk_texture.h 
     uint32_t gpu_gen = 0;
     bool released = false;
     uint32_t release_gen = 0;
-    uint64_t last_written = 0, first_written = 0, upload_value = 0, upload_seg = 0, bytes = 0;
+    uint64_t last_written = 0, first_written = 0, bytes = 0;
     uint32_t id = 0;
-    uint64_t first_seen = 0;
+    uint64_t first_seen = 0, pool_key = 0, last_value = 0;
 };
-struct nvn_tex { uint64_t gpu = 0; };
-std::unordered_map<uint32_t, std::unique_ptr<Texture>> textures;
+struct nvn_tex { uint64_t gpu = 0; bool output_preview = false; struct { uint64_t size = 0; } L; };
+struct TextureKey {
+    uint64_t gpu;
+    uint32_t id;
+    auto operator<=>(const TextureKey&) const = default;
+};
+std::map<TextureKey, std::unique_ptr<Texture>> textures;
 std::unordered_multimap<uint64_t, Texture*> by_gpu;
-uint64_t frame_no = 1, rec_value = 0;
-thread_local uint64_t tl_seg = 0;
+uint64_t frame_no = 1, rec_value = 0, completed_value = 0;
+std::map<uint64_t, std::pair<uint64_t, uint64_t>> gpu_owned;
+std::vector<Texture*> rendered_targets;
+Texture* present_source = nullptr;
+uint64_t vk_retirement_value() { return rec_value; }
+void destroy_later(Texture&, uint64_t) {}
+void forget_gpu(Texture* texture) {
+    auto [first, last] = by_gpu.equal_range(texture->gpu);
+    for (auto it = first; it != last; ++it)
+        if (it->second == texture) { by_gpu.erase(it); break; }
+}
 void logf(const char*, ...) {}
 enum LogLevel : int { log_error, log_warn, log_info, log_debug, log_trace };   // (the leveled log, vk_internal.h)
 void logf_at(LogLevel, const char*, ...) {}
@@ -221,7 +229,7 @@ Texture* make(uint64_t gpu, uint64_t guest, uint64_t size) {
     for (uint64_t off = 0; gpu >= (1ull << 40) && off < size; off += 0x10000) vpages[gpu + off] = guest + off;
     Texture* p = t.get();
     by_gpu.emplace(gpu, p);
-    textures[p->id] = std::move(t);
+    textures[{gpu, p->id}] = std::move(t);
     return p;
 }
 void finalize(Texture* t) {   // (the game finalizes it: texture_released, as the replay calls it)
@@ -433,8 +441,8 @@ def check_writers():
         raise SystemExit("texture_written is given a reason that is not in tests/test_drawn_page_map.py NOTED_BY:\n" +
                          "".join("  %r (%s)\n" % (r, ", ".join(given[r])) for r in new) +
                          "With a reason it notes a virtual-pool texture's page map, which texture_dirty changes: check that "
-                         "the writer holds the parallel replay's ParLock (or is its dry pass), then add it to NOTED_BY with "
-                         "its file and where that lock is; or give it no reason")
+                         "the writer runs on the recording thread, then add it to NOTED_BY with "
+                         "its file and where it runs; or give it no reason")
     stale = sorted(set(NOTED_BY) - set(given))
     if stale:
         raise SystemExit("NOTED_BY names a reason no writer gives any more: " + ", ".join(repr(r) for r in stale))
@@ -444,8 +452,8 @@ def check_writers():
         raise SystemExit("texture_written is given a reason NOTED_BY has for one writer by another writer too, or in another "
                          "file than NOTED_BY's:\n" +
                          "".join("  %r (%s; NOTED_BY: %s)\n" % (r, ", ".join(given[r]), NOTED_BY[r][0]) for r in shared) +
-                         "Check that each of them holds the parallel replay's ParLock (or is its dry pass), then give the new "
-                         "one a reason of its own in NOTED_BY, with its file and where that lock is; or give it no reason")
+                         "Check that each of them runs on the recording thread, then give the new "
+                         "one a reason of its own in NOTED_BY, with its file and where it runs; or give it no reason")
     print("PASS: the %d reasons texture_written is given are the ones NOTED_BY lists, each by one writer in its file; %d "
           "writers give none" % (len(given), none))
 

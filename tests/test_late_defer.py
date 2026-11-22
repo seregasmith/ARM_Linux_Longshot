@@ -5,9 +5,9 @@ late_defer_cpu_read, late_defer_split), the Capture struct and RangeWalk are tak
 stand-ins for the GPU's progress, guest memory and the texture ranges:
 
   - late_defer_on: with no mirrors, as the early reads (RX_VK_READBACK_EARLY) unless RX_VK_LATE_DEFER is given; off with mirrors
-    (their syncs copy out of the captures) and with the parallel replay (RX_VK_PARALLEL above 1), whatever is given;
+    (their syncs copy out of the captures), whatever is given;
   - readback_early.h's rules: RX_VK_READBACK_EARLY on by default where the pools have no mirror, off where they have one,
-    on with them too when asked for, off with 0, and never with the render thread or the parallel replay; RX_VK_LATE_DEFER
+    on with them too when asked for, off with 0, and never with the render thread; RX_VK_LATE_DEFER
     following it unless given;
   - late_defer_split: no late page in the texture storage: nothing waited for, every late page left to its reads; a late page in
     the shadow's spans (whole pools) but in no texture's own storage left to its reads too; a late page in a span and in a
@@ -164,30 +164,25 @@ RULES = r'''
 #include <initializer_list>
 #define CHECK(ok) do { if (!(ok)) { std::fprintf(stderr, "failed line %d: %s\n", __LINE__, #ok); std::exit(1); } } while (0)
 using namespace readback_early;
-static Why pick(const char* env, const char* par, bool render_thread, bool mirrors = false) {
+static Why pick(const char* env, bool render_thread, bool mirrors = false) {
     Facts f;
-    f.env = env, f.parallel = par, f.render_thread = render_thread, f.mirrors = mirrors;
+    f.env = env, f.render_thread = render_thread, f.mirrors = mirrors;
     return choose(f);
 }
 int main() {
-    CHECK(pick(nullptr, nullptr, false) == ON_DEFAULT);              // (unset: on where the pools have no mirror, the Deck)
-    CHECK(pick(nullptr, nullptr, false, true) == OFF_MIRRORS);       // (and off where they have one, discrete cards)
-    CHECK(pick(nullptr, nullptr, true) == OFF_RENDER_THREAD);        // (not with the render thread)
-    CHECK(pick(nullptr, "3", false) == OFF_PARALLEL);                // (nor with the parallel replay)
-    CHECK(pick("1", nullptr, false, true) == ON_SWITCH);             // (asked for, with mirrors too)
-    for (const char* off : {"0", "off", "false", "no", ""}) CHECK(pick(off, nullptr, false, false) == OFF_SWITCH);
-    CHECK(pick("1", nullptr, false) == ON_SWITCH);                   // (asked for)
-    CHECK(pick("1", nullptr, true) == OFF_RENDER_THREAD);            // (not with the render thread, even asked for)
-    for (const char* off : {"0", "off", "false", "no", ""}) CHECK(pick(off, nullptr, false) == OFF_SWITCH);
-    CHECK(pick("1", "3", false) == OFF_PARALLEL);                    // (never with the parallel replay)
-    CHECK(pick("1", "2", true) == OFF_PARALLEL);
-    CHECK(pick("1", "1", false) == ON_SWITCH);                       // (1 is not the parallel replay)
-    CHECK(on(ON_SWITCH) && on(ON_DEFAULT) && !on(OFF_MIRRORS) && !on(OFF_SWITCH) && !on(OFF_PARALLEL) && !on(OFF_RENDER_THREAD));
-    // RX_VK_LATE_DEFER: follows the early reads unless given; never with mirrors or the parallel replay
-    CHECK(defer(nullptr, false, nullptr, true) && !defer(nullptr, false, nullptr, false));
-    CHECK(defer("1", false, nullptr, false) && !defer("0", false, nullptr, true) && !defer("off", false, nullptr, true));
-    CHECK(!defer(nullptr, true, nullptr, true) && !defer("1", true, nullptr, true));
-    CHECK(!defer(nullptr, false, "4", true) && !defer("1", false, "2", true) && defer(nullptr, false, "1", true));
+    CHECK(pick(nullptr, false) == ON_DEFAULT);              // (unset: on where the pools have no mirror, the Deck)
+    CHECK(pick(nullptr, false, true) == OFF_MIRRORS);       // (and off where they have one, discrete cards)
+    CHECK(pick(nullptr, true) == OFF_RENDER_THREAD);        // (not with the render thread)
+    CHECK(pick("1", false, true) == ON_SWITCH);             // (asked for, with mirrors too)
+    for (const char* off : {"0", "off", "false", "no", ""}) CHECK(pick(off, false, false) == OFF_SWITCH);
+    CHECK(pick("1", false) == ON_SWITCH);                   // (asked for)
+    CHECK(pick("1", true) == OFF_RENDER_THREAD);            // (not with the render thread, even asked for)
+    for (const char* off : {"0", "off", "false", "no", ""}) CHECK(pick(off, false) == OFF_SWITCH);
+    CHECK(on(ON_SWITCH) && on(ON_DEFAULT) && !on(OFF_MIRRORS) && !on(OFF_SWITCH) && !on(OFF_RENDER_THREAD));
+    // RX_VK_LATE_DEFER: follows the early reads unless given; never with mirrors
+    CHECK(defer(nullptr, false, true) && !defer(nullptr, false, false));
+    CHECK(defer("1", false, false) && !defer("0", false, true) && !defer("off", false, true));
+    CHECK(!defer(nullptr, true, true) && !defer("1", true, true));
     std::puts("rules ok");
     return 0;
 }
@@ -252,7 +247,7 @@ def main():
                .replace('@CAPTURE@', block(text, 'struct Capture {'))
                .replace('@SECTION@', sect))
     child = fixture[:fixture.index('int main() {')] + CHILD
-    env = {k: v for k, v in os.environ.items() if k not in ('RX_VK_LATE_DEFER', 'RX_VK_PARALLEL')}
+    env = {k: v for k, v in os.environ.items() if k not in ('RX_VK_LATE_DEFER',)}
     with tempfile.TemporaryDirectory(prefix='late-defer-') as tmp:
         for name, body in (('late_defer', fixture), ('late_defer_on', child), ('late_defer_mirrors', child.replace(
                 'bool mirrors = false, early = true;', 'bool mirrors = true, early = true;')),
@@ -268,7 +263,6 @@ def main():
                                              capture_output=True, text=True).stdout.strip()
         for exe, e, want in (('late_defer_on.exe', {}, '1'), ('late_defer_on.exe', {'RX_VK_LATE_DEFER': '0'}, '0'),
                              ('late_defer_on.exe', {'RX_VK_LATE_DEFER': '1'}, '1'),
-                             ('late_defer_on.exe', {'RX_VK_PARALLEL': '3'}, '0'), ('late_defer_on.exe', {'RX_VK_PARALLEL': '1'}, '1'),
                              ('late_defer_mirrors.exe', {}, '0'), ('late_defer_mirrors.exe', {'RX_VK_LATE_DEFER': '1'}, '0'),
                              ('late_defer_no_early.exe', {}, '0'), ('late_defer_no_early.exe', {'RX_VK_LATE_DEFER': '1'}, '1')):
             got = on(exe, **e)
@@ -276,7 +270,7 @@ def main():
                 raise SystemExit("late_defer_on with %s%s%s: %s, expected %s" % (
                     e or "nothing set", " and mirrors" if 'mirrors' in exe else "", " and no early reads" if 'no_early' in exe else "",
                     got, want))
-    print("PASS: late_defer_on by mirrors, RX_VK_LATE_DEFER and the parallel replay; take_capture and the reads as submitted wired")
+    print("PASS: late_defer_on by mirrors and RX_VK_LATE_DEFER; take_capture and the reads as submitted wired")
 
 
 if __name__ == '__main__':

@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def before_lock(fn, name):
-    lock = fn.index("ParLock")
+    lock = fn.index("std::lock_guard lk(pools_mu);")
     head = fn[:lock]
     if "guest_span_cached(" not in head:
         raise SystemExit(f"{name} takes the pool lock before checking the span cache")

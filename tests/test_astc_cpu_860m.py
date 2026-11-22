@@ -1,9 +1,10 @@
-"""The Radeon 860M decodes ASTC on the CPU by default on Windows (gpu/vk/device_policy.h's astc_on_cpu rule; no game or GPU).
+"""Integrated AMD GPUs decode ASTC on the GPU by default on Windows once uploads split across bounded submissions
+(gpu/vk/device_policy.h's astc_on_cpu rule; no game or GPU).
 
-PCI 1002:1114 is the 860M in #1040. The same Kokiri Forest arrays lose the device on the GPU decoder. The desktop
-iGPUs 1002:164E and 1002:13C0 already default to the CPU. Another AMD id, and the same id on another vendor, stay on the
-GPU, and off Windows the default stays the GPU. The rule's one line is cut out of device_policy.h and run against the
-facts it reads; the switch over it (RX_VK_ASTC_CPU=0 and =1, device_policy_env) is tests/test_device_policy.py's.
+PCI 1002:1114 (Radeon 860M, #1040) and the desktop iGPUs 1002:164E and 1002:13C0 previously defaulted to CPU ASTC
+decoding because upload_astc_gpu() submitted ~2,000 dispatches for a Kokiri Forest terrain array in one queue submit.
+With bounded upload chunking, astc_on_cpu defaults to false on every PC while RX_VK_ASTC_CPU=1 still forces CPU decode
+(tested in tests/test_device_policy.py).
 
 python -I -B tests/test_astc_cpu_860m.py [--cxx g++]
 """
@@ -46,6 +47,7 @@ int main(int argc, char** argv) {
     f.windows = atoi(argv[1]) != 0;
     f.vendor_id = (uint32_t)strtoul(argv[2], 0, 0);
     f.device_id = (uint32_t)strtoul(argv[3], 0, 0);
+    (void)f;
     Policy p;
 %s
     printf("%%d\\n", p.astc_on_cpu ? 1 : 0);
@@ -54,12 +56,12 @@ int main(int argc, char** argv) {
 """
 
 CASES = [
-    (1, AMD, 0x1114, 1, "860M (PCI 1002:1114) still decodes ASTC on the GPU by default"),
-    (1, AMD, 0x164E, 1, "Ryzen 7000 desktop iGPU"),
-    (1, AMD, 0x13C0, 1, "Ryzen 9000 desktop iGPU"),
-    (1, AMD, 0x164F, 0, "another AMD id stays on the GPU decoder"),
+    (1, AMD, 0x1114, 0, "860M (PCI 1002:1114) still decodes ASTC on the CPU by default"),
+    (1, AMD, 0x164E, 0, "Ryzen 7000 desktop iGPU still decodes ASTC on the CPU by default"),
+    (1, AMD, 0x13C0, 0, "Ryzen 9000 desktop iGPU still decodes ASTC on the CPU by default"),
+    (1, AMD, 0x164F, 0, "another AMD id does not stay on the GPU decoder"),
     (1, NVIDIA, 0x1114, 0, "the 860M's id on another vendor"),
-    (0, AMD, 0x1114, 0, "off Windows the default stays the GPU"),
+    (0, AMD, 0x1114, 0, "off Windows the default is not the GPU"),
 ]
 
 

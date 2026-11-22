@@ -10,6 +10,7 @@
 // with the Switch 2 GOB swizzle); other formats are unswizzled on the CPU straight into the staging memory.
 #pragma once
 
+#include <memory>
 #include <string>
 #include <cstdint>
 #include <unordered_map>
@@ -67,7 +68,7 @@ struct Texture {
     uint64_t gpu_gen = 0;     // (the memory generation when the GPU last wrote it: CPU writes after it are taken)
     bool released = false;    // its texture was finalized after the GPU wrote it: CPU writes count again
     uint64_t release_gen = 0;
-    uint64_t gpu_draw_value = 0, gpu_draw_segment = 0;   // (last recording that wrote the image, for byte-exact storage invalidation)
+    uint64_t gpu_draw_value = 0;   // (last recording that wrote the image, for byte-exact storage invalidation)
     uint64_t gpu_wrote_seen = 0;   // (the newest finished GPU write into its storage it was uploaded after)
     uint64_t last_written = 0;     // (the frame the GPU last wrote it: a render target, each frame it is used)
     uint64_t first_written = 0;    // (the frame its GPU contents began: written in that frame alone, a table the game baked)
@@ -79,8 +80,6 @@ struct Texture {
     bool freed_listed = false;     // (finalized by the game and listed by blocks_hash: its image may serve a new texture)
     bool reuse_retire = false;     // (its image served one: it goes at the next texture_frame unless used again first)
     uint32_t checked_epoch = 0;
-    uint64_t upload_value = 0;   // (the submission its last upload was recorded in, and the parallel replay's segment
-    uint64_t upload_seg = 0;     // that recorded it: one before it in the stream uploads it again)
     uint64_t last_frame = 0;  // the present it was last used in (the cache's age)
     uint64_t first_render_frame = 0;   // the present it was first rendered into in (0: never)
     uint64_t last_value = 0;  // the timeline value of the last submission that used it
@@ -128,23 +127,6 @@ Texture* texture_touch(Texture* tex, bool for_sampling);
 /// texture_touch without the lock where it has nothing more to do (its contents up to date for this submission):
 /// false when the full texture_touch is needed
 bool texture_touch_quick(Texture* tex, bool for_sampling);
-/// Whether texture_written and texture_rendered would change nothing this frame (a parallel replay: no lock then)
-bool texture_marked(const Texture* tex);
-/// The parallel replay's segment this thread records (its order in the submission; uploads and mirror syncs a later
-/// segment made are made again by an earlier one that needs them, as each segment's uploads precede it)
-void texture_set_segment(uint64_t seg);
-uint64_t texture_segment();
-/// A parallel replay's segments, in queue order: each one's init command buffer (begun; submitted right before its
-/// uploads). A new image's first layout change (UNDEFINED -> GENERAL, and its clear) that a segment's worker makes goes
-/// to the earliest segment's still being recorded, not to the maker's own uploads: a segment before the maker's that
-/// uses it is submitted first, and found it UNDEFINED (VUID-vkCmdDraw-None-09600 with RX_VK_PARALLEL only)
-void texture_segments_begin(const VkCommandBuffer* init_cmds, size_t n);
-/// This thread records segment `index` of them (-1: none, after it)
-void texture_segment_worker(int index);
-/// Segment `index` recorded: its init command buffer ended (no new image's change goes to it after). 1: something went
-/// to it (submit it before the segment's uploads), 0: nothing, -1: something did and it could not be ended (lost: the
-/// replay stops)
-int texture_segment_end(int index);
 /// Changes with every submission (a texture touched in it is not checked again in it)
 uint32_t texture_epoch();
 /// Changes whenever a texture is destroyed (pointers to textures kept elsewhere go stale)
@@ -154,9 +136,30 @@ uint64_t texture_destroy_generation();
 bool texture_alive(uint64_t gpu, const Texture* t, VkImage image);
 // (longshot, RX_VK_FRAME_TRACE: time no other column has; totals in ns, the trace takes their differences)
 int64_t texture_readback_wait_ns();   // (a read-back's submit and wait for the GPU: the write-backs before an eviction)
+void texture_step_times(int64_t out[8]);
+void texture_pool_counts(int64_t out[9]);   // (TEST, local: vk_texture.cpp)
 int64_t texture_frame_ns();           // (texture_frame as a whole: each present's eviction, compaction and sweeps)
 /// The texture an NVN texture's storage is (made and uploaded at first use, uploaded again when the CPU wrote its
 /// storage since). null for formats and targets that have no image (buffers, unknown formats).
+struct OutputTrialBacking {
+    struct Image {
+        VkImage image{};
+        VmaAllocation allocation{};
+        VkImageCreateInfo shape{};
+        VkImageView view{};
+        uint64_t serial{};
+        uint64_t gpu{};
+    };
+    Image images[3]{};
+    OutputTrialBacking() = default;
+    OutputTrialBacking(const OutputTrialBacking&) = delete;
+    OutputTrialBacking& operator=(const OutputTrialBacking&) = delete;
+    ~OutputTrialBacking();
+    bool matches(uint64_t serial, VkImage image) const;
+};
+std::unique_ptr<OutputTrialBacking> output_probe_backing(const nvn_tex* targets, bool fail_second,
+                                                        unsigned& made, uint64_t& bytes);
+void take_output_trial_image(const nvn_tex* t, const VkImageCreateInfo& shape, VkImage& image, VmaAllocation& allocation);
 Texture* texture_get(const nvn_tex* t, bool for_sampling);
 /// (longshot, RX_VK_TEX_AHEAD: texture_ahead.h) Textures made and uploaded before their first draw, while the frames are
 /// light. The host's announcements: a texture the game made, and one it released (any thread)
@@ -192,7 +195,7 @@ unsigned view_level(const nvn_view* v);
 unsigned image_level(const Texture* tex, unsigned level);
 unsigned view_layer(const nvn_view* v);
 /// The GPU wrote it (in the submission being recorded)
-void texture_written(Texture* tex, const char* why = "?");   // (why: who wrote it, for the parallel replay's order warning)
+void texture_written(Texture* tex, const char* why = "?");   // (why: who wrote it)
 /// The GPU writes [gpu, gpu + size) in the submission being recorded (a storage buffer, a buffer copy): textures over
 /// it are uploaded again from guest memory once that submission is done
 void texture_gpu_wrote(uint64_t gpu, uint64_t size);
@@ -211,6 +214,9 @@ Texture* texture_for_present(const nvn_tex* t);
 void texture_complete_writes(uint64_t completed);
 /// Ages the cache by one present; images nothing used for a while go, after the work that last read them
 void texture_frame(uint64_t completed_value);
+/// (longshot, #1879: vk_replay.cpp submit_give_back, any thread) The driver refused a submit for want of memory: the next
+/// texture_frame frees every idle staging arena and the reaper's whole queue
+void texture_memory_refused();
 void texture_released(const nvn_tex* t);
 /// (diagnostics: what guest memory holds of a texture's storage now, level by level, logged)
 void texture_log_guest(const Texture* t);
@@ -225,6 +231,8 @@ bool texture_gpu_written_ever(uint64_t gpu, uint64_t size);   // (longshot) its 
 int texture_flush_to_guest(uint64_t gpu, uint64_t size);
 size_t texture_count();
 uint64_t texture_made();
+/// (and by kind: 0 colour targets, 1 depth, 2 ASTC or BC, 3 other; with their bytes)
+void texture_made_kinds(uint64_t n[4], uint64_t bytes[4]);
 void texture_unswizzle_stats(int64_t* bytes, int64_t* ns);
 uint64_t texture_bytes();
 /// A full memory barrier (all commands, all accesses): what separates dependent work for now
@@ -235,12 +243,8 @@ void barrier_stats(int64_t* made, int64_t* left_out);
 /// (longshot) Set around a draw's sampled-texture lookups (vk_draw.cpp): a new ASTC texture there may wait for a later frame
 /// once this frame's uploads passed their budget (texture_touch). Never for compute: a dispatch may bake what it reads once
 extern thread_local bool upload_defer_ok;
-/// A draw pass just ended on cmd (end_pass): pass_start_barrier knows nothing else ran after it
-void note_pass_end(VkCommandBuffer cmd);
-/// The barrier a draw pass starts with. Full, unless RX_VK_PASS_BARRIER=game and the last thing on cmd was a draw pass with no
-/// barrier of the game's after it: then the new pass waits for the earlier work in its fragment stages only, so its vertex work
-/// may overlap the previous pass's fragments (NVN asks for a barrier before rendering results are read; only vertex-stage
-/// reads of the previous pass's output with no barrier from the game can change order)
+/// The barrier a draw pass starts with: vk_texture.cpp, the rule above its definition (full where anything but draw passes came
+/// since the last full barrier on cmd; else every earlier write made visible to the pass's fragment-side stages)
 void pass_start_barrier(VkCommandBuffer cmd);
 /// Pass starts with the fragment-stage barrier, since the start
 int64_t pass_barriers_relaxed();

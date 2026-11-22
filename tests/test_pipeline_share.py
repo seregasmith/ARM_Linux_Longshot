@@ -21,10 +21,14 @@ import io
 import json
 import os
 from pathlib import Path
+
 import re
 import struct
 import subprocess
 import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
+from menu_model_fixture import menu_text  # noqa: E402
 import tempfile
 import zipfile
 
@@ -107,7 +111,8 @@ def game_folder(root, list_bytes=None):
     (g / "longshot_log.txt").write_text(
         "[hos host] longshot v2.2.0-rc.1-5-gabcdef1 (source 0123abcd)\n"
         "[hos host] vk: device 0: Some GPU, Vulkan 1.4, driver 0x9b118180, type 2\n"
-        "[hos host] vk: Some GPU, Vulkan 1.4, driver 0x9b118180; mesh shaders yes, host memory import yes, pipeline libraries yes\n"
+        "[hos host] vk: Some GPU, Vulkan 1.4, driver 0x9b118180; mesh shaders offered by the driver but not used (Automatic runs "
+        "RADV on the compute path: RX_VK_MESH_SHADERS=native to try), host memory import yes, pipeline libraries yes\n"
         "[hos host] vk: driver: SomeDriver 1.2.3\n", encoding="utf-8")
     (g / "longshot_version.txt").write_text("version=v2.1.0\n", encoding="utf-8")
     for d in ("mods/a/romfs", "mods/_off/romfs", "mods/-off2/romfs", "mods/contents/deep/b/romfs", "mods/notamod/x",
@@ -300,14 +305,15 @@ def check_cxx(cxx, tmp):
 
 
 def check_sources():
-    menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
+    menu = menu_text()   # (vk_menu.cpp and its modules' rows, #1633)
     rows = (ROOT / "gpu" / "vk" / "upscaler_rows.h").read_text(encoding="utf-8")
     # the Python names the options as the menu does
     m = re.search(r"const char\* tx_upscaler\(int\) \{\s*static const char\* t\[ur::kUpscalers\] = \{(.*?)\};", menu, re.S)
     assert m and tuple(re.findall(r'"([^"]*)"', m.group(1))) == share.UPSCALERS, "the Upscaler's names differ from the menu's"
     m = re.search(r"const char\* tx_framegen\(int v\) \{\s*static const char\* t\[\] = \{(.*?)\};", menu, re.S)
     assert m and tuple(re.findall(r'"([^"]*)"', m.group(1))) == share.FRAMEGEN, "Frame generation's names differ from the menu's"
-    m = re.search(r'const char\* tx_hdr\(int v\) \{ return v == 1 \? "([^"]*)" : v == 2 \? "([^"]*)" : "([^"]*)"; \}', menu)
+    hdr = (ROOT / "gpu" / "vk" / "menu" / "hdr.cpp").read_text(encoding="utf-8")   # (the HDR rows' module, #1633)
+    m = re.search(r'const char\* tx_hdr\(int v\) \{ return v == 1 \? "([^"]*)" : v == 2 \? "([^"]*)" : "([^"]*)"; \}', hdr)
     assert m and (m.group(3), m.group(1), m.group(2)) == share.HDR, "HDR's names differ from the menu's"
     m = re.search(r"constexpr int kPercent\[\] = \{([^}]*)\}", rows)
     assert m and tuple(int(x) for x in m.group(1).split(",")) == share.PERCENT, "the Render resolution's shares differ"
@@ -320,15 +326,19 @@ def check_sources():
     assert 0 < at_head < at_row, "the row is not under the Debug tab's Developer heading"
     debug = menu[menu.find("void draw_debug_rows("):]
     debug = debug[:debug.index("\n}\n")]
-    assert debug.count("is_share_row(r)") >= 2, "the Debug tab's layout neither sizes nor draws the row (cheat_value(-1))"
-    assert "is_share_row(const Row& r) { return !r.value && r.tab == TAB_DEBUG" in menu
+    # (#1633: a module's button: its cell's texts size it, its text draws it; the row, gpu/vk/menu/pipeline_list.cpp's)
+    assert "r.setting->choices" in debug and "r.setting->kind == menu::Kind::Action && r.setting->text" in debug, \
+        "the Debug tab's layout neither sizes nor draws the row (cheat_value(-1))"
+    assert '.key = "save_pipeline_list"' in menu and '.section("developer")' in menu and \
+        '.choices = {"Save", "Saved", "Not saved"}' in menu
     # the compact tuning bar (row_value_cell, its prompts) shows it as an action too, not as a page to open
     cell = body_of(menu, "void row_value_cell(")
-    assert 'is_share_row(r)) choice_cell(c, va, vb, share_value.empty() ? "Save" : share_value' in cell, "the tuning bar shows the row as a page"
-    assert menu.count('is_share_row(r) ? "Save" : "Open"') + menu.count('is_share_row(selr) ? "Save" : "Open"') >= 2, \
-        "a prompt says Open for Save my pipeline list"
+    assert "r.setting->kind == menu::Kind::Action && r.setting->text" in cell and \
+        'share_value.empty() ? std::string("Save") : share_value' in menu, "the tuning bar shows the row as a page"
+    assert '.verb = "Save"' in menu and menu.count("setting->verb ?") >= 2, "a prompt says Open for Save my pipeline list"
     tick = menu[menu.find("void menu_tick() {"):]
-    save, catch_all = tick.find("is_share_row(r)) share_pipeline_list()"), tick.find("!r.value && can_bind()) page = 1")
+    save, catch_all = tick.find("r.setting->on_activate(), press[7] = false"), tick.find("!r.value && can_bind()) page = 1")
+    assert ".on_activate = MENU_HOOK(share_pipeline_list)" in menu, "Enter on the row does not save the list"
     assert 0 < save < catch_all, "Enter on the row would open the Controls page"
     body = menu[menu.find("void share_pipeline_list() {"):]
     body = body[:body.index("\n}\n")]
@@ -347,7 +357,8 @@ def check_sources():
     dl = body_of(menu, "std::string share_downloads(")
     assert dl.count('"your home folder"') == 2, "the home folder is named on screen (the user's name)"
     assert 'L"WINDIR"' in menu, "explorer.exe is taken from the search path"
-    assert "kShareSaidLongest" in menu[menu.find("float measure_help("):][:900], "the help box has no room kept for the line after a save"
+    assert "r.setting->hint(0, k)" in menu[menu.find("float measure_help("):][:1400] and \
+        "return variant == 0 ? kShareSaidLongest : nullptr;" in menu, "the help box has no room kept for the line after a save"
     assert "share_finish();" in menu[menu.find("void menu_tick() {"):][:400], "menu_tick never collects the worker's answer"
     spawn = menu[menu.find("bool share_spawn("):]
     spawn = spawn[:spawn.index("\n}\n")]

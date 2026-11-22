@@ -36,6 +36,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
 from srccut import block  # noqa: E402
+from menu_model_fixture import menu_model_prelude  , menu_text# noqa: E402
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
@@ -240,7 +241,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cxx", default="g++")
     args = parser.parse_args()
-    menu = (VK / "vk_menu.cpp").read_text(encoding="utf-8")
+    menu = menu_text()   # (vk_menu.cpp and its modules' rows, #1633)
     header = (VK / "vk_menu.h").read_text(encoding="utf-8")
     dlss = (VK / "vk_dlss.cpp").read_text(encoding="utf-8")
     dlss_h = (VK / "vk_dlss.h").read_text(encoding="utf-8")
@@ -296,7 +297,8 @@ def main():
         "/* ROW */": found(r"struct Row \{.*?\n\};", menu, "no struct Row"),
         "/* OFFERED */": block(menu, "bool framegen_by_dlss_offered() {"),
         "/* FIXED */": block(menu, "bool framegen_by_fixed() {"),
-        "/* WHYTEXT */": block(menu, "const char* dlss_why_text(int why) {"),
+        "/* WHYTEXT */": block(menu, "const char* dlss_why_text(int why) {") +
+                          "\nconst char* menu_dlss_why_text(int why) { return dlss_why_text(why); }   // (#1633: vk_menu.cpp's forwarder)",
         "/* SKIPTEXT */": block(menu, "const char* framegen_skip_text(int why, unsigned most) {"),
         "/* MAKERNAME */": block(menu, "const char* framegen_maker_name() {"),
         "/* TEXT */": block(menu, "const char* tx_framegen_by(int v) {"),
@@ -313,7 +315,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="framegen-by-") as tmp:
         src = Path(tmp) / "row.cpp"
         exe = Path(tmp) / ("row.exe" if os.name == "nt" else "row")
-        src.write_text(src_text, encoding="utf-8")
+        src.write_text(menu_model_prelude() + src_text, encoding="utf-8")
         if Path(args.cxx).name.lower() in ("cl", "cl.exe", "clang-cl", "clang-cl.exe"):
             command = [args.cxx, "/nologo", "/std:c++20", "/EHsc", "/D_CRT_SECURE_NO_WARNINGS", str(src),
                        "/Fo" + str(Path(tmp) / "row.obj"), "/Fe" + str(exe)]

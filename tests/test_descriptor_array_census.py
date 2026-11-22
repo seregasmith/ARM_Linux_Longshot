@@ -11,6 +11,8 @@ such arrays (or image, image-buffer and texture-buffer arrays at all) was never 
   of a stage with more than 996 samplers as past the M1's and M2's; with a device's per-stage limits (MoltenVK's here) the
   arrays of a stage past them are named; single descriptors, stages with no arrays and stages it does not know are not; past
   30 the arrays are counted and not named; the summary gives the counts and a line for each stage with arrays;
+- it is compiled with what the Windows headers define as macros (windef.h's near, far, IN and OUT, rpcndr.h's small, basetyps.h's
+  interface) defined before it, as vk_programs.cpp includes it after windows.h: a member named near stopped the Windows build;
 - every program the program cache sees is counted, translated (program_cache_save, before it returns for a cache that is off)
   or read (program_cache_read, program_cache_read_light), the summary is logged after the preparation and when the window
   closes, and none of it is in the translator's stamp (nx2/translator_files.py): no player's programs are translated again
@@ -25,23 +27,29 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
+from srccut import block   # noqa: E402
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def block(text, marker):
-    at = text.index(marker)
-    end = text.index("{", at) + 1
-    depth = 1
-    while depth:
-        depth += (text[end] == "{") - (text[end] == "}")
-        end += 1
-    return text[at:end]
-
-
 FIXTURE = r"""
+#include <algorithm>
+#include <cstdint>
+#include <cstdio>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
+// (what windows.h defines, which vk_programs.cpp has included when it reaches the census header)
+#define near
+#define far
+#define IN
+#define OUT
+#define small char
+#define interface struct
 #include "descriptor_array_census.h"
 #include <cstdio>
 #include <vector>

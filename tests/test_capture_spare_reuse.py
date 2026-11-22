@@ -121,6 +121,8 @@ std::atomic<unsigned> destroyed{0};
 static uint64_t cap_spare_max() { return 64*MB; }
 static uint64_t linux_pressure_shortfall() { return shortfall.load(); }
 static void destroy_buffer(VkBuffer, VmaAllocation) { ++destroyed; }
+static bool cap_free_async_on() { return false; }   // (RX_VK_CAP_FREE_ASYNC=0: destroyed here, counted; tests/test_cap_free_async.py runs it on)
+static void destroy_buffer_later(VkBuffer b, VmaAllocation a) { destroy_buffer(b, a); }
 static bool env_on(const char*) { return false; }
 static unsigned cap_usage() { return 1; }
 static void logf(const char*, ...) {}

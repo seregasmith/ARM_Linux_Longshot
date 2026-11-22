@@ -14,6 +14,7 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from srccut import block, between
+from menu_model_fixture import menu_text  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 RUN_ALL_ARGS = ['--cc', 'clang', '--cxx', '{cxx}']
@@ -29,7 +30,8 @@ def main():
     spec.loader.exec_module(helper)
     api = (ROOT/'gpu/vk/vk_api.h').read_text(encoding='utf-8')
     backend = (ROOT/'host/rx_backend.c').read_text(encoding='utf-8')
-    menu = (ROOT/'gpu/vk/vk_menu.cpp').read_text(encoding='utf-8')
+    # (vk_menu.cpp and its modules, their rows as table lines, #1633: the Audio tab's are gpu/vk/menu/audio.cpp's)
+    menu = menu_text(ROOT)
     header = (ROOT/'gpu/vk/vk_menu.h').read_text(encoding='utf-8')
     assert int(re.search(r'#define MKWVK_API_VERSION (\d+)', api).group(1)) >= 25   # (25: the microphone test; later versions append)
     assert api.index('int (*take_text)') < api.index('int (*audio_output_state)') < api.index('int (*mic_test)')
@@ -119,6 +121,7 @@ int main(void) {
         cpp = r'''
 #include <atomic>
 #include <cassert>
+#include <cstring>
 bool mic_testing = false;
 int mic_levels[2] = {}, mic_test_state = 0;
 std::atomic<bool> open_now{true};
@@ -131,6 +134,8 @@ int fake_test(int on, int gain, int *levels) {
     return on ? 11 : 0;
 }
 struct Host { int (*mic_test)(int,int,int*); } host_value{fake_test}, *host = &host_value;
+const char* const kTabIds[] = {"graphics", "audio"};
+@ON_TAB@
 @HELPER@
 int main() {
     mic_test_tick(true); assert(!enabled_seen); // entering Audio alone never starts capture
@@ -144,7 +149,7 @@ int main() {
     opts.mic = 1; mic_test_tick(true); assert(!mic_testing); // restoring a device does not restart a test
     host = nullptr; mic_testing = true; mic_test_tick(true); assert(!mic_testing && !mic_test_state);
 }
-'''.replace('@HELPER@', block(menu, 'void mic_test_tick(bool focused)'))
+'''.replace('@HELPER@', block(menu, 'void mic_test_tick(bool focused)')).replace('@ON_TAB@', block(menu, 'bool menu_on_tab(const char* tab) {'))
         (work/'menu.cpp').write_text(cpp, encoding='utf-8')
         exe = work/('menu.exe' if os.name == 'nt' else 'menu')
         subprocess.run([args.cxx, '-std=c++17', '-Wall', '-Wextra', '-Werror', str(work/'menu.cpp'), '-o', str(exe)], check=True)

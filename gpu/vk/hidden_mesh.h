@@ -1,6 +1,6 @@
-// (longshot, #1370) The temporal upscalers' depth with a hidden character: the depth draws of a skinned mesh the game has
+// (longshot) The temporal upscalers' depth with a hidden character: the depth draws of a skinned mesh the game has
 // stopped showing are left out. Plain code with no Vulkan calls: tests/test_hidden_mesh_depth.py compiles it alone, and
-// vk_draw.cpp (hidden_depth_draw) gives it the draws and has the why. From magicbeanenjoyerguyperson's patch on #1370.
+// vk_draw.cpp (hidden_depth_draw) gives it the draws and has the why.
 //
 // A mesh is a vertex buffer (stream 0's address), followed from frame to frame while draws come from it. In each frame it
 // counts its depth draws (skinned draws that write depth and no colour into the scene's depth target) and its colour draws

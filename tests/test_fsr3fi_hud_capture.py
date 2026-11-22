@@ -15,6 +15,7 @@ RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 ROOT = Path(__file__).resolve().parents[1]
 
 PREFIX = r'''
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -37,6 +38,7 @@ namespace fsr3fi {
 bool enabled = true;
 bool frames_wanted() { return enabled; }
 }
+namespace reshade { std::atomic<bool> enabled{false}; }
 
 Texture in_tex{1920, 1080, SCENE}, out_tex{1920, 1080, SCENE};
 uint32_t output_level = 0;
@@ -84,6 +86,8 @@ int main() {
     out_tex.format = SCENE;
     fsr3fi::enabled = false;
     expect("HUD capture ran with FSR frame generation inactive", full, nullptr);
+    reshade::enabled = true;
+    expect("ReShade could not find the gameplay picture without frame generation", full, &out_tex);
     std::puts("PASS: FSR 3.1 HUD capture selects the native gameplay picture and keeps its other guards");
 }
 '''

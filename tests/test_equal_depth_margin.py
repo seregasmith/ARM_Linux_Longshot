@@ -21,15 +21,23 @@ SOURCE = ROOT / "gpu" / "vk" / "vk_draw.cpp"
 def main():
     source = SOURCE.read_text(encoding="utf-8")
     state = block(source, "void dynamic_state(VkCommandBuffer cmd")
-    # (the margin's size is device_policy.h's equal_depth_bias: 64 on Intel's Windows driver, then RX_VK_EQ_BIAS, read by
+    # (the margin's size is device_policy.h's equal_depth_bias: 64 on Intel's Windows driver but on Battlemage, then RX_VK_EQ_BIAS, read by
     # device_policy_env; tests/test_device_policy.py has it on each GPU and the switch's values)
     if "static const float eq_bias = dev.policy.equal_depth_bias;" not in state:
         raise SystemExit("the margin is not device_policy.h's equal_depth_bias")
     policy = (ROOT / "gpu" / "vk" / "device_policy.h").read_text(encoding="utf-8")
     if 'get("RX_VK_EQ_BIAS")' not in policy:
         raise SystemExit("no RX_VK_EQ_BIAS switch")
-    if "p.equal_depth_bias = f.driver_id == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS ? 64.0f : 0.0f;" not in policy:
-        raise SystemExit("the margin is not on by default on Intel's Windows driver only")
+    if "p.equal_depth_bias = policy_rule::equal_depth_bias(f.driver_id, f.device_id);" not in policy:
+        raise SystemExit("the margin is not computed by policy_rule::equal_depth_bias")
+    eq_rule = block(policy, "inline float equal_depth_bias(VkDriverId driver, uint32_t device)")
+    for snippet in (
+        "driver != VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS",
+        "(device & 0xFF00u) == 0xE200u",
+        "return 64.0f;",
+    ):
+        if snippet not in eq_rule:
+            raise SystemExit("policy_rule::equal_depth_bias lacks %r" % snippet)
     cond = "if (eq_bias > 0 && d.dt && !d.dw && d.dop == VK_COMPARE_OP_EQUAL && !blends)"
     if cond not in state:
         raise SystemExit("the margin is not limited to EQUAL tests that do not write depth and do not blend")

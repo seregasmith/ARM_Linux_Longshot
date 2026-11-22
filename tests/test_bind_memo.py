@@ -22,7 +22,7 @@ def main():
     a = p.parse_args()
     source = (ROOT / "gpu" / "vk" / "vk_memory.cpp").read_text(encoding="utf-8")
     bind = block(source, "BufferRef gpu_buffer_bind(")
-    lock = bind.index("ParLock")
+    lock = bind.index("std::lock_guard lk(pools_mu);")
     if bind.index("bind_memo_hit(") > lock:
         raise SystemExit("a read bind takes the pool lock before checking the remembered one")
     if "if (!written)" not in bind[: bind.index("bind_memo_hit(")]:

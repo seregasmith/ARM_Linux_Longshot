@@ -42,6 +42,8 @@ static uint8_t outbuf[0x28];
 #define G64(a) (*(uint64_t *)GP(a))
 #define G32(a) (*(uint32_t *)GP(a))
 static uint64_t hos_image_base, hos_image_end, hos_heap_size, t_stack, t_stack_size;
+static uint64_t t_output, t_output_size;
+static void hos_output_boot_region(uint64_t *addr, uint64_t *size) { *addr = t_output; *size = t_output_size; }
 static HosThread *hos_self(void) { return 0; }
 static void hos_thread_stack(HosThread *t, uint64_t *addr, uint64_t *size) { (void)t; *addr = t_stack; *size = t_stack_size; }
 @QUERY@
@@ -83,6 +85,13 @@ int main(void) {
     q(HOS_HEAP_BASE); CHECK(qb == HOS_HEAP_BASE && qs == heap && qst == 0x05 && qp == 3);
     q(stk + 8); CHECK(qb == stk && qs == stk_n && qst == 0x0B && qp == 3);
     if (walk(4)) return 1;
+    t_output = stk + stk_n + 0x10000;
+    t_output_size = 0x790000;
+    FREE(stk + stk_n, stk + stk_n, t_output);
+    q(t_output + 0x1000); CHECK(qb == t_output && qs == t_output_size && qst == 0x05 && qp == 3);
+    FREE(t_output + t_output_size, t_output + t_output_size, HOS_GUEST_SPACE);
+    if (walk(5)) return 1;
+    t_output = t_output_size = 0;
     t_stack = HOS_HEAP_BASE + 0x1000; t_stack_size = 0x10000;   /* a stack inside the heap */
     FREE(img_end, img_end, HOS_HEAP_BASE);
     FREE(HOS_HEAP_BASE + heap, HOS_HEAP_BASE + heap, HOS_GUEST_SPACE);

@@ -56,4 +56,18 @@ Id Module::OpCooperativeMatrixLoadKHR(Id result_type, Id pointer, Id layout, Id 
                  << EndOp{};
 }
 
+Id Module::OpCooperativeMatrixLoadKHR(Id result_type, Id pointer, Id layout, Id stride, spv::MemoryAccessMask memory_operand) {
+    code->Reserve(7);
+    return *code << OpId{spv::Op::OpCooperativeMatrixLoadKHR, result_type} << pointer << layout << stride
+                 << memory_operand << EndOp{};
+}
+
+Id Module::OpCooperativeMatrixStoreKHR(Id pointer, Id object, Id layout, Id stride, spv::MemoryAccessMask memory_operand) {
+    code->Reserve(6);
+    if (memory_operand == spv::MemoryAccessMask::MaskNone)
+        return *code << spv::Op::OpCooperativeMatrixStoreKHR << pointer << object << layout << stride << EndOp{};
+    return *code << spv::Op::OpCooperativeMatrixStoreKHR << pointer << object << layout << stride << memory_operand
+                 << EndOp{};
+}
+
 } // namespace Sirit

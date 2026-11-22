@@ -50,8 +50,8 @@ def check_source():
           "mirror_trim::live(p.lo, p.hi, chunk, mirror_trim::kJoin, guest_pools)", "mirror_trim::worth(p.hi - p.lo, parts)",
           "mirror_trim::counted(p.trims, mirror_epoch - p.trim_epoch)", "mirror_trim::wait(trims)",
           "mirror_trim::counted(pick->trims, mirror_epoch - pick->trim_epoch) + 1",
-          # (only an import with a mirror, and never inside a parallel replay's segments)
-          "p.mstate != Pool::MIRROR_ON", "par_active.load(std::memory_order_relaxed)",
+          # (only an import with a mirror)
+          "p.mstate != Pool::MIRROR_ON",
           # (room for the new mirrors beside the old one, which stays until the GPU is done with it)
           "for (const Pool* w : mirror_wanted) wanted += w->hi - w->lo;",
           "if (mirror_bytes + wanted + kept > mirror_budget() || (tight_rule && used > allowed / 100 * 90)) return false;"])

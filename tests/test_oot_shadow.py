@@ -60,7 +60,9 @@ class InstallTests(unittest.TestCase):
         replay = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
         self.assertIn("HOS_OPT_SHADOW_RES = 56", api)
         self.assertIn("int shadow_res = 0;", options)
-        self.assertIn('"Shadow resolution", &opts.shadow_res, 0, 3, 1, tx_shadow_res', menu)
+        detail = (ROOT / "gpu/vk/menu/detail.cpp").read_text(encoding="utf-8")   # (the row's module, #1633)
+        self.assertRegex(detail, r'(?s)\.label = "Shadow resolution",.*?\.value = &opts\.shadow_res,\s*\.lo = 0, \.hi = 3,.*?'
+                                 r'tx_shadow_res\(v\)')
         self.assertIn("if (id == HOS_OPT_SHADOW_RES) return menu_shadow_res();", replay)
 
     def test_auto_follows_the_cards_memory(self):
@@ -74,8 +76,9 @@ class InstallTests(unittest.TestCase):
         self.assertIn("const int tier = opts.budget > 0 ? opts.budget : auto_choice.tier;", fn)
         self.assertIn("return tier == 1 || tier == 2 ? 0 : tier >= 4 ? 2 : 1;", fn)
         self.assertLess(menu.index("} // namespace\n"), start, "menu_shadow_res is the header's, outside the file's own namespace")
-        start = menu.index("void apply_preset(int p) {")
-        preset = menu[start:menu.index("\n}\n", start)]
+        engine = (ROOT / "gpu/vk/menu/preset.cpp").read_text(encoding="utf-8")   # (the Quality preset module's, #1633)
+        start = engine.index("void apply_preset(int p) {")
+        preset = engine[start:engine.index("\n}\n", start)]
         self.assertIn("if (p > 0) opts.shadow_res = 0;", preset)
         self.assertNotIn("opts.shadow_res = 2;", preset)
 

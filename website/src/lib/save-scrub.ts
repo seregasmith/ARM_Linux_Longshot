@@ -1,7 +1,7 @@
 // The save scrubber page (/saves/scrub/): scripts/longshot_saves.py's `scrub`, in the browser. One slot of a save,
 // scrubbed as that script does it and checked as its check-repo-saves does: caption.sav's picture made a flat
 // mid-grey JPEG of the same size, its six date fields set to 2026-01-01 00:00:00, progress.sav copied unchanged. The
-// layout, the keys and the JPEG writer and reader are the script's (docs/saves-script.md, "What scrub changes"); a
+// layout, the keys and the JPEG writer and reader are the script's (docs/dev/reference/saves.md, "Saves in the repository"); a
 // file laid out any other way is refused, not guessed at. Nothing here touches the network: the files never leave
 // the browser. tests/save-scrub.test.ts holds it to the script's output.
 

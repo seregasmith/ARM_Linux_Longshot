@@ -1,7 +1,7 @@
 """RX_VK_SHADOW_BIAS is read once, safely across the threads that record draws.
 
 dynamic_state() kept the shadow bias in two function statics, initialised by hand: `units < 0` meant "not read yet",
-then units was set to the default before getenv/sscanf filled both. Parallel recording threads (RX_VK_PARALLEL) reach it
+then units was set to the default before getenv/sscanf filled both. Threads that record draws could reach it
 at once, so one thread could read units and slope while another was still writing them: a data race, and a draw could
 take the 250000 default with a slope not read yet, or a half-written pair. Now both start at their defaults and the
 variable is parsed in a function-local static's initializer, which C++ runs exactly once and makes visible to every

@@ -59,6 +59,20 @@ class PrepareTests(unittest.TestCase):
         self.assertEqual(a.out, os.path.join(os.path.expanduser("~"), "Games", "Longshot"))
         self.assertEqual(self.parse("--game", self.nup, "--prepare", "--out", "o").out, "o")
 
+    def test_the_copy_can_come_as_one_argument(self):
+        # (RecompLauncher's prepare.keeps_copy leaves out every argument with the copy in it: --game=<copy> is one)
+        a = self.parse("--game=" + self.nup, "--prepare", "--out", "o")
+        self.assertEqual((a.nup, a.update), (self.nup, None))
+
+    def test_prepare_without_a_copy_builds_from_the_folder(self):
+        # (the player's copy is gone: the game folder's own game files, as an update builds from them)
+        a = self.parse("--prepare", "--out", "o")
+        self.assertEqual((a.nup, a.romfs, a.exefs, a.update), (None, None, None, "o"))
+        self.assertEqual(self.parse("--prepare").update, os.path.join(os.path.expanduser("~"), "Games", "Longshot"))
+
+    def test_without_prepare_no_copy_is_no_update(self):
+        self.assertIsNone(self.parse("--out", "o").update)
+
     def test_missing_game_is_an_error_line(self):
         missing = os.path.join(self.dir.name, "nothing.nup")
         self.assertEqual(self.fails("--game", missing, "--prepare"), ["error Your copy of the game was not found: " + missing])

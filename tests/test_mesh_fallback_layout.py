@@ -31,7 +31,7 @@ SHAPES = ("tri-pos-first", "tri-pos-later-prim", "tri-wide", "tri-task", "lines"
 
 
 def cxx_std(cxx):
-    """-std=c++23 where the compiler has it, else -std=c++2b, as nx2/bake_mimo.py's cxx_std: gpu/vk/compat/common/assert.h needs
+    """-std=c++23 where the compiler has it, else -std=c++2b: gpu/vk/compat/common/assert.h needs
     C++23's static in a constexpr function (g++ 13 refuses it under -std=c++20)"""
     probe = "constexpr int f(int n){if(n<0){static int x=0;return ++x;}return n;} static_assert(f(1)==1);"
     for std in ("-std=c++23", "-std=c++2b"):
@@ -87,8 +87,8 @@ def wiring(fails):
                  'mesh_rule::fb_layout(getenv("RX_VK_MESH_FB_LAYOUT"))'):
         if line not in shader:
             fails.append("vk_shader.cpp: no `%s`" % line)
-    if "RX_VK_MESH_FB_LAYOUT" not in (ROOT / "docs" / "development.md").read_text(encoding="utf-8"):
-        fails.append("docs/development.md does not describe RX_VK_MESH_FB_LAYOUT")
+    if "\nSW(RX_VK_MESH_FB_LAYOUT," not in (ROOT / "gpu" / "vk" / "switches.def").read_text(encoding="utf-8"):
+        fails.append("gpu/vk/switches.def has no row for RX_VK_MESH_FB_LAYOUT")
 
 
 def main():

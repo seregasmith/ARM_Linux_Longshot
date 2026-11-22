@@ -102,6 +102,7 @@ struct ProgramCensus {
     std::atomic<int64_t> load_unlisted{0};      // (graphics programs loaded that no note names: no pipeline is known for them)
     std::atomic<int64_t> load_ns{0}, load_bytes{0};
     std::atomic<int64_t> pipes_taken{0};        // (pipelines made at create that a draw then took)
+    std::atomic<int64_t> load_modules_dropped{0};   // (modules let go once a loaded program's noted pipelines were built)
 };
 extern ProgramCensus census;
 /// One line of the census (every 600 presents with RX_VK_LOG_PROGRAM_LIFE=1, and when the window closes)

@@ -1,4 +1,4 @@
-# Setup continuation (magicbeandev/ci lean orb). Docs: docs/ci.md.
+# Setup continuation (magicbeandev/ci lean orb). Docs: docs/dev/reference/ci.md.
 version: 2.1
 setup: true
 parameters:
@@ -42,7 +42,7 @@ workflows:
           event-file: .circleci/events/main.yml
           mapping: .circleci/mapping.conf
           force-full: true  # main runs everything before the nightly
-          # dry-run until cutover: Forgejo's release.yml is still the live publisher (docs/ci.md)
+          # dry-run until cutover: Forgejo's release.yml is still the live publisher (docs/dev/reference/ci.md)
           extra-params: >-
             {"nightly":true,"release_dry_run":true,"website_refresh":false,
             "vulkan_dlss":false,"fork_pr":0,"fork_sha":""}
@@ -54,7 +54,7 @@ workflows:
           filters: (pipeline.git.tag or "") starts-with "v"
           event-file: .circleci/events/release.yml
           force-full: true
-          # dry-run until cutover: Forgejo's release.yml is still the live publisher (docs/ci.md)
+          # dry-run until cutover: Forgejo's release.yml is still the live publisher (docs/dev/reference/ci.md)
           extra-params: >-
             {"full":true,"nightly":false,"release_dry_run":true,
             "website_refresh":false,"vulkan_dlss":false,"fork_pr":0,"fork_sha":""}
@@ -82,7 +82,7 @@ workflows:
           name: setup-website
           event-file: .circleci/events/scheduled.yml
           force-full: true
-          # dry-run until cutover: Forgejo's website.yml is still the live deployer (docs/ci.md)
+          # dry-run until cutover: Forgejo's website.yml is still the live deployer (docs/dev/reference/ci.md)
           extra-params: >-
             {"full":true,"nightly":false,"release_dry_run":true,
             "website_refresh":true,"vulkan_dlss":false,"fork_pr":0,"fork_sha":""}

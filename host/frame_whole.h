@@ -47,8 +47,8 @@ static inline uint32_t frame_whole(FrameWhole *w, uint64_t at, uint32_t amount_b
 }
 
 /* (the whole frames of the amount, times a whole number of substeps each, for a counter that runs that many substeps a frame:
-   the water's ripple simulation, f_800672e0). The game cuts the amount and then multiplies, so above 60 fps a frame ran all its
-   substeps or none, and the ripples stood still for a frame and then jumped (issue 1199). With the carry the substeps are
+   the water's ripple simulation, f_800672e0). The game cuts the amount and then multiplies, so above 60 fps a frame runs all its
+   substeps or none, and the ripples stand still for a frame and then jump. With the carry the substeps are
    handed out instead, their fractions kept per counter: 2 or 3 of 4 a frame at 108 fps. Without it, cut as the game cuts it. */
 static inline uint32_t frame_whole_times(FrameWhole *w, uint64_t at, uint32_t amount_bits, uint32_t times, int carry) {
     float amount;

@@ -29,12 +29,11 @@ of 1 and 32:
 - with every block still read, a table bigger than a block (the next block free or not), or a block that can't be made
   (no memory, not mapped, no address; nothing kept of it), the sync goes as its copies; a block is taken again, from
   its start, once the submission that read it last is done (a later submission's table in it too).
-Then, from the text (with comments, // and /* */, left out of mirror_sync, the presync and sparse_grow_all): every
+Then, from the text (with comments, // and /* */, left out of mirror_sync and sparse_grow_all): every
 capture buffer is made with cap_usage(), which gives them storage and an address when the pass is on (it reads them by
 address); the runs the pass takes still go into the write-back shadow (shadow_sync_copy, as the copies' do: else the
 diff writes a capture's older words over the CPU's newer ones), and their chunks are flushed right after mirror_sync's
-loop over the capture buffers, which has no return (unless the presync holds them: it sets msync_batching right before
-its loop over the pools, clears it and flushes right after, and sets it nowhere else); a sparse mirror's fill
+loop over the capture buffers, which has no return; a sparse mirror's fill
 (sparse_grow_all) ends with a full barrier when the pass is on: every vkCmdCopyBuffer (or vkCmdCopyBuffer2) it records
 is in the loop over the pools and inside the if (!fill.empty()) whose first statement sets a flag declared false and
 assigned nowhere else, and the barrier on that flag is the first statement after the loop, which has no return (the fill
@@ -523,20 +522,9 @@ def text_checks(text, shader):
     at = sync.find(loop)
     end = at + len(block(sync[at:], loop, unique=False)) if at >= 0 else -1
     if (not taken or not at < taken.start() < end or re.search(r'\breturn\b', sync[at:end])
-            or not re.match(r'\s*if \(!msync_batching\)\s*msync_pass_flush\(\);', sync[end:])):
+            or not re.match(r'\s*msync_pass_flush\(\);', sync[end:])):
         errors.append("mirror_sync: the chunks of the runs the pass takes are not flushed right after its loop over the "
-                      "capture buffers, which has no return (if (!msync_batching) msync_pass_flush();): they would not "
-                      "reach the mirror")
-    pre = code(block(text, 'void memory_sync_mirrors_before_segments()'))
-    hold = re.search(r'[;{}]\s*msync_batching = true;\s*(for \([^;{]*\) \{)', pre)   # (the hold, then its loop at once)
-    pools = block(pre[hold.start(1):], hold.group(1), unique=False) if hold else ''
-    after = pre[hold.start(1) + len(pools):] if hold else ''
-    if (not hold or 'mirror_sync(' not in pools or re.search(r'\breturn\b', pools)
-            or not re.match(r'\s*msync_batching = false;\s*msync_pass_flush\(\);', after)
-            or len(re.findall(r'\bmsync_batching\s*[&|^]?=(?!=)', pre)) != 2):
-        errors.append("memory_sync_mirrors_before_segments: the presync does not hold its syncs' chunks and flush them once "
-                      "after its loop (msync_batching = true; right before the loop, which has no return; "
-                      "msync_batching = false; msync_pass_flush(); right after it; msync_batching set nowhere else)")
+                      "capture buffers, which has no return (msync_pass_flush();): they would not reach the mirror")
     grow = code(block(text, 'void sparse_grow_all(const std::vector<Pool*>& pools) {'))   # (a barrier in a comment records nothing)
     copies = [m.start() for m in re.finditer(r'\bvkCmdCopyBuffer(?:2(?:KHR)?)?\s*\(', grow)]   # (every copy it records)
     loop, branch = 'for (Got& g : gots) {', 'if (!fill.empty()) {'
@@ -629,7 +617,7 @@ def main():
             print('FAIL:', e)
         raise SystemExit(1)
     print('PASS: the mirror syncs\' pass takes each capture run as the copies did, whole chunks, the switch by the one rule, '
-          'capture buffers made for it, its chunks flushed after each sync and after the presync\'s loop, each table on '
+          'capture buffers made for it, its chunks flushed after each sync, each table on '
           'cache atoms of its own, a checkpoint of its own before each dispatch, a full barrier after a sparse mirror\'s '
           'fill')
 

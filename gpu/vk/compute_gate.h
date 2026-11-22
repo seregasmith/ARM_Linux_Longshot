@@ -1,12 +1,11 @@
 // (longshot) How many of the GPU driver's compute compiles run at once (vk_draw.cpp cached_compute and prepare_run's
 // warm_compute: the shader preparation, the precompile, the mesh fallback's compute pipelines and play's own builds).
 //
-// The preparation ran one on every worker: half the CPUs in its first part, every CPU in the precompile. That is right
-// where a compile holds a few hundred MB (prepare_workers.h: 400-520 MB a worker on AMD's Windows driver). Mesa's Intel
-// driver held gigabytes for each of the game's large compute programs while every one was held to 32 lanes, and an
-// integrated GPU has no memory of its own to hold anything else in: on an i9-13900H with Iris Xe and 32 GB (20 threads,
-// Mesa 26.2.4) the process passed 24 GB of private memory and 7 GB of swap and Linux killed it, in the build's last step
-// and then at every start of the game (issue 496 is the same compiler in play: four at once froze an A750's PC).
+// One on every worker (half the CPUs in the preparation's first part, every CPU in the precompile) is right where a
+// compile holds a few hundred MB (prepare_workers.h: 400-520 MB a worker on AMD's Windows driver). Mesa's Intel driver
+// holds gigabytes for each of the game's large compute programs held to 32 lanes, and an integrated GPU has no memory of
+// its own to hold anything else in: on an Iris Xe PC with 32 GB the process passes 24 GB of private memory and 7 GB of
+// swap and Linux kills it. (Intel's Windows compiler is the same in play: four at once can freeze the PC.)
 //
 // With only the programs that see their lanes held to 32 (compute_pin.h), ordinary compiles there were measured one at
 // a time: 16a842f009aff538 (730 KB of SPIR-V) added 0.8-1 GB over 23-25 s; one at the lanes the driver chose added
@@ -32,10 +31,10 @@
 // freed memory back when it leaves (trims(), glibc's malloc_trim; nothing on other C libraries).
 //
 // On by default on Mesa's Intel driver, where it was measured, and on RADV with an integrated GPU, whose memory is the
-// system's, on a PC with under kRadvSmallRamMB of RAM (radv_by_memory): an AMD Radeon 760M PC with 12 GB and 2 GB of swap
-// (Mesa 25.2.8, 12 threads, #1398) was killed for memory at a game's first start, while it made the mesh fallback's compute
-// pipelines on every CPU (precompile_at_create). The Steam Deck (16 GB, about 14.5 GB of it the system's) and the 16 GB APUs
-// work on main and keep its rule: nobody has run the gate there. RADV weighs a compile by its phis, at twice what
+// system's, on a PC with under kRadvSmallRamMB of RAM (radv_by_memory): a Radeon 760M PC with 12 GB and 2 GB of swap is
+// killed for memory at a game's first start, while it makes the mesh fallback's compute pipelines on every CPU
+// (precompile_at_create). The Steam Deck (16 GB, about 14.5 GB of it the system's) and the 16 GB APUs work without the
+// gate and keep that rule: the gate is untested there. RADV weighs a compile by its phis, at twice what
 // fallback_size_policy.h measured, as the Intel weights are twice theirs: about 2.9 GB for the two stages of 80,000 phis on
 // GFX9 and later, under 700 MB for those up to 29,400 phis (both on discrete cards); the rest, far smaller, at twice what
 // Mesa's Intel compiler took for most of them, under 200 MB (weight_radv: kRadvBigMB, kRadvMidMB, kRadvMB). None of the three
@@ -74,7 +73,7 @@ constexpr uint64_t kRadvBigMB = 6144;
 constexpr uint32_t kRadvMidPhis = 10000;
 constexpr uint64_t kRadvMidMB = 1536;
 constexpr uint64_t kRadvMB = 512;   // (twice the under 200 MB Mesa's Intel compiler took for most: not RADV's own figure)
-constexpr uint64_t kRadvSmallRamMB = 13312;   // (#1398's 12 GB is under it; a 16 GB PC or a Steam Deck, about 14.5 GB, is not)
+constexpr uint64_t kRadvSmallRamMB = 13312;   // (a 12 GB PC is under it; a 16 GB PC or a Steam Deck, about 14.5 GB, is not)
 
 /// A compile's weight: held to 32 lanes or not, how many phis its SPIR-V has, and whether it is a mesh fallback stage
 inline uint64_t weight(bool pinned, uint32_t phis, bool mesh_fallback = false) {

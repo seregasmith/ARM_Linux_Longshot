@@ -38,9 +38,7 @@ def main():
     start = source.index("        auto take = [&](uint64_t at_value, int64_t at_present) {")
     end = source.index("            // (RX_VK_DUMP_BLACK", start)
     take = source[start:end] + "\n(void)at_present; return px; };\n"
-    helper_start = source.index("std::shared_ptr<std::vector<uint8_t>> shot_pixels(")
-    helper_end = source.index("void do_present(", helper_start)
-    helper = source[helper_start:helper_end]
+    helper = block(source, "std::shared_ptr<std::vector<uint8_t>> shot_pixels(")
     start = source.index("        if (shot && made_src && made_map) {")
     end = source.index("        } else if (shot)", start)
     made = source[start:end] + "\n}\n"
@@ -49,7 +47,7 @@ def main():
     collect = source[start:end] + "\ncaptured = std::move(rec); }\n"
     call = source.index("vkWaitForFences(dev.device, 1, &f.done, VK_TRUE, UINT64_MAX)", source.index("void present_image("))
     start = source.rfind("\n", 0, call) + 1
-    end = source.index("    uint32_t index = 0;", start)
+    end = source.index("\n", source.index("    framelog_collect(log_slot);", start)) + 1
     fence = source[start:end]
     host = block(source, "void capture_host_read_barrier(") if "void capture_host_read_barrier(" in source else ""
     normal_copy = producer(source, "vkCmdCopyImageToBuffer(r.cmd, shot_image,", "\n            }")

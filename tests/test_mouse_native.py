@@ -35,6 +35,8 @@ HOS_H = r"""
 extern uint8_t *fake_heap;
 #define HOS_HEAP_BASE 0x1000000000ULL
 #define GP(a) ((void *)(fake_heap + ((uint64_t)(a) - HOS_HEAP_BASE)))
+#define G64(a) (*(uint64_t *)GP(a))
+#define HOS_GUEST_SPACE (1ULL << 39)
 extern uint64_t hos_heap_size;
 void hos_log(const char *fmt, ...);
 int64_t hos_now_ns(void);
@@ -61,6 +63,13 @@ int rx_option(int id, int otherwise) {
 }
 int hos_mouse_take(int32_t *dx, int32_t *dy) { *dx = move_x, *dy = move_y; move_x = move_y = 0; return captured; }
 void hos_mouse_give_back(int32_t dx, int32_t dy) { move_x += dx, move_y += dy; }
+/* (an input recording's hooks, host/input_movie.c: nothing recorded or played here; no script's mouse motion) */
+#include "input_movie.h"
+int hos_script_mouse_take(int32_t *dx, int32_t *dy) { *dx = *dy = 0; return 0; }
+int hos_input_movie_active(void) { return 0; }
+int hos_input_movie_cam_begin(MovieCam *c, uint32_t *block, uint32_t *inputs) { (void)c, (void)block, (void)inputs; return -1; }
+void hos_input_movie_cam_end(const MovieCam *c) { (void)c; }
+double hos_mouse_sensitivity(void) { return hos_mouse_sens; }
 int hos_mouse_native(void);
 void hos_mouse_native_free(int free);
 void hos_mouse_native_stick(int held);
@@ -216,6 +225,7 @@ class MouseNativeTests(unittest.TestCase):
             (tmp / "hos.h").write_text(HOS_H, encoding="utf-8")
             # (beside the stand-in hos.h, so its #include "hos.h" finds that one)
             shutil.copy(ROOT / "host" / "mouse_native.c", tmp / "mouse_native.c")
+            shutil.copy(ROOT / "host" / "input_movie.h", tmp / "input_movie.h")   # (MovieCam, the recording's camera lines)
             (tmp / "t.c").write_text(FIXTURE, encoding="utf-8")
             binary = tmp / "t"
             build = subprocess.run([compiler, "-std=gnu11", "-include", ENV_ON_H, "-Wall", "-O1", "-g", "-I", str(tmp), "-I", str(ROOT / "host" / "posix"),

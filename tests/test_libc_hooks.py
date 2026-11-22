@@ -166,7 +166,7 @@ class Splice(unittest.TestCase):
         main = pydef(lift, "main")
         self.assertIn("entry_hooks.add(L, img)", main)
         self.assertLess(main.index("L = a64_lift.Lifter(img)"), main.index("entry_hooks.add(L, img)"))
-        self.assertLess(main.index("entry_hooks.add(L, img)"), main.index("L.discover("))
+        self.assertLess(main.index("entry_hooks.add(L, img)"), main.index("discover.discover(L, "))   # (nx2/discover.py: L.discover())
         key = pydef((ROOT / "nx2" / "make_game.py").read_text(encoding="utf-8"), "lift_key")
         self.assertIn("entry_hooks.hooked_symbols()", key)
 

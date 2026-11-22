@@ -10,6 +10,7 @@ import argparse
 import re
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 # (env_on, the switches' rule, before the code cut out of the sources: gpu/vk/compat/longshot_env.h)
@@ -18,6 +19,8 @@ ENV_ON_H = str(Path(__file__).resolve().parents[1] / "gpu" / "vk" / "compat" / "
 RUN_ALL_ARGS = ["--cc", "gcc", "--cxx", "g++"]
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'tests'))
+from menu_model_fixture import menu_text  # noqa: E402
 
 HOS_H = r'''
 #pragma once
@@ -345,6 +348,9 @@ const char* name(int i) { return i >= 0 && i < (int)names.size() ? names[i].c_st
 void select_mic(int mode, const char* n, int index) { told = {mode, n, index}; }
 Host h{count, name, select_mic}, *host = &h;
 struct Row { int* value; int hi; } rows[] = {{&opts.mic, 18}};
+void menu_row_top(const int* value, int hi) {   /* (the renderer's, vk_menu.cpp: the row of this value ends at hi) */
+    for (Row& r : rows) if (r.value == value) r.hi = hi;
+}
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); return 1; } } while (0)
 @TEXT@
 @REFRESH@
@@ -442,8 +448,8 @@ def main():
     source = (ROOT / 'host' / 'nn_audio_in.c').read_text(encoding='utf-8')
     sdl_h = (ROOT / 'host' / 'hos_sdl.h').read_text(encoding='utf-8')
     # (the menu's row reaches the host: hos_mic_select, in the table it is given)
-    check('"Microphone", &opts.mic, 0,' in (ROOT / 'gpu' / 'vk' / 'vk_menu.cpp').read_text(encoding='utf-8'),
-          'the Insert menu has no Microphone row')
+    # (the menu's rows, the modules' with vk_menu.cpp's, #1633: the Microphone row is gpu/vk/menu/audio.cpp's)
+    check('"Microphone", &opts.mic, 0,' in menu_text(ROOT), 'the Insert menu has no Microphone row')
     check(re.search(r'hos_mic_count,\s*hos_mic_name,\s*hos_mic_select', (ROOT / 'host' / 'rx_backend.c').read_text(encoding='utf-8')),
           'the menu is not given the microphones')
     check('mic_want = mic_key(eq + 1);' in (ROOT / 'gpu' / 'vk' / 'vk_menu.cpp').read_text(encoding='utf-8'),
@@ -459,10 +465,13 @@ def main():
         subprocess.run([a.cc, '-std=gnu11', '-include', ENV_ON_H, '-Wall', '-Wextra', '-Werror', '-I', str(folder), str(folder / 'fixture.c'),
                         '-o', str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
-        # (the menu's side: the row's choice by name, gpu/vk/vk_menu.cpp)
-        menu = (ROOT / 'gpu' / 'vk' / 'vk_menu.cpp').read_text(encoding='utf-8')
-        fixture = MENU_FIXTURE.replace('@TEXT@', through_function(menu, 'constexpr int kMaxMics', 'const char* tx_mic('))
-        fixture = fixture.replace('@REFRESH@', block(menu, 'void mic_tell_host()', 'void save()'))
+        # (the menu's side: the row's choice by name, the Audio module's, gpu/vk/menu/audio.cpp: #1633)
+        menu = (ROOT / 'gpu' / 'vk' / 'menu' / 'audio.cpp').read_text(encoding='utf-8')
+        most = re.search(r'^constexpr int kMaxMics = \d+;.*\n', menu, re.M)
+        check(most, 'gpu/vk/menu/audio.cpp: no kMaxMics')
+        fixture = MENU_FIXTURE.replace('@TEXT@', most.group(0) +
+                                       through_function(menu, '// (longshot) the Microphone row:', 'const char* tx_mic('))
+        fixture = fixture.replace('@REFRESH@', through_function(menu, 'void mic_tell_host()', 'void mic_chosen()'))
         (folder / 'menu.cpp').write_text(fixture, encoding='utf-8')
         menu_exe = folder / 'menu'
         subprocess.run([a.cxx, '-std=c++17', '-include', ENV_ON_H, '-Wall', '-Wextra', '-Werror', str(folder / 'menu.cpp'), '-o', str(menu_exe)],

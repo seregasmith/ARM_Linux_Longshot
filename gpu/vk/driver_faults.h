@@ -1,15 +1,10 @@
 // (longshot) The programs the driver's compiler faulted on, kept out of the driver for good (vk_draw.cpp build_graphics).
 //
 // guarded_graphics catches an access violation inside vkCreateGraphicsPipelines so that one draw is lost, not the game. On
-// AMD's Windows driver (amdvlk64.dll, driver 0x800161: issue 996) the fault leaves that program's compile unfinished inside
+// AMD's Windows driver (amdvlk64.dll, driver 0x800161) the fault leaves that program's compile unfinished inside
 // the driver. Every later vkCreateGraphicsPipelines of the same program, with any state, then waits for it on a condition
-// variable that is never signalled. A full dump of the freeze on closing the pause menu (RX 6800 XT, v2.0.13) showed it:
-// - the presentation thread waited for program 6eaa646d07ea4e43's pipeline;
-// - the worker building it and a precompile thread were both inside the driver on that same program;
-// - a second precompile thread was inside the driver on 5fa56485a6b07619.
-// Both programs were among the three logged "not made (-13)" (the fault) at every start, and those two precompile threads
-// never finished ("6625 of 6627 done, nothing finished for 30 s"). There was no TDR: the GPU was idle and the driver was
-// waiting on itself.
+// variable that is never signalled: the game freezes (programs 6eaa646d07ea4e43 and 5fa56485a6b07619, logged "not made
+// (-13)" at every start), with no TDR: the GPU is idle and the driver waits on itself.
 //
 // So a program the driver faulted on is not asked of it again:
 // - in this run (Quarantine::begin answers kFaulted for it);

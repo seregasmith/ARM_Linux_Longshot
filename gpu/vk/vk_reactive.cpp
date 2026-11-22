@@ -2,9 +2,7 @@
 // at the upscale with what its target holds then (shaders/reactive_mask.comp). See vk_reactive.h.
 //
 // One copy is kept, the last made: the draws after it are the scene's last run of transparent ones (reactive_policy.h).
-// The copy and the mask are recorded in the frame's order, so with the parallel replay (RX_VK_PARALLEL), where a frame is
-// recorded in pieces at once, what this file remembers of the copy may be a piece ahead or behind: the mask is then of
-// another copy of the same target, or left out for a frame, never of another image.
+// The copy and the mask are recorded in the frame's order.
 #include "vk_reactive.h"
 
 #include <algorithm>

@@ -1,18 +1,18 @@
-# The Windows Longshot Builder (docs/releases.md): LongshotBuilder-<version>-windows-x64.zip, made without game data. It holds
+# The Windows Longshot Builder (docs/dev/reference/releases.md): LongshotBuilder-<version>-windows-x64.zip, made without game data. It holds
 # the setup (builder/setup/setup.c, built with llvm-mingw) as LongshotBuilder.exe, the builder (dotnet publish) with Longshot's
 # sources under LongshotBuilder\tools\, tools.lock, VERSION and recomplauncher.json (scripts/builder_package.py). The build
 # tools are not in it: tools.lock names them, and the setup or the launcher downloads them on the player's PC. The Windows
 # Vulkan back end is compiled too, with the same llvm-mingw: players build it on their PC, this only checks that it still
-# builds; a tag whose commit CI released already (release.yml's `checked`: its nightly, or a stable's release candidate)
+# builds; a tag whose commit CI released already (release.yml's `checked`: its nightly)
 # skips that check, which ships nothing and passed in that run. The zip carries the version (VERSION, the builder's
 # version), so it is always made again. It is a workflow artifact; called by release.yml with the version's name, it is
 # the release's. dav1d for the AV1 movies is not built here: it is in tools.lock's CPM cache (the cpm package), and the
 # zip's job checks that package's dav1d under Wine.
-# Every job runs on a Linux runner (label release): there is no Windows one (docs/forgejo-runners.md). The setup and the
+# Every job runs on a Linux runner (label release): there is no Windows one (docs/dev/reference/ci.md). The setup and the
 # Vulkan back end are cross-compiled with llvm-mingw's Linux build of tools.lock's release (scripts/builder_package.py,
 # LINUX_LLVM_MINGW), the builder (command-line only) is published for win-x64 with EnableWindowsTargeting, and the files are checked as
 # Windows files (their PE headers, resources and runtime) and started under Wine. What only a Windows PC can check is in
-# RELEASING.md, "Needs a Windows tester".
+# docs/dev/reference/releases.md, "Windows tester".
 name: Windows builder
 
 on:
@@ -22,7 +22,7 @@ on:
   workflow_call:
     inputs:
       tag:
-        description: the version's name (v3.1.0, v3.1.0-rc.1, nightly-<count>-<commit>); its files are uploaded
+        description: the version's name (v3.1.0, nightly-<count>-<commit>); its files are uploaded
         type: string
         required: true
       ref:
@@ -56,7 +56,7 @@ defaults:
 jobs:
   package:
     name: Longshot Builder zip
-    runs-on: release  # (a release's build: only the runners kept for them take it, docs/forgejo-runners.md)
+    runs-on: release  # (a release's build: only the runners kept for them take it, docs/dev/reference/ci.md)
     timeout-minutes: 30
     steps:
       - name: Check out source
@@ -103,7 +103,7 @@ jobs:
       - name: llvm-mingw
         run: echo "LLVM_MINGW=$(python -I scripts/builder_package.py llvm-mingw "$RUNNER_TEMP/llvm" --host linux)" >> "$GITHUB_ENV"
 
-      # (the Release workflow's name for the version: v3.1.0, v3.1.0-rc.1, or the nightly's nightly-<count>-<commit>; any other run
+      # (the Release workflow's name for the version: v3.1.0, or the nightly's nightly-<count>-<commit>; any other run
       # is git describe --long's, v3.0.1-3-g1a2b3c4. The builder's MSBuild version is a release's number, else 0.0.0)
       - name: Version
         run: |
@@ -113,7 +113,7 @@ jobs:
             tag=$(git describe --tags --long --match 'v[0-9]*' 2>/dev/null || echo "v0.0.0-0-g$(git rev-parse --short HEAD)")
           fi
           version=0.0.0
-          if [[ $tag =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?)$ ]]; then version=${BASH_REMATCH[1]}; fi
+          if [[ $tag =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then version=${BASH_REMATCH[1]}; fi
           echo "TAG=$tag" >> "$GITHUB_ENV"
           echo "VERSION=$version" >> "$GITHUB_ENV"
           echo "version: $tag"
@@ -153,12 +153,25 @@ jobs:
           W="$RUNNER_TEMP/win-tools/LongshotBuilder/tools"
           RX_TARGET=windows LONGSHOT_MINGW="$LLVM_MINGW" RX_CPM="$W/cpm" \
             python -I -B nx2/third_party_objects.py make "$RUNNER_TEMP/third_party_objects" --jobs "$(nproc)"
+      # (renhdrum.dll, the DualSense haptics' back end (host/haptic.c): built here from third_party/renhdrum with
+      # scripts/renhdrum.py's pinned Rust and the llvm-mingw above, so a player's build places it beside the game with no
+      # Rust on their PC. The pinned Rust's parts are kept like the downloads above, and checked by their SHA-256 each time.
+      # --target windows: this runner is Linux, and the default is the system it runs on; without it the release shipped a
+      # Linux library named renhdrum.dll, which Windows refused at the game's start with a "Bad Image" box)
+      - uses: https://github.com/actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/renhdrum-rust
+          key: renhdrum-rust-${{ hashFiles('scripts/renhdrum.py') }}
+      - name: renhdrum.dll
+        run: >-
+          python -I scripts/renhdrum.py build --target windows --llvm-mingw "$LLVM_MINGW" --cache "$RUNNER_TEMP/renhdrum-rust"
+          --out "$RUNNER_TEMP/renhdrum/renhdrum.dll"
       # (it stops when assets/pipeline_states/, the sources of the pipeline state list every release ships, hold none or one does not read)
       - name: Package folder
         run: >-
           python -I scripts/builder_package.py package "$RUNNER_TEMP/package"
           --publish "$RUNNER_TEMP/publish" --setup "$RUNNER_TEMP/LongshotBuilder-Setup.exe"
-          --third-party-objects "$RUNNER_TEMP/third_party_objects"
+          --third-party-objects "$RUNNER_TEMP/third_party_objects" --renhdrum "$RUNNER_TEMP/renhdrum/renhdrum.dll"
       # (the release's file: the setup as LongshotBuilder.exe, the package, tools.lock, VERSION and recomplauncher.json)
       - name: The zip
         run: |
@@ -193,7 +206,7 @@ jobs:
 
       # dav1d for the AV1 movies (issue 2316: the CPM cache's FFmpeg has none) is in tools.lock's CPM cache, the cpm package
       # the setup installs on the player's PC; a maintainer makes it with scripts/windows/dav1d.sh and tools.py assemble cpm
-      # --add (RELEASING.md, "Bump a tool"). That package's dav1d, checked by its SHA-256, under the test of host/dav1d_av1.c,
+      # --add (docs/dev/reference/releases.md, "Bumping a tool"). That package's dav1d, checked by its SHA-256, under the test of host/dav1d_av1.c,
       # compiled with the llvm-mingw above and run under Wine
       - name: tools.lock's dav1d
         run: |
@@ -226,7 +239,7 @@ jobs:
 
   vulkan:
     name: Windows Vulkan back end (llvm-mingw)
-    runs-on: release  # (a release's build: only the runners kept for them take it, docs/forgejo-runners.md)
+    runs-on: release  # (a release's build: only the runners kept for them take it, docs/dev/reference/ci.md)
     timeout-minutes: 45
     steps:
       - name: Check out source

@@ -20,6 +20,21 @@ int main() {
     check(after_s("x") == 30 && after_s("10s") == 30 && after_s("-5") == 30, "not a whole number: the default");
     check(after_s("999999") == 86400, "a day at most");
 
+    // (whether the file holds what the cache does, when no save ran or one failed)
+    check(unchanged(true, 500, 500), "the size the file was last read or written at: nothing new");
+    check(!unchanged(true, 501, 500), "a cache that took in more than its file holds");
+    check(!unchanged(false, 500, 500), "a size the driver did not give");
+    check(!unchanged(true, 0, 0), "an empty cache and no file");
+    Outcome saved;
+    saved.what = Outcome::kWritten;
+    check(in_file(saved), "a save that wrote it");
+    saved.what = Outcome::kSame;
+    check(in_file(saved), "a save that found nothing new");
+    for (const auto what : {Outcome::kNotRun, Outcome::kOff, Outcome::kNoCache, Outcome::kFetchFailed, Outcome::kWriteFailed, Outcome::kError}) {
+        saved.what = what;
+        check(!in_file(saved), "a save that did not get it there");
+    }
+
     // (a Steam Deck's start from Steam: 1,222 s of graphics pipelines; a start that found them: 2 s)
     check(due(1222, 30, false, false, false), "a start that compiled for 20 minutes writes it");
     check(!due(2, 30, false, false, false), "a start that found its pipelines does not");

@@ -144,6 +144,7 @@ static void text_key(const HosSdlEvent *e) {
 
 /* ---- the window ---- */
 static volatile int renderer;   /* the renderer presents into the window */
+int rx_start_failure_claim(void);   /* rx_backend.c: coordinate with every close path */
 static HANDLE renderer_up;   /* (set once rx_start has returned, ready or not: hos_renderer_wait) */
 static int fullscreen;
 static MkwVkMonitor window_monitors[HOS_MONITOR_MAX];
@@ -205,7 +206,15 @@ static void set_fullscreen(int on) {
 static DWORD WINAPI renderer_main(void *p) {
     (void)p;
     const int ok = rx_start(&vk_window);
-    if (!ok) hos_log("display: the renderer did not start: the window stays black");
+    if (!ok) {   /* (longshot) the game ends at once: behind a black window it played on with its sound until the player closed
+                    it, and only then did the window after it (host/hos_crash_dialog.c) say why. That window reads this line */
+        if (!rx_start_failure_claim()) return 0;
+        hos_log("display: the renderer did not start: the game ends, and the window after it says why");
+        hos_log_flush();
+        void hos_crash_clean_end(void);
+        hos_crash_clean_end();
+        ExitProcess(1);
+    }
     renderer = ok;
     if (ok) {   /* (a size change while it started) */
         int w = 0, h = 0;
@@ -289,8 +298,8 @@ int hos_display_init(void) {
         hos_sdl_hint(hos_sdl_load() == 3 ? "SDL_VIDEO_DRIVER" : "SDL_VIDEODRIVER", "wayland,x11");
     /* (SDL2 on Wayland: libdecor from the start. SDL2 2.32 asks for the compositor's decorations before the window's first
        configure, and a compositor that answers "the client draws them" (COSMIC) has it unmap and map the window again
-       with libdecor inside that wait, which then waits forever on a field the switch cleared: no window, no renderer
-       (#992). libdecor takes the compositor's decorations itself where they are offered; with no libdecor SDL keeps
+       with libdecor inside that wait, which then waits forever on a field the switch cleared: no window, no renderer.
+       libdecor takes the compositor's decorations itself where they are offered; with no libdecor SDL keeps
        its own. SDL3 waits on the window's state and is left alone; SDL_VIDEO_WAYLAND_PREFER_LIBDECOR still wins) */
     if (hos_sdl_load() == 2) hos_sdl_hint("SDL_VIDEO_WAYLAND_PREFER_LIBDECOR", "1");
     if (!hos_sdl_init(HOS_SDL_VIDEO | HOS_SDL_EVENTS)) {
@@ -392,7 +401,7 @@ void hos_display_loop(void) {
                 switch (e.type) {
                 case HOS_SDL_EV_QUIT:
                 case HOS_SDL_EV_CLOSE:
-                    rx_close_asked();   /* (a start still preparing the shaders keeps what it made) */
+                    rx_close_asked();
                     hos_window_closed_exit();
                 case HOS_SDL_EV_RESIZED:
                     pointer_update(0, 0);   /* publish pixels before waking the renderer's size consumer */

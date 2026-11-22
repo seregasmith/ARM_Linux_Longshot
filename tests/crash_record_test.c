@@ -139,6 +139,7 @@ volatile int hos_control_on;
 void hos_control_log(const char *line) { (void)line; }
 void hos_log_flush(void) {}
 static void hos_ab_end(void) {}   /* (host/hos_ab.c: no A/B here) */
+void hos_pad_speaker_shutdown(void) {}
 static void log_flush(void) {}
 void hos_backtrace(void) {}
 void hos_hostcall_stats(void) {}
@@ -148,6 +149,7 @@ static size_t hos_log_redact(char *out, size_t cap, const char *line) { snprintf
 /* HOS_FATAL */
 void rx_close_asked(void) {}
 void hos_fs_wait_writes(void) {}
+void hos_input_movie_close(void) {}   /* (host/input_movie.c: no recording here) */
 /* CLOSE_FINISH */
 /* CONTROL_QUIT */
 static int relaunch_asked = 1;

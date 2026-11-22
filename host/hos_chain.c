@@ -3,7 +3,7 @@
    While <path>.go exists, every wait that blocks (events, semaphores, message queues, mutexes, condition variables,
    multi-waits), every signal that can end one, every guest sleep and every present is recorded with the time, the
    thread, the object's guest address and the guest caller (lr). When <path>.go goes away (or the buffer is full,
-   about 2 million records, 64 MB), the records go to <path>. scripts/chain.py walks each frame back from its present:
+   about 2 million records, 64 MB), the records go to <path>. scripts/perf.py chain walks each frame back from its present:
    the thread that ran, the wait that stopped it, the signal that ended that wait and the thread that sent it, and so
    on to the frame before; it prints how much of the frame each thread's running time, the wake-ups and the sleeps
    take, and with HOS_SAMPLE_ALL samples of the same run, the functions on that path.
@@ -18,7 +18,7 @@
 
 volatile int hos_chain_on;
 
-typedef struct {   /* (32 bytes; scripts/chain.py reads them as "<qQQHB5x") */
+typedef struct {   /* (32 bytes; scripts/profiling/chain.py reads them as "<qQQHB5x") */
     int64_t t;          /* hos_now_ns */
     uint64_t key, lr;   /* the object's guest address (a sleep: its length in ns), the guest caller */
     uint16_t thread;    /* index into names */

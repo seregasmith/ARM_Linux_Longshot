@@ -30,6 +30,13 @@
 // from 12 logical processors and off below, which left CPUs of 6 to 11 cores without SMT serial and counted a 4-core,
 // 8-thread CPU (a Steam Deck) as 8: it is 4 here, the tier measured on 4 cores.
 //
+// The recorder thread was taken out once (19 Nov 2026) and is back, from 6 cores as before: without it the render thread
+// alone makes every one of the driver's calls, and on AMD's drivers (about twice NVIDIA's CPU time a call) the market's
+// densest view, ~2,500 draws a frame, fell 16-25% behind main on an RX 7900 XTX, RX 9070 XT and RX 9060 XT. Its known costs:
+// woken 20-25 times a frame, its short sleeps let an i7-9700K's clock control slow every core (Kokiri Forest 15 fps against
+// 48), and kept spinning it cost a Ryzen 9 7900X 3-11%. The segment workers, which recorded a big command buffer's segments
+// in parallel, stay removed (19 Nov 2026: 3-35% slower on every PC measured).
+//
 // The environment's switches stay the overrides they were, for testing: RX_VK_ASYNC set chooses the render thread and
 // RX_VK_RECORDER set the recorder, each over its half of the row; unset, the row decides. Read once, at the start: a change of
 // the row takes effect at the next start (the replay's async_on and the recorder's mode are read once).

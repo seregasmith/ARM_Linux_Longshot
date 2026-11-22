@@ -1,4 +1,4 @@
-"""The options scripts/fsr3_shaders.py compiles the FSR 3.1 passes under are names the vendored SDK reads.
+"""The options scripts/shaders.py fsr3 compiles the FSR 3.1 passes under are names the vendored SDK reads.
 
 Each -D the script passes is a promise about the inputs (the depth is reversed, the motion is at the render size), and
 AMD's GLSL keeps it only where an #if asks for that exact name. A misspelt one is dropped without a word: glslang
@@ -19,9 +19,9 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("fsr3_shaders_under_test", ROOT / "scripts" / "fsr3_shaders.py")
-fsr3_shaders = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(fsr3_shaders)
+spec = importlib.util.spec_from_file_location("shaders_under_test", ROOT / "scripts" / "shaders.py")
+shaders = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(shaders)
 
 CONDITION = re.compile(r"^[ \t]*#[ \t]*(?:if|ifdef|ifndef|elif)\b(.*)$", re.M)
 IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
@@ -44,7 +44,7 @@ def compiled_files(passes):
     as the script's -I paths do). Only this family's files, so an option of another family's spelling passed to it
     is caught too. AMD's CMake lists are not compiled, and the _hlsl.h callbacks are the HLSL build's (FFX_GLSL picks
     the _glsl.h ones)"""
-    gpu = fsr3_shaders.GPU
+    gpu = shaders.FFX_GPU
     roots = [gpu] + sorted(d for d in gpu.iterdir() if d.is_dir())
     todo, seen = sorted(passes.glob("*.glsl")), set()
     while todo:
@@ -71,36 +71,36 @@ def defined(options):
 class OptionNameTests(unittest.TestCase):
     def test_every_option_is_one_the_sdk_reads(self):
         families = [
-            ("upscaler", fsr3_shaders.OPTIONS + ["-DFFX_FSR3UPSCALER_OPTION_APPLY_SHARPENING=0"]
-             + [d for _, _, extra in fsr3_shaders.VARIANTS for d in extra], fsr3_shaders.PASSES),
-            ("frame interpolation", fsr3_shaders.FI_OPTIONS
-             + [d for _, _, extra in fsr3_shaders.FI_VARIANTS for d in extra], fsr3_shaders.FI_PASSES),
-            ("optical flow", fsr3_shaders.OF_OPTIONS
-             + [d for _, _, extra in fsr3_shaders.OF_VARIANTS for d in extra], fsr3_shaders.OF_PASSES),
+            ("upscaler", shaders.FSR3_OPTIONS + ["-DFFX_FSR3UPSCALER_OPTION_APPLY_SHARPENING=0"]
+             + [d for _, _, extra in shaders.FSR3_VARIANTS for d in extra], shaders.FSR3_PASSES),
+            ("frame interpolation", shaders.FI_OPTIONS
+             + [d for _, _, extra in shaders.FI_VARIANTS for d in extra], shaders.FI_PASSES),
+            ("optical flow", shaders.OF_OPTIONS
+             + [d for _, _, extra in shaders.OF_VARIANTS for d in extra], shaders.OF_PASSES),
         ]
         for family, options, passes in families:
             read = asked(*compiled_files(passes))
             self.assertTrue(read, "%s: no #if found under %s" % (family, passes))
             for name in defined(options):
                 with self.subTest(family=family, option=name):
-                    self.assertTrue(name in read, "%s: scripts/fsr3_shaders.py passes -D%s, which no #if in the SDK "
+                    self.assertTrue(name in read, "%s: scripts/shaders.py fsr3 passes -D%s, which no #if in the SDK "
                                     "files its passes compile reads: a misspelt option is dropped without a word"
                                     % (family, name))
 
     def test_every_interpolation_option_is_set(self):
-        read = {n for n in asked(*compiled_files(fsr3_shaders.FI_PASSES))
+        read = {n for n in asked(*compiled_files(shaders.FI_PASSES))
                 if n.startswith("FFX_FRAMEINTERPOLATION_OPTION_")}
         self.assertTrue(read)
-        self.assertEqual(sorted(read - set(defined(fsr3_shaders.FI_OPTIONS))), [],
-                         "options the interpolation passes ask about that scripts/fsr3_shaders.py leaves unset")
+        self.assertEqual(sorted(read - set(defined(shaders.FI_OPTIONS))), [],
+                         "options the interpolation passes ask about that scripts/shaders.py fsr3 leaves unset")
 
     def test_interpolation_motion_is_render_size(self):
         """The motion vk_fsr3fi.cpp hands the passes is the render size's (vk_fsr3fi.h, Inputs), so the one pass that
         reads it, reconstruct-and-dilate, is compiled with the SDK's low-resolution option on"""
-        header = (fsr3_shaders.GPU / "frameinterpolation"
+        header = (shaders.FFX_GPU / "frameinterpolation"
                   / "ffx_frameinterpolation_reconstruct_dilated_velocity_and_previous_depth.h")
         self.assertIn("FFX_FRAMEINTERPOLATION_OPTION_LOW_RES_MOTION_VECTORS", asked(header))
-        self.assertIn("-DFFX_FRAMEINTERPOLATION_OPTION_LOW_RES_MOTION_VECTORS=1", fsr3_shaders.FI_OPTIONS)
+        self.assertIn("-DFFX_FRAMEINTERPOLATION_OPTION_LOW_RES_MOTION_VECTORS=1", shaders.FI_OPTIONS)
 
 
 if __name__ == "__main__":

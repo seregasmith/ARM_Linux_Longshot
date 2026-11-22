@@ -98,6 +98,7 @@ Plan compute_warm_plan() { return {}; }
 void precompile_built_write(size_t n, uint64_t) {
     if (FILE* f = fopen(precompile_built_path().c_str(), "wb")) fprintf(f, "%u\n", (unsigned)n), fclose(f);
 }
+void precompile_built_whole() {}
 void pcache_init() {}
 void driver_env_note() {}   // (vk_draw.cpp: a completed build records its driver environment; nothing to record here)
 void pipeline_cache_save(bool) {}
@@ -107,6 +108,7 @@ thread_local precompile_save::Outcome pcache_save_outcome;   // (vk_draw.cpp: wh
 #endif
 struct NoteRef {};
 std::vector<NoteRef> pipe_notes_refs() { return std::vector<NoteRef>(3); }
+std::vector<NoteRef> start_note_refs(bool) { return pipe_notes_refs(); }   // (vk_draw.cpp: the start's one walk)
 
 /// The step's work, begun. through: done at once. crash: the process ends there, nothing run after it. quit-screen: it goes on
 /// until the close stops it; the other quits and kill: it never stops (no start-up screen, or a compile longer than the close

@@ -14,10 +14,12 @@ FIXTURE = r"""
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <limits>
 #include <vector>
 
 static bool fail_map, fail_fence, fail_wait;
@@ -86,6 +88,11 @@ int main(int argc, char** argv) {
     const std::string test = argc > 1 ? argv[1] : "";
     std::vector<uint32_t> code(4, 0), data(64, 7);
     if (test == "healthy") {
+        assert(wmma16_result_matches(0.0f, 0.0f));
+        assert(wmma16_result_matches(0.00001f, 0.0f));
+        assert(!wmma16_result_matches(1.0f, 0.0f));
+        assert(!wmma16_result_matches(std::numeric_limits<float>::quiet_NaN(), 0.0f));
+        assert(!wmma16_result_matches(std::numeric_limits<float>::infinity(), 0.0f));
         assert(run_shader(code, data)); assert(submits == 1);
         assert(destroyed_buffers == 1 && freed_memory == 1 && destroyed_pools == 2 && destroyed_pipelines == 1);
     } else if (test == "map-fail") {
@@ -126,7 +133,7 @@ def main():
     p.add_argument("--cxx", default="g++")
     a = p.parse_args()
     coopmat = (a.source / "gpu/vk/vk_coopmat.cpp").read_text(encoding="utf-8")
-    fixture = FIXTURE.replace("/* ACTUAL */", block(coopmat, "bool run_shader("))
+    fixture = FIXTURE.replace("/* ACTUAL */", block(coopmat, "bool wmma16_result_matches(") + "\n" + block(coopmat, "bool run_shader("))
     cases = ["healthy", "map-fail", "fence-fail", "wait-fail"]
     with tempfile.TemporaryDirectory(prefix="coopmat-probe-") as temp:
         cpp, exe = Path(temp) / "fixture.cpp", Path(temp) / "fixture.exe"

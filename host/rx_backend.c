@@ -3,6 +3,9 @@
    Vulkan device leaves the wgr_* stand-ins in place (host/rx_nowgpu.c, host/posix/linux_stubs.c: once the WebGPU
    renderer's functions, gpu/render, which is built no more), and nothing is drawn (logged). */
 #include "hos.h"
+#ifndef LONGSHOT_ENV_H   /* (env_on: the switches' one rule) */
+#include "../gpu/vk/compat/longshot_env.h"
+#endif
 #include <stdlib.h>
 #include <string.h>
 #define WIN32_LEAN_AND_MEAN
@@ -11,6 +14,7 @@
 #include "../gpu/vk/vk_api.h"
 #include "../gpu/vk/dlss_math.h"
 #include "control.h"
+#include "../gpu/vk/compat/longshot_env.h"   /* (env_value_off: the switches' one rule) */
 #include "audio_output_devices.h"
 int hos_monitor_count(void);
 int hos_monitor_info(int index, MkwVkMonitor *out);
@@ -72,6 +76,9 @@ const char *hos_nfc_dir(void);
 int hos_nfc_scan(int start);
 const char *hos_nfc_scan_name(void);
 void hos_bind(int set, int button, int slot, int code);
+int hos_reset_binding(int button);
+int hos_binding_is_default(int button);
+int hos_rebind_control(int set, int button, int slot, int code, uint64_t approved, uint64_t *conflicts);
 int hos_prompts_face(void);         /* prompts.c */
 int hos_prompts_live_parts(void);   /* prompts.c */
 const char *hos_perf_info(char *map, int cap, int64_t movie[5], float pose[5], int *has_pose);   /* hos_main.c */
@@ -94,6 +101,119 @@ static inline int marks_clear_256(const uint8_t *m) {
     for (int i = 0; i < 32; i++) any |= w[i];
     return !any;
 }
+/* (the vector walk, on x86-64 and arm64: the marks read 256 to a test while none is set, else 64 to a test, in vector loads
+   from any page (SSE2's 16-byte loads, AVX2's 32-byte ones in a build for AVX2, NEON's 16-byte ones on arm64), then each
+   mark read set taken in turn. The word loads (marks_clear_256, and collect_in's 32- and 8-mark tests) test only from a
+   page aligned to their width: a range's unaligned head and tail, and the pages around each set mark, go 32, 8 and 1 at a
+   time. HOS_COLLECT_VECTOR=0: the word walk, for a same-build A/B.
+   The vector loads are the asm's own, not C accesses, so they race nothing in the C model (a memcpy of the marks is a
+   plain read of bytes the writers store atomically): arm64's ld1 of .16b elements is sixteen single-copy atomic byte
+   reads, and x86's movdqu and vmovdqu read each byte whole; the writers' granule. Like the word loads they order nothing:
+   they only choose the pages the walk reads again and clears with the same relaxed load and acquire exchange, so the
+   pages found, their order, the marks cleared and what a found page's exchange makes visible are the word walk's, and so
+   is what a pass does with a mark a producer publishes while it runs: a page after one just taken is decided by a read
+   made after that take (a window's mask is used on only while its next set mark is the next page, else the marks are read
+   again from the page after the take), so it is taken in this pass if its mark is set by then and left set for the next
+   pass if not. The asm is GCC's and clang's: another compiler, or another CPU, builds the word walk alone) */
+#ifndef HOS_MARKS_VECTOR
+#if (defined(__x86_64__) || defined(__aarch64__)) && (defined(__GNUC__) || defined(__clang__))
+#define HOS_MARKS_VECTOR 1
+#else
+#define HOS_MARKS_VECTOR 0
+#endif
+#endif
+#if HOS_MARKS_VECTOR
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#define MARKS_LOADS "16-byte loads (NEON)"
+typedef uint8x16_t marks16;
+static inline marks16 marks_load16(const uint8_t *m) {
+    marks16 v;
+    __asm__ __volatile__("ld1 {%0.16b}, [%1]" : "=w"(v) : "r"(m), "m"(*(const uint8_t (*)[16])m));
+    return v;
+}
+#elif defined(__AVX2__)
+#include <immintrin.h>
+#define MARKS_LOADS "32-byte loads (AVX2)"
+static inline __m256i marks_load32(const uint8_t *m) {
+    __m256i v;
+    __asm__ __volatile__("vmovdqu %1, %0" : "=x"(v) : "m"(*(const uint8_t (*)[32])m));
+    return v;
+}
+#else
+#include <emmintrin.h>
+#define MARKS_LOADS "16-byte loads (SSE2)"
+typedef __m128i marks16;
+static inline marks16 marks_load16(const uint8_t *m) {
+    marks16 v;
+    __asm__ __volatile__("movdqu %1, %0" : "=x"(v) : "m"(*(const uint8_t (*)[16])m));
+    return v;
+}
+#endif
+/* (bit i: m[i] read set, i < 64) */
+static inline uint64_t marks_set64(const uint8_t *m) {
+#if defined(__aarch64__)
+    const marks16 a = marks_load16(m), b = marks_load16(m + 16), c = marks_load16(m + 32), d = marks_load16(m + 48);
+    if (!vmaxvq_u8(vorrq_u8(vorrq_u8(a, b), vorrq_u8(c, d)))) return 0;   /* (none set: nearly every test) */
+    /* (each set mark's bit of its byte, summed in pairs three times: byte j then holds marks 8j to 8j + 7, each its own
+       bit, so no sum carries) */
+    static const uint8_t bits[16] = {1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128};
+    const uint8x16_t k = vld1q_u8(bits);
+    const uint8x16_t ab = vpaddq_u8(vandq_u8(vtstq_u8(a, a), k), vandq_u8(vtstq_u8(b, b), k));
+    const uint8x16_t cd = vpaddq_u8(vandq_u8(vtstq_u8(c, c), k), vandq_u8(vtstq_u8(d, d), k));
+    const uint8x16_t abcd = vpaddq_u8(ab, cd);
+    return vgetq_lane_u64(vreinterpretq_u64_u8(vpaddq_u8(abcd, abcd)), 0);
+#elif defined(__AVX2__)
+    const __m256i a = marks_load32(m), b = marks_load32(m + 32), o = _mm256_or_si256(a, b);
+    if (_mm256_testz_si256(o, o)) return 0;   /* (none set: nearly every test) */
+    const __m256i z = _mm256_setzero_si256();
+    const uint64_t za = (uint32_t)_mm256_movemask_epi8(_mm256_cmpeq_epi8(a, z)),
+                   zb = (uint32_t)_mm256_movemask_epi8(_mm256_cmpeq_epi8(b, z));
+    return ~(za | zb << 32);   /* (the marks not 0) */
+#else
+    const marks16 a = marks_load16(m), b = marks_load16(m + 16), c = marks_load16(m + 32), d = marks_load16(m + 48);
+    const __m128i z = _mm_setzero_si128();
+    if (_mm_movemask_epi8(_mm_cmpeq_epi8(_mm_or_si128(_mm_or_si128(a, b), _mm_or_si128(c, d)), z)) == 0xFFFF) return 0;
+    const uint64_t za = (uint16_t)_mm_movemask_epi8(_mm_cmpeq_epi8(a, z)), zb = (uint16_t)_mm_movemask_epi8(_mm_cmpeq_epi8(b, z)),
+                   zc = (uint16_t)_mm_movemask_epi8(_mm_cmpeq_epi8(c, z)), zd = (uint16_t)_mm_movemask_epi8(_mm_cmpeq_epi8(d, z));
+    return ~(za | zb << 16 | zc << 32 | zd << 48);   /* (the marks not 0) */
+#endif
+}
+/* (the 256 marks from m all clear? The widest step of the word walk (marks_clear_256) in the vector loads, from any page:
+   with 64 a test the long ranges, where nearly every mark is clear, were no faster than the word walk's 256, or slower
+   (SSE2: 0.9 times its speed game-free). Four accumulators, so the loads do not wait for each other) */
+static inline int marks_vclear_256(const uint8_t *m) {
+#if defined(__aarch64__)
+    marks16 a = marks_load16(m), b = marks_load16(m + 16), c = marks_load16(m + 32), d = marks_load16(m + 48);
+    for (int i = 64; i < 256; i += 64) {
+        a = vorrq_u8(a, marks_load16(m + i)), b = vorrq_u8(b, marks_load16(m + i + 16));
+        c = vorrq_u8(c, marks_load16(m + i + 32)), d = vorrq_u8(d, marks_load16(m + i + 48));
+    }
+    return !vmaxvq_u8(vorrq_u8(vorrq_u8(a, b), vorrq_u8(c, d)));
+#elif defined(__AVX2__)
+    __m256i a = marks_load32(m), b = marks_load32(m + 32);
+    for (int i = 64; i < 256; i += 64) a = _mm256_or_si256(a, marks_load32(m + i)), b = _mm256_or_si256(b, marks_load32(m + i + 32));
+    a = _mm256_or_si256(a, b);
+    return _mm256_testz_si256(a, a);
+#else
+    marks16 a = marks_load16(m), b = marks_load16(m + 16), c = marks_load16(m + 32), d = marks_load16(m + 48);
+    for (int i = 64; i < 256; i += 64) {
+        a = _mm_or_si128(a, marks_load16(m + i)), b = _mm_or_si128(b, marks_load16(m + i + 16));
+        c = _mm_or_si128(c, marks_load16(m + i + 32)), d = _mm_or_si128(d, marks_load16(m + i + 48));
+    }
+    return _mm_movemask_epi8(_mm_cmpeq_epi8(_mm_or_si128(_mm_or_si128(a, b), _mm_or_si128(c, d)), _mm_setzero_si128())) == 0xFFFF;
+#endif
+}
+_Static_assert(A64_DIRTY_PAGES >= 64, "the vector walk reads 64 marks inside the array");
+/* (the marks of pages p, p + 1, ... below p1 read set: bit i for page p + i. With fewer than 64 left, the 64 marks that
+   end at p1, or that begin at page 0, are read and those outside [p, p1) dropped: all inside the array, as
+   p1 <= A64_DIRTY_PAGES) */
+static inline uint64_t marks_from(uint64_t p, uint64_t p1) {
+    if (p + 64 <= p1) return marks_set64(&a64_dirty[p]);
+    const uint64_t w = p1 >= 64 ? p1 - 64 : 0;
+    return (marks_set64(&a64_dirty[w]) >> (p - w)) & ((1ull << (p1 - p)) - 1);
+}
+#endif
 static int64_t collect_in(const uint64_t (*ranges)[2], int nranges, uint32_t **pages) {
     /* (HOS_COLLECT_WIDE=0: 32 marks a step at most, as before; the pages found are the same either way, so HOS_AB may flip it
        between two walks: host/hos_ab.c) */
@@ -103,31 +223,67 @@ static int64_t collect_in(const uint64_t (*ranges)[2], int nranges, uint32_t **p
         wide_set = !(e && e[0] == '0');
     }
     const int wide = hos_ab_value("HOS_COLLECT_WIDE", wide_set);
+#if HOS_MARKS_VECTOR
+    /* (HOS_COLLECT_VECTOR=0: the word walk, as before; read at the first collection, and logged once) */
+    static int vector_on = -1;
+    int vector = __atomic_load_n(&vector_on, __ATOMIC_RELAXED);
+    if (vector < 0) {
+        const char *e = getenv("HOS_COLLECT_VECTOR");
+        int unread = -1;
+        vector = !(e && env_value_off(e));   /* (the switches' one rule: =0, false, off, no or empty turn it off) */
+        if (__atomic_compare_exchange_n(&vector_on, &unread, vector, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+            hos_log("mem: the write marks' walk: %s", vector ? "256 marks a test, else 64, in " MARKS_LOADS " (HOS_COLLECT_VECTOR=0: word loads)"
+                                                             : "word loads (HOS_COLLECT_VECTOR=0)");
+    }
+#endif
     size_t n = 0, cap = 4096;
     uint32_t *out = malloc(cap * sizeof *out);
     for (int r = 0; r < nranges; r++) {
         const uint64_t lo = ranges[r][0], hi = ranges[r][1] < hos_guest_size() ? ranges[r][1] : hos_guest_size();
         uint64_t p1 = (hi + 4095) >> 12;
         if (p1 > A64_DIRTY_PAGES) p1 = A64_DIRTY_PAGES;
+#if HOS_MARKS_VECTOR
+        uint64_t at = 0, set = 0;   /* (the vector walk: the marks of pages at, at + 1, ... read set and not yet taken) */
+#endif
         for (uint64_t p = lo >> 12; p < p1;) {
-            if (wide && !(p & 255) && p + 256 <= p1 && marks_clear_256(&a64_dirty[p])) {   /* (256 pages at a time while none is marked) */
-                p += 256;
-                continue;
-            }
-            if (!(p & 31) && p + 32 <= p1) {   /* (32 pages at a time while none is marked) */
-                uint64_t w[4];
-                memcpy(w, &a64_dirty[p], 32);
-                if (!(w[0] | w[1] | w[2] | w[3])) {
-                    p += 32;
+#if HOS_MARKS_VECTOR
+            if (vector) {   /* (256, else 64 marks a test, from any page; then each mark read set, in order) */
+                if (!set) {
+                    if (p + 256 <= p1 && __builtin_expect(marks_vclear_256(&a64_dirty[p]), 1)) {   /* (256 clear marks) */
+                        p += 256;
+                        continue;
+                    }
+                    set = marks_from(p, p1);
+                    at = p;
+                    if (!set) {
+                        p += 64;
+                        continue;
+                    }
+                }
+                p = at + (uint64_t)__builtin_ctzll(set);
+                set &= set - 1;
+            } else
+#endif
+            {
+                if (wide && !(p & 255) && p + 256 <= p1 && marks_clear_256(&a64_dirty[p])) {   /* (256 pages at a time while none is marked) */
+                    p += 256;
                     continue;
                 }
-            }
-            if (!(p & 7) && p + 8 <= p1) {   /* (eight pages a load while none is marked) */
-                uint64_t w;
-                memcpy(&w, &a64_dirty[p], 8);
-                if (!w) {
-                    p += 8;
-                    continue;
+                if (!(p & 31) && p + 32 <= p1) {   /* (32 pages at a time while none is marked) */
+                    uint64_t w[4];
+                    memcpy(w, &a64_dirty[p], 32);
+                    if (!(w[0] | w[1] | w[2] | w[3])) {
+                        p += 32;
+                        continue;
+                    }
+                }
+                if (!(p & 7) && p + 8 <= p1) {   /* (eight pages a load while none is marked) */
+                    uint64_t w;
+                    memcpy(&w, &a64_dirty[p], 8);
+                    if (!w) {
+                        p += 8;
+                        continue;
+                    }
                 }
             }
             if (__atomic_load_n(&a64_dirty[p], __ATOMIC_RELAXED) && __atomic_exchange_n(&a64_dirty[p], 0, __ATOMIC_ACQUIRE)) {
@@ -135,6 +291,12 @@ static int64_t collect_in(const uint64_t (*ranges)[2], int nranges, uint32_t **p
                 out[n++] = (uint32_t)p;
             }
             p++;
+#if HOS_MARKS_VECTOR
+            /* (the reads that decide the pages after one taken come after it, as the word walk's do: the window's mask is
+               kept only while the next mark it read set is the next page; before a gap the marks are read again from here, so
+               a mark published while this page was taken, in the gap, is taken in this pass) */
+            if (vector && set && at + (uint64_t)__builtin_ctzll(set) != p) set = marks_from(p, p1), at = p;
+#endif
         }
     }
     *pages = out;
@@ -235,12 +397,16 @@ extern volatile int hos_fps_timing;
 static void host_fps_timing(int on) { __atomic_store_n(&hos_fps_timing, on != 0, __ATOMIC_RELAXED); }
 int hos_thread_times_of(const char *name, int64_t out[3]);   /* (hos_thread.c) */
 static int host_main_thread_times(int64_t out[3]) { return hos_thread_times_of("sead::MainThread", out); }
-/* (version 28, issue 1280) the renderer's C++ allocations that its new_handler gave up on: the size is not known there */
+/* (version 28) the renderer's C++ allocations that its new_handler gave up on: the size is not known there */
 static void host_out_of_memory(const char *what) { hos_alloc_gave_up(0, what); }
 static void host_slept_ns(int64_t out[2]) {
     out[0] = __atomic_load_n(&hos_poll_slept_ns, __ATOMIC_RELAXED);
     out[1] = hos_slept_ns[1] + __atomic_load_n(&hos_acquire_slept_ns, __ATOMIC_RELAXED);
 }
+
+/* (longshot) MkwVkHost.ab_value (version 36): host/hos.h's hos_ab_value, an inline function, as one the renderer can call. Its
+   cost outside an A/B is one load, as for the host's own readers */
+static int host_ab_value(const char *name, int normal) { return hos_ab_value(name, normal); }
 
 /* (longshot) typed text for the Insert menu's text fields (MkwVkHost.take_text): the window's thread puts each character and
    editing key in (host/display.c WM_CHAR and WM_KEYDOWN, host/posix/display_sdl.c SDL's text input and key events), the menu
@@ -287,6 +453,42 @@ static int host_take_text(int focus, uint32_t *out, int max) {
     return n;
 }
 
+/* (hookshot) the Mods tab: host/mods.c, host/cheats.c */
+int hos_mod_info(int i, const char **name, const char **detail, const char **note, int *enabled);
+void hos_mod_edit(int i, int op);
+uint64_t hos_mods_changed(void);
+int hos_cheat_info(int i, const char **name, const char **mod, const char **note, int *kind, int *on);
+void hos_cheat_set(int i, int on);
+
+int nvn_output_preview_request(uint32_t width, uint32_t height);
+/* (longshot, issue 1113) MkwVkHost's input recordings (version 42): host/input_movie.c's start, stop and status, for the
+   Insert menu's Debug tab */
+#include "input_movie.h"
+int hos_input_record_start(const char *path, int route);
+void hos_input_record_stop(void);
+int hos_input_play_start(const char *path, int sync, float sync_max);
+void hos_input_play_stop(void);
+void hos_input_movie_status(HosInputMovieStatus *out);
+static int host_input_record(int start) {
+    if (start) return hos_input_record_start(NULL, 0);
+    hos_input_record_stop();
+    return 1;
+}
+int hos_input_recording_at(int i, char *out, size_t cap);
+static int host_input_play(int start, int sync, const char *path) {
+    if (start) return hos_input_play_start(path, sync, 1.0f);
+    hos_input_play_stop();
+    return 1;
+}
+static void host_input_status(MkwVkInputStatus *out) {
+    HosInputMovieStatus s;
+    hos_input_movie_status(&s);
+    memset(out, 0, sizeof *out);
+    out->mode = s.mode, out->started = s.started, out->held = s.held, out->diverged = s.diverged;
+    out->frame = s.frame, out->end = s.end, out->link_apart = s.link_apart, out->syncs = s.syncs, out->largest = s.largest;
+    snprintf(out->path, sizeof out->path, "%s", s.path);
+    snprintf(out->why, sizeof out->why, "%s", s.why);
+}
 static const MkwVkHost vk_host = {
     MKWVK_API_VERSION, host_log, hos_guest_base, hos_guest_size, hos_gpu_ptr, nvn_gpu_guest, nvn_gpu_read,
     nvn_gpu_write, host_collect, host_free_pages, host_mark_written, hos_ticks, hos_now_ns, nvn_tex_layout,
@@ -302,6 +504,14 @@ static const MkwVkHost vk_host = {
     hos_sdl_rumble_test,
     hos_nfc_count, hos_nfc_name, hos_nfc_tap, hos_nfc_state, hos_nfc_dir, hos_nfc_scan, hos_nfc_scan_name,
     hos_ab_frame,   /* (version 34, longshot: the frame trace's ab_side, host/hos_ab.c) */
+    hos_mod_info, hos_mod_edit, hos_mods_changed, hos_cheat_info, hos_cheat_set,
+    host_ab_value,  /* (version 36, longshot: a renderer switch's A/B value, host/hos_ab.c) */
+    nvn_output_preview_request,
+    host_input_record, host_input_play, host_input_status,   /* (version 42, longshot: input recordings, host/input_movie.c) */
+    hos_input_recording_at,
+    hos_reset_binding,
+    hos_rebind_control,
+    hos_binding_is_default,
 };
 
 static const MkwVkRenderer *vk;   /* the Vulkan back end, when it was chosen and started */
@@ -442,7 +652,22 @@ int rx_prepare_shaders(void) {
 }
 /* (longshot) the window is being closed: a back end still preparing its shaders stops and keeps what it made first (a few
    seconds at most). One without the export (an older one) has nothing to keep */
+#ifndef _WIN32
+/* Startup failure and all close callers share one claim, before either can end the process or clean up. */
+static int rx_end_claim;   /* 0 neither, 1 close, 2 startup failure */
+int rx_start_failure_claim(void) {
+    int expected = 0;
+    return __atomic_compare_exchange_n(&rx_end_claim, &expected, 2, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+}
+#endif
 void rx_close_asked(void) {
+#ifndef _WIN32
+    int expected = 0;
+    if (!__atomic_compare_exchange_n(&rx_end_claim, &expected, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE) && expected == 2) {
+        /* The renderer has already claimed the failure and will exit; do not race it with close cleanup. */
+        for (;;) Sleep(1000);
+    }
+#endif
     /* (first, before anything that takes time: the player asked to quit, so however the process ends from here (a second
        close of a window that stopped answering) the crash window says nothing; a crash still counts: host/hos_crash_dialog.h) */
     void hos_crash_quit_asked(void);
@@ -473,11 +698,39 @@ void rx_wait_writebacks_reading(const void *p, uint64_t n) {
 }
 void rx_nvn_finish(void) { vk ? vk->nvn_finish() : wgr_nvn_finish(); }
 static volatile LONG presents;   /* (the frames shown, for the camera jitter below) */
-void rx_nvn_present(const nvn_tex *t, const int crop[4]) {
+static uint64_t control_picture;
+
+static void control_picture_note(const nvn_tex *t, const int crop[4]) {
+    const unsigned tw = t ? t->d.width : 0, th = t ? t->d.height : 0;
+    const int cropped = crop && crop[2] > 0 && crop[3] > 0;
+    const unsigned w = cropped ? (unsigned)crop[2] : tw, h = cropped ? (unsigned)crop[3] : th;
+    /* Keep both pairs in one snapshot. 16 bits per side covers the supported output sizes. */
+    const uint64_t value = tw && th && tw <= UINT16_MAX && th <= UINT16_MAX && w <= UINT16_MAX && h <= UINT16_MAX
+        ? (uint64_t)tw << 48 | (uint64_t)th << 32 | (uint64_t)w << 16 | h : 0;
+    __atomic_store_n(&control_picture, value, __ATOMIC_RELAXED);
+}
+
+int rx_control_picture(HosControlPicture *out) {
+    const uint64_t value = __atomic_load_n(&control_picture, __ATOMIC_RELAXED);
+    if (!value) return 0;
+    *out = (HosControlPicture){(unsigned)(value >> 48), (uint16_t)(value >> 32),
+                              (uint16_t)(value >> 16), (uint16_t)value};
+    return 1;
+}
+
+static void nvn_present_with_generation(const nvn_tex *t, const int crop[4], uint64_t generation) {
     InterlockedIncrement(&presents);
     hos_slow_frame_present();   /* (HOS_SLOW_FRAMES: a late frame's samples written out, host/slow_frames.c) */
     hos_ab_present();   /* (longshot) HOS_AB: the frame counted for its side (host/hos_ab.c) */
-    vk ? vk->nvn_present(t, crop) : wgr_nvn_present(t, crop);
+    if (hos_control_on) control_picture_note(t, crop);
+    if (vk && generation && vk->nvn_present_trial) vk->nvn_present_trial(t, crop, generation);
+    else if (vk) vk->nvn_present(t, crop);
+    else wgr_nvn_present(t, crop);
+}
+
+void rx_nvn_present(const nvn_tex *t, const int crop[4]) { nvn_present_with_generation(t, crop, 0); }
+void rx_nvn_present_trial(const nvn_tex *t, const int crop[4], uint64_t generation) {
+    nvn_present_with_generation(t, crop, generation);
 }
 /* (longshot, nx2/oot_jitter.py) the temporal upscaler's camera jitter (NVIDIA DLSS, AMD FSR 4: gpu/vk/vk_temporal.cpp): this frame's sub-pixel offset of the scene's projection, in clip
    space (what P[0][2] and P[1][2] get), into out, for the projection matrix at guest address projection (row major, as the
@@ -555,6 +808,22 @@ void rx_nvn_texture_released(const nvn_tex *t) {
     }
     vk ? vk->nvn_texture_released(t) : wgr_nvn_texture_released(t);
 }
+int rx_output_preview_stage(const nvn_tex *targets) {
+    return started && vk && vk->output_preview_stage && vk->output_preview_stage(targets);
+}
+
+int rx_output_preview_retired(uint64_t last_serial) {
+    return started && vk && vk->output_preview_retired && vk->output_preview_retired(last_serial);
+}
+
+int rx_output_trial_phase(uint64_t serial, int cancel) {
+    return started && vk && vk->output_trial_phase ? vk->output_trial_phase(serial, cancel) : OUTPUT_TRIAL_EXPIRED;
+}
+
+int rx_output_trial_publish(uint64_t serial, void (*apply)(void *, uint64_t), void *state) {
+    return started && vk && vk->output_trial_publish && vk->output_trial_publish(serial, apply, state);
+}
+
 void rx_nvn_texture_created(const nvn_tex *t) {
     if (!started && t) {
         early_call c = {4, 0};
@@ -567,9 +836,24 @@ void rx_nvn_program_released(const nvn_prog *p) { vk ? vk->nvn_program_released(
 void rx_nvn_program_created(const nvn_prog *p) {
     if (vk && vk->nvn_program_created) vk->nvn_program_created(p);
 }
+/* (longshot) A texture's texels read or written by the CPU (nvnTextureReadTexels / WriteTexels) wait in the Vulkan back end
+   for the GPU to finish everything submitted before (vk_replay.cpp finish), and that work can itself wait for a signal the
+   game's main thread makes later (seen with the next frame's work held at OoT's frame limiter). The calling thread held its
+   virtual core through that wait, and the main thread's frame needed a worker allowed on that core only: SceneLowPriority's
+   WriteTexels at an area change (and BootupBackgroundWorkThread's at the boot) held core 2 for ~1 s (until the present gave
+   up waiting for the signal, RX_VK_FRAME_GATE_MS), ModuleSystemWorker2 waited for it and the game stood still for that
+   second. The core is given up for the call, as for an invalidate or a remap (below). HOS_TEXELS_KEEP_CORE=1: kept, as
+   before (the switches' one rule: 1, true, yes or on) */
+static int texels_keep_core(void) {
+    static int keep = -1;
+    if (keep < 0) keep = env_on("HOS_TEXELS_KEEP_CORE");
+    return keep;
+}
 void rx_nvn_read_texels(const nvn_tex *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst,
                         size_t row, size_t img) {
+    const int away = texels_keep_core() ? 0 : hos_vcore_away();
     vk ? vk->nvn_read_texels(t, level, layer0, r, dst, row, img) : wgr_nvn_read_texels(t, level, layer0, r, dst, row, img);
+    if (away) hos_vcore_back();
 }
 void rx_nvn_write_texels(const nvn_tex *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, const uint8_t *src,
                          size_t row, size_t img) {
@@ -591,8 +875,10 @@ void rx_nvn_write_texels(const nvn_tex *t, unsigned level, unsigned layer0, cons
             }
         }
     }
+    const int away = texels_keep_core() ? 0 : hos_vcore_away();   /* (the wait for the GPU: texels_keep_core above) */
     vk ? vk->nvn_write_texels(t, level, layer0, r, src, row, img)
        : wgr_nvn_write_texels(t, level, layer0, r, src, row, img);
+    if (away) hos_vcore_back();
 }
 void rx_nvn_invalidate(uint64_t gpu, uint64_t size) {
     /* (longshot) nothing there it can wait for (the back end's lock-free look: nothing ever written back, no texture the GPU
@@ -612,7 +898,14 @@ int rx_guest_imported(uint64_t lo, uint64_t hi) {
     return r;
 }
 /* (nvn_native.c: the CPU set an event's value) in order with the submits, for the GPU's waits on it */
-int rx_option(int id, int otherwise) { return vk && vk->option ? vk->option(id) : otherwise; }
+/* (longshot, issue 1113) an input recording's playback answers the Debug tools rows it holds (host/input_movie.c): the
+   player's menu changes nothing in a replay, nor the replay the player's menu */
+int hos_input_movie_option(int id, int *v);
+int rx_option(int id, int otherwise) {
+    int v;
+    if (hos_input_movie_option(id, &v)) return v;
+    return vk && vk->option ? vk->option(id) : otherwise;
+}
 void rx_option_set(int id, int value) { if (vk && vk->option_set) vk->option_set(id, value); }
 /* (longshot) the control bridge (host/control.c): the Vulkan back end's, none without it (0) */
 int rx_control_frame_info(int64_t *presents, int64_t *draws, int *width, int *height) {

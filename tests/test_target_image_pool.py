@@ -47,7 +47,8 @@ class TargetImagePoolTests(unittest.TestCase):
         get = block(self.tex, "Texture* texture_get(const nvn_tex* t, bool for_sampling)")
         self.assertIn("create(k, t, fi.format, fi.astc, bw, bh, bpb, !for_sampling)", get)
         make = block(self.tex, "Texture* create(const Key& key")
-        self.assertIn("create_image(ci, x.image, x.allocation, false, as_target && !is_bc(x.format) && !is_astc(x.format))", make)
+        self.assertIn("create_image(ci, x.image, x.allocation, false, as_target && !is_bc(x.format) && !is_astc(x.format), false, "
+                      "&need)", make)
         vma = (ROOT / "gpu" / "vk" / "vk_vma.cpp").read_text(encoding="utf-8")
         image = block(vma, "bool create_image(const VkImageCreateInfo& ci")
         self.assertIn("target && target_images_pool() ? target_images_pool() : images_pool()", image)
@@ -86,8 +87,10 @@ class TargetImagePoolTests(unittest.TestCase):
     def test_the_dead_list_pools_before_it_destroys_and_the_pool_is_trimmed_each_present(self):
         frame = block(self.tex, "void texture_frame(uint64_t completed)")
         loop = frame[frame.index("for (auto it = dead.begin(); it != dead.end();) {"):]
-        self.assertLess(loop.index("if (it->pool_key) {"), loop.index("destroy_image(it->image, it->allocation);"))
-        self.assertIn("pool_put(*it);", loop[:loop.index("destroy_image(")])
+        # (the dead images go to the reaper's thread, vk_vma.cpp destroy_image_later, with their views, buffer and memory)
+        gone = "destroy_image_later(it->image, it->allocation, std::move(it->views), it->buffer, it->buffer_alloc, std::move(it->memory));"
+        self.assertLess(loop.index("if (it->pool_key) {"), loop.index(gone))
+        self.assertIn("pool_put(*it);", loop[:loop.index("destroy_image_later(")])
         trim = frame.index("pool_trim();")
         self.assertLess(trim, frame.index("if (!dead_targets::pass_due(frame_no)) {"))   # (every present, not every tenth)
         # (the pool's pressure is the arbiter's level, from the lines this read before: pressure past 90% of the allowance, 1,
@@ -103,8 +106,33 @@ class TargetImagePoolTests(unittest.TestCase):
         self.assertIn("pool_bytes <= cap", trim)
         self.assertIn("pool_destroy(oldest);", trim)
         destroy = block(self.tex, "void pool_destroy(Pooled& p)")
-        self.assertIn("vkDestroyImageView", destroy)
-        self.assertIn("destroy_image(p.image, p.allocation);", destroy)
+        # (its views with it, on the reaper's thread: vk_vma.cpp destroy_image_later)
+        self.assertIn("if (kv.second) views.push_back(kv.second);", destroy)
+        self.assertIn("destroy_image_later(p.image, p.allocation, std::move(views));", destroy)
+
+    def test_a_target_goes_in_the_targets_pool_only_if_it_can_use_its_memory_type(self):
+        # (the targets' VMA pool is of one memory type, and VMA does not check a pool's type against an image's memoryTypeBits: a
+        # driver whose depth or multisampled images exclude it would get an image bound to memory it cannot use)
+        vma = (ROOT / "gpu" / "vk" / "vk_vma.cpp").read_text(encoding="utf-8")
+        self.assertIn("target_image_pool_type = type;", block(vma, "VmaPool target_images_pool()"))
+        image = block(vma, "bool create_image(const VkImageCreateInfo& ci")
+        self.assertIn("(pool != target_image_pool || target_pool_takes(ci, need)) && vmaCreateImage(vma, &ci, &pai, &image, "
+                      "&allocation,", image)
+        takes = block(vma, "bool target_pool_takes(const VkImageCreateInfo& ci, ImageNeed* need)")
+        self.assertIn("mr->memoryTypeBits >> target_image_pool_type & 1", takes)
+        self.assertIn("return !mr ||", takes)   # (not known: as before)
+        # (the requirements without making an image, Vulkan 1.3's query, loaded with the optional functions; asked once a texture:
+        # create's ImageNeed, which create_image reads)
+        need = block(vma, "bool image_requirements(const VkImageCreateInfo& ci, VkMemoryRequirements* mr)")
+        self.assertIn("if (!vkGetDeviceImageMemoryRequirements) return false;", need)
+        self.assertIn("VkMemoryDedicatedRequirements", need)
+        self.assertIn("requiresDedicatedAllocation", need)
+        loader = (ROOT / "gpu" / "vk" / "vk_loader.h").read_text(encoding="utf-8")
+        self.assertIn("X(vkGetDeviceImageMemoryRequirements)", loader[loader.index("#define VKX_DEVICE3(X)"):])
+        self.assertIn("need ? need->get() :", takes)
+        make = block(self.tex, "Texture* create(const Key& key")
+        self.assertLess(make.index("ImageNeed need{&ci};"), make.index("&need)"))
+        self.assertIn("struct ImageNeed {", (ROOT / "gpu" / "vk" / "vk_internal.h").read_text(encoding="utf-8"))
 
     def test_the_pools_numbers_are_logged(self):
         self.assertIn("render target images: %llu reused from the pool, %llu made new, %llu destroyed from it", self.tex)

@@ -223,7 +223,10 @@ def main():
     pick = swap[begin:end]
     if "system_hdr_on(&display)" not in pick:
         raise SystemExit("FAIL: create_swapchain does not ask Windows whether HDR is on when no HDR10 surface is listed")
-    if not re.search(r'\{TAB_GRAPHICS, "HDR", &opts\.hdr, 0, 2, 1, tx_hdr,[^}]*hn_hdr, false, true\}', menu):
+    # (the row is the HDR module's, gpu/vk/menu/hdr.cpp (#1633): its hint is hn_hdr, which vk_menu.cpp gives it)
+    hdr = (ROOT / "gpu" / "vk" / "menu" / "hdr.cpp").read_text(encoding="utf-8")
+    if not re.search(r'\.key = "hdr",\s*\.label = "HDR",.*?\.value = &opts\.hdr,.*?\.hint = hdr_sdr_hint\}\)', hdr, re.S) or \
+            "const char* hdr_sdr_hint(int v, int variant) { return hn_hdr(v, variant); }" not in menu:
         raise SystemExit("FAIL: the HDR row does not show hn_hdr's line (why it stays SDR)")
     hint = block(menu, "const char* hn_hdr(int v, int variant) {")
     compile_and_run(args.cxx, FIXTURE.replace("/* ENUM */", enum.group(0)).replace("/* PICK */", pick)

@@ -11,7 +11,8 @@ HUD's panes at 21:9 and at 4:3 with the row at Middle 16:9 as HOS_WIDE_UI=0 plac
 edges as before; HOS_WIDE_UI over the row either way; the row changed during play moves the HUD at once. And the wiring (the row fixed while
 HOS_WIDE_UI holds it):
 the row on the Graphics tab, saved as hud_layout, 0 by default; option 71 (HOS_OPT_HUD_LAYOUT, gpu/vk/vk_api.h) answers
-it; the README and docs/development.md say what it does.
+it; docs/user/graphics-and-controls.md (the settings table) and docs/dev/reference/switches.md (the options file) say what
+it does.
 
 python -I -B tests/test_hud_layout_row.py [--cc gcc]
 """
@@ -57,6 +58,8 @@ int main(int argc, char **argv) {
     dchoice = pane_at(DIALOG, 15, "N_BtnIn_00", 300, 100, 1);
     lroot = pane_at(GUIDE, 16, "RootPane", 0, 0, 0);
     lguide = pane_at(GUIDE, 17, "A_GuideAll_00", 300, 80, 1);
+    dcol = pane_at(DIALOG, 18, "N_BtnNum_00", 940, 200, 0);
+    dbox = pane_at(DIALOG, 19, "N_Message_00", 1600, 500, 1);
     /* the row at argv[2] from the start, then at argv[3] (a change in play: -1, none) */
     fixture_hud_layout = atoi(argv[2]);
     at(ratio);
@@ -122,25 +125,26 @@ def placing_checks(cc):
 def wiring_checks():
     failed = []
     api = (ROOT / "gpu" / "vk" / "vk_api.h").read_text(encoding="utf-8")
-    menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
+    from menu_model_fixture import menu_text
+    menu = menu_text(ROOT)   # (vk_menu.cpp and its modules' rows: the row is gpu/vk/menu/widescreen.cpp's)
     menu_h = (ROOT / "gpu" / "vk" / "vk_menu.h").read_text(encoding="utf-8")
     replay = (ROOT / "gpu" / "vk" / "vk_replay.cpp").read_text(encoding="utf-8")
     host = (ROOT / "host" / "hos_wide_ui.c").read_text(encoding="utf-8")
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    dev = (ROOT / "docs" / "development.md").read_text(encoding="utf-8")
+    settings = (ROOT / "docs" / "user" / "graphics-and-controls.md").read_text(encoding="utf-8")
+    dev = (ROOT / "docs" / "dev" / "reference" / "switches.md").read_text(encoding="utf-8")
     for ok, what in (
             (re.search(r"HOS_OPT_HUD_LAYOUT = 71\b", api), "gpu/vk/vk_api.h names option 71 HOS_OPT_HUD_LAYOUT"),
-            (re.search(r'\{TAB_GRAPHICS, "HUD layout", &opts\.hud_layout, 0, 1, 1,', menu),
-             "the Graphics tab has the HUD layout row, 0 to 1"),
+            (re.search(r'\{TAB_GRAPHICS, "HUD layout", &opts\.hud_layout, 0, 2, 1,', menu),
+             "the Graphics tab has the HUD layout row, 0 to 2"),
             (re.search(r"int hud_layout = 0;", menu_h), "opts.hud_layout is 0 (Screen's edges) by default"),
             (re.search(r'value == &opts\.hud_layout && getenv\("HOS_WIDE_UI"\)', menu[menu.index("bool row_fixed("):]),
              "the row is fixed while HOS_WIDE_UI holds it (row_fixed), as rows other switches hold"),
-            (re.search(r"if \(id == HOS_OPT_HUD_LAYOUT\) return opts\.hud_layout;", replay), "option 71 answers the row"),
-            (re.search(r"rx_option\(71, 0\)", host), "host/hos_wide_ui.c asks the row (rx_option 71)"),
-            ("| HUD layout |" in readme, "the README's options table has the row"),
-            ("HUD layout" in dev and "hud_layout" in dev, "docs/development.md's options file has hud_layout"),
-            ("keeps the HUD and movies in the middle 16:9" not in readme,
-             "the README still says the HUD stays in the middle 16:9 by default")):
+            (re.search(r"if \(id >= HOS_OPT_HUD_LAYOUT && id <= HOS_OPT_HUD_MINIMAP\) return menu_hud_option\(id\);", replay), "option 71 answers the row"),
+            (re.search(r"rx_option\(HOS_OPT_HUD_LAYOUT, 0\)", host), "host/hos_wide_ui.c asks the row (rx_option 71)"),
+            ("| HUD layout |" in settings, "the settings page's table has the row"),
+            ("HUD layout" in dev and "hud_layout" in dev, "docs/dev/reference/switches.md's options file has hud_layout"),
+            ("keeps the HUD and movies in the middle 16:9" not in settings,
+             "the settings page still says the HUD stays in the middle 16:9 by default")):
         print("%s %s" % ("ok  " if ok else "FAIL", what))
         if not ok:
             failed.append(what)

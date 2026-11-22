@@ -10,6 +10,7 @@ python -I -B tests/test_vk_pgo.py
 """
 import importlib.util
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -80,9 +81,8 @@ def check_make_game():
 
 
 def check_dev_packs():
-    spec = importlib.util.spec_from_file_location("dev_packs_under_test", ROOT / "scripts" / "dev_packs.py")
-    packs = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(packs)
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from devtools import packs
     with tempfile.TemporaryDirectory(prefix="longshot-vk-pgo-base-") as work:
         prof = os.path.join(work, make_game.VK_PROFILE)
         shipped = os.path.join(work, make_game.VK_PROFILE_UNPACKED)
@@ -104,10 +104,14 @@ def check_dev_packs():
                                 ("game", {"RX_VK_PGO": "gen"}, "game", "a game change still builds both modules"),
                                 ("renderer", {}, "renderer", "a renderer change, as before"),
                                 (None, {"RX_PGO": "gen"}, "game", "the game's counting build of an unchanged tree is built"),
-                                ("renderer", {"RX_PGO": "/p.prof"}, "game", "a game profile builds the game")):
+                                ("renderer", {"RX_PGO": "/p.prof"}, "game", "a game profile builds the game"),
+                                (None, {"LONGSHOT_TRACY": "1"}, "game", "a Tracy pack of an unchanged tree builds the game"),
+                                ("renderer", {"LONGSHOT_TRACY": "1"}, "game", "Tracy's client is in the game's executable"),
+                                (None, {"LONGSHOT_TRACY": "0"}, None, "LONGSHOT_TRACY=0 is off")):
         check("pack_route: " + why, packs.pack_route(how, env) == want)
-    text = (ROOT / "scripts" / "dev_packs.py").read_text(encoding="utf-8")
-    check("the renderer's own build takes it", '**renderer_profile(b["work"], os.environ)' in text)
+    text = (ROOT / "scripts" / "devtools" / "packs.py").read_text(encoding="utf-8")
+    check("the renderer's own build takes it", 'renderer_env(w["renderer_work"], b["work"], os.environ)' in text
+          and "**renderer_profile(base_work, environ)" in text)
     check("cmd_pack routes through pack_route", "how = pack_route(route(changed, tree), os.environ)" in text)
 
 
@@ -134,16 +138,16 @@ def check_unread_message():
     check("and clang's own reason", "(error: Profile data error: unsupported version)" in old)
     check("and that the build goes on", "building without it" in old)
     check("an older clang on Linux is told where the build tools' LLVM is",
-          "LLVM 23.1.5 reads it" in old and "scripts/dev_build.py env" in old and "clang 23 or newer" in old)
+          "LLVM 23.1.5 reads it" in old and "scripts/dev.py env" in old and "clang 23 or newer" in old)
     new = make_game.profile_unread_message(prof, "clang version 23.1.4\n", err, True, "23.1.5")
-    check("a clang as new as the build tools' gets no advice to install it", "dev_build.py" not in new)
+    check("a clang as new as the build tools' gets no advice to install it", "dev.py env" not in new)
     check("nor does Windows (llvm-mingw is the builder's own)",
-          "dev_build.py" not in make_game.profile_unread_message(prof, "clang version 18.1.3\n", err, False, "23.1.5"))
+          "dev.py env" not in make_game.profile_unread_message(prof, "clang version 18.1.3\n", err, False, "23.1.5"))
     unknown = make_game.profile_unread_message(prof, "", "", True, "23.1.5")
     check("a clang that names no version is 'this compiler', and an empty reason is said",
-          unknown.startswith("this compiler cannot read") and "(no message)" in unknown and "dev_build.py env" in unknown)
+          unknown.startswith("this compiler cannot read") and "(no message)" in unknown and "dev.py env" in unknown)
     check("without the build tools' version (no deps.sh) the line has no advice",
-          "dev_build.py" not in make_game.profile_unread_message(prof, "clang version 18.1.3\n", err, True, None))
+          "dev.py env" not in make_game.profile_unread_message(prof, "clang version 18.1.3\n", err, True, None))
     check("the build tools' version comes from scripts/linux/deps.sh",
           make_game.build_tools_llvm(str(ROOT)) and make_game.build_tools_llvm(str(ROOT))[0].isdigit())
     with tempfile.TemporaryDirectory() as empty:
@@ -164,9 +168,9 @@ def check_release():
           'xz -dc assets/profiles/longshot_vk.profdata.xz > "$VKW/longshot_vk.shipped.profdata"' in step)
     check("and a developer's own profile when the checkout has one",
           "for f in hot_funcs.txt hot_order.txt longshot_pieces.prof longshot_vk.profdata; do" in appimage)
-    docs = (ROOT / "docs" / "development.md").read_text(encoding="utf-8")
+    docs = (ROOT / "docs" / "dev" / "developing.md").read_text(encoding="utf-8")
     for switch in ("RX_VK_PGO=gen", "RX_VK_PGO_FILE=<file>"):
-        check("%s is in docs/development.md's switch tables" % switch, switch in docs)
+        check("%s is in docs/dev/developing.md (the renderer's play profile)" % switch, switch in docs)
 
 
 if __name__ == "__main__":

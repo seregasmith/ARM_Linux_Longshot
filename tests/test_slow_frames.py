@@ -115,16 +115,19 @@ def sources():
         need("else hos_sample_write(out, line);" in sampler, path + ": the sampler's lines are not written through hos_sample_write")
         need("CreateThread(NULL, 0, sample_all_thread, (void *)slow, 0, NULL);" in block(src, "void hos_prof_start(void) {"),
              path + ": HOS_SLOW_FRAMES starts no sampler")
-    need("hos_slow_frame_present();" in block((ROOT / "host/rx_backend.c").read_text(encoding="utf-8"),
-                                              "void rx_nvn_present(const nvn_tex *t, const int crop[4])"),
-         "rx_nvn_present does not tell the recorder")
+    backend = (ROOT / "host/rx_backend.c").read_text(encoding="utf-8")
+    present = block(backend, "static void nvn_present_with_generation(")
+    need("hos_slow_frame_present();" in present, "the shared native present does not tell the recorder")
     need('getenv("HOS_SAMPLE_ALL")' in slow, "HOS_SLOW_FRAMES does not stand down for HOS_SAMPLE_ALL")
     threads = (ROOT / "host/hos_thread.c").read_text(encoding="utf-8")
     acquire = block(threads, "static void vc_acquire(HosThread *t)")
     need("if (vc_log_ns() && waited >= vc_log_ns()) vc_long_wait(t, waited, how, vc_allowed(t));" in acquire,
          "a long wait for a virtual core is not logged")
     need("if (hos_fps_timing) t->vc_wait_total += waited;" in acquire, "the virtual core's waits are not counted")
-    need("vc_grant(c, t);" in block(threads, "static void vc_release(HosThread *t)"), "a grant does not know who let the core go")
+    # (a release and a yield both let the core go through vc_release_locked)
+    need("vc_release_locked(t);" in block(threads, "static void vc_release(HosThread *t)") and
+         "vc_grant(c, t);" in block(threads, "static void vc_release_locked(HosThread *t)"),
+         "a grant does not know who let the core go")
     need("t->blocked_total += hos_now_ns() - t->away_at" in block(threads, "void hos_vcore_back(void) {\n"),
          "a block's time is not counted")
     need("host_main_thread_times" in (ROOT / "host/rx_backend.c").read_text(encoding="utf-8"), "the host does not give the main thread's times")

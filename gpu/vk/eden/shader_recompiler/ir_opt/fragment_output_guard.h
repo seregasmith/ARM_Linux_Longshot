@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// (longshot) The NaN guard on float colour outputs (RX_VK_NAN_GUARD=0: off; vk_shader.cpp, nx2/bake_ds, gpu/shaderbatch.cpp).
+// (longshot) The NaN guard on float colour outputs (RX_VK_NAN_GUARD=0: off; vk_shader.cpp).
 // It shared a header with the OoT fog and exposure workaround, which is gone.
 
 #pragma once

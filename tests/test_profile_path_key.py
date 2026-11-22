@@ -1,7 +1,7 @@
 """The object keys name a play profile by its contents, not its path (nx2/build.py flag_text). make_game.py puts both profiles
 in the work folder (RX_PGO=<work>/longshot_pieces.prof for the eight hot pieces, RX_VK_PGO=<work>/longshot_vk.shipped.profdata
 for the renderer's own objects), so with the path in the key another work folder could share neither through the object store
-(nx2/object_store.py) or a dev_packs.py base. The -D..._PROFILE_SHA1 beside the path is what the key needs of the profile.
+(nx2/object_store.py) or a `dev.py packs` base. The -D..._PROFILE_SHA1 beside the path is what the key needs of the profile.
 
 python -I -B tests/test_profile_path_key.py
 """

@@ -48,7 +48,7 @@ def read(path):
 
 
 def check_sites(main):
-    init = block(main, "const MkwVkRenderer* mkwvk_init(const MkwVkHost* h)")
+    init = block(main, "static const MkwVkRenderer* init_body(const MkwVkHost* h) {")   # (mkwvk_init's work, behind its catch)
     if "std::set_new_handler(new_refused)" not in init:
         raise SystemExit("FAIL: mkwvk_init installs no new_handler: a C++ allocation refused at the commit limit throws "
                          "std::bad_alloc that nothing catches, and the game ends with exception 0x20474343 (issue 1280)")
@@ -67,7 +67,9 @@ def check_sites(main):
     if "hos_alloc_gave_up(0, what)" not in block(backend, "static void host_out_of_memory(const char *what)"):
         raise SystemExit("FAIL: the host's out_of_memory is not hos_alloc_gave_up's line, notice and stop")
     replay = read("gpu/vk/vk_replay.cpp")
-    if not re.search(r"presents\+\+;\n\s*presents_now = presents;\n\s*new_refuse_test\(presents\);", replay):
+    # (the recorder's frame note may come between: it allocates nothing the check would be about)
+    if not re.search(r"presents\+\+;\n\s*presents_now = presents;\n(?:\s*rec::note_frame\(\);[^\n]*\n)?\s*new_refuse_test\(presents\);",
+                     replay):
         raise SystemExit("FAIL: HOS_TEST_ALLOC_REFUSE's allocation (new_refuse_test) is not run at the replay's present")
 
 

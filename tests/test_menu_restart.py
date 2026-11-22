@@ -17,6 +17,8 @@ from pathlib import Path
 RUN_ALL_ARGS = ["--cxx", "g++", "--cc", "gcc"]
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests"))
+from menu_model_fixture import menu_text  # noqa: E402
 
 RELAUNCH_TEST = r"""
 #include "hos_relaunch.h"
@@ -96,14 +98,17 @@ def function(source, start):
 
 
 def sources():
-    menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
+    # (vk_menu.cpp and its modules' rows as table lines, #1633: GPU device is gpu/vk/menu/gpu.cpp's)
+    menu = menu_text(ROOT)
     for row in ('"GPU device", &opts.gpu_device', '"Output resolution", &opts.output_res', '"Profile", &opts.handheld',
                 '"Aspect ratio", &opts.ultrawide', '"Robust buffers", &opts.robust'):
         at = menu.find(row)
         if at < 0:
             raise SystemExit("vk_menu.cpp: a row that takes a restart is missing: " + row)
         entry = menu[at:menu.index("},", at)]
-        if not re.search(r",\s*true$", entry):
+        # (the restart flag: the ninth field from the name, strings and comments out; a module's row, a table line, has preset_exempt after it)
+        fields = [f.strip() for f in re.sub(r'"(?:[^"\\]|\\.)*"|//[^\n]*', '""', entry).split(",")]
+        if len(fields) < 9 or fields[8] != "true":
             raise SystemExit("vk_menu.cpp: %s is not marked as taking a restart" % row.split(",")[0])
     # (the Profile row was "Handheld profile": its key stays the one host/nn_applet.c reads, and its values say Docked and Handheld)
     if not re.search(r'&opts\.handheld\)\s*return\s*"handheld_profile"', function(menu, "const char* ini_key(const Row& r) {")):

@@ -10,7 +10,7 @@ namespace LongshotBuilder;
 ///   LongshotBuilder.exe                                  anything else: a message, get the Longshot Launcher
 static class Program
 {
-    /// Where players get the launcher (README, "Install and play")
+    /// Where players get the launcher (docs/user/getting-started.md)
     public const string LauncherDownload = "https://longshot.magicbean.dev/download";
 
     public const string UseTheLauncher =

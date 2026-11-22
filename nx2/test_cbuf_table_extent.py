@@ -21,6 +21,10 @@ def main():
     used=source[start:stop]
     begin=source.index('const uint32_t n =',stop);end=source.index(';',begin)+1
     rounded=source[begin:end]
+    # (the simulated-turf private storage buffers' encoding, which the range reads through: ir_opt/sim_turf_pool_pass.h)
+    info_h=(ROOT/'gpu/vk/eden/shader_recompiler/shader_info.h').read_text(encoding='utf-8')
+    private=info_h[info_h.index('inline constexpr u32 kSimTurfStorageBit'):]
+    private=private[:private.index('\n}\n',private.index('constexpr u32 SimTurfStorageOrig('))+3]
     fixture=r'''
 #include <algorithm>
 #include <array>
@@ -30,7 +34,9 @@ def main():
 struct Descriptor { uint32_t cbuf_index,cbuf_offset,count; };
 struct Info { static constexpr uint32_t MAX_CBUFS=18;bool uses_global_memory=false;
     std::array<uint32_t,MAX_CBUFS> constant_buffer_used_sizes{};std::vector<Descriptor> storage_buffers_descriptors; };
-namespace Shader { using Info=::Info; }
+namespace Shader { using Info=::Info; using u32=uint32_t; using StorageBufferDescriptor=::Descriptor;
+''' + private + r'''
+}
 struct Stage { Info info; };
 uint32_t extent(const Stage& st,uint32_t index) {
 ''' + used + rounded + r'''

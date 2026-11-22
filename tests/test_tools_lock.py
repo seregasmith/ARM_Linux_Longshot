@@ -1,4 +1,4 @@
-"""tools.lock and scripts/tools.py (docs/releases.md, "tools.lock"), with authored archives and no network: the lock in the
+"""tools.lock and scripts/tools.py (docs/dev/reference/releases.md, "tools.lock"), with authored archives and no network: the lock in the
 repository reads and names only https links; a bad line is refused; a tool comes from the first URL that gives the bytes the
 lock names (the next one when upstream is gone or changed); the download cache is shared; only the archive's prefix is
 unpacked, and nothing outside the install; a line is replaced in place; and the archives Longshot assembles (Python with the
@@ -67,7 +67,7 @@ class Lock(unittest.TestCase):
         self.assertEqual(sorted(t.name for t in tools.of_system(lock, "linux-x64")), sorted(tools.REQUIRED["linux-x64"]))
         # (Windows builds with llvm-mingw alone: no emsdk to download, tests/test_windows_toolchain.py)
         self.assertNotIn("emsdk", [t.name for t in tools.of_system(lock, "windows-x64")])
-        # (the release workflow requires every tool; what is still to assemble is listed in RELEASING.md)
+        # (the release workflow requires every tool; docs/dev/reference/releases.md, One-time setup)
         with self.assertRaises(SystemExit):
             tools.named(lock, "nothing")
 

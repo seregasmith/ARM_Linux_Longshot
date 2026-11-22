@@ -78,8 +78,10 @@ def glsl_functions(text, names, consts):
 
 def check_grading():
     # (the row: 50 to 200%, 100% (none) out of the box, kept in the options file as hdr_contrast, its name's key)
-    menu = (VK / "vk_menu.cpp").read_text(encoding="utf-8")
-    if not re.search(r'\{TAB_GRAPHICS, "HDR contrast", &opts\.hdr_contrast, 50, 200, 5, tx_percent,', menu) or \
+    menu = (VK / "menu" / "hdr.cpp").read_text(encoding="utf-8")   # (the HDR rows' module, #1633)
+    if not re.search(r'\.key = "hdr_contrast", .label = "HDR contrast",.*?\.value = &opts\.hdr_contrast, \.lo = 50, \.hi = 200, '
+                     r'\.step = 5,.*?\.text = menu_text::percent\}', menu, re.S) or \
+            '"%d%%"' not in (VK / "menu_module.h").read_text(encoding="utf-8") or \
             "int hdr_contrast = 100;" not in (VK / "vk_menu.h").read_text(encoding="utf-8"):
         sys.exit("FAIL: the HDR contrast row is not 50 to 200% in steps of 5, 100% by default")
     text = (SHADERS / "hdr_encode.comp").read_text(encoding="utf-8")
@@ -88,12 +90,12 @@ def check_grading():
     shader = [n.strip() for decl in block.split(";") if decl.strip() for n in decl.split(None, 1)[1].split(",")]
     hdr = function((VK / "vk_framegen.cpp").read_text(encoding="utf-8"), "VkImage framegen_hdr(")
     pushed = re.search(r"const struct \{ float uv\[4\]; float ([^;]*); \} pc", hdr)
-    if shader != ["uv", "white", "peak", "knee", "mode", "contrast", "exposure", "pad0", "pad1"] or not pushed or \
+    if shader != ["uv", "white", "peak", "knee", "mode", "contrast", "exposure", "colour_vision", "pad1"] or not pushed or \
             [n.strip() for n in pushed.group(1).split(",")] != shader[1:] or "{S, I}, 48)" not in hdr:
         sys.exit("FAIL: hdr_encode.comp's push constants %s are not the 48 bytes framegen_hdr pushes" % shader)
     main = text[text.index("void main()"):]
     # (Native at 100% contrast and exposure 1: the game's PQ codes written as they are, before any decode or encode)
-    through = main.index("if (pc.mode >= 0.5 && pc.contrast == 1.0 && pc.exposure == 1.0) {")
+    through = main.index("if (pc.mode >= 0.5 && pc.contrast == 1.0 && pc.exposure == 1.0 && !cv_enabled(int(pc.colour_vision))) {")
     if "imageStore(dst, at, vec4(c, 1.0));\n        return;" not in main[through:through + 200] or \
             through > main.index("pq_decode(c)"):
         sys.exit("FAIL: hdr_encode.comp does not pass Native's PQ codes through as they are at 100% contrast")
@@ -162,7 +164,7 @@ def check_paths():
             "shown_format == VK_FORMAT_A2B10G10R10_UNORM_PACK32" not in native or "tex->format" in native:
         sys.exit("FAIL: do_present does not tell Native HDR by the format the game presents alone")
     # (Native: never the game's image blitted in its image's format; the shot's scale pass told it is PQ as well)
-    image = function(replay, "void present_image(")
+    image = function(replay, "void present_image_with_trial(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view, bool source_srgb, bool allow_scale, OutputTrialSource trial) {")
     if "} else if (src && !native_pq) {" not in image or \
             "framegen_scale(f.cmd, view, src, sw, sh, crop, rect.w, rect.h, native_pq)" not in image:
         sys.exit("FAIL: present_image can blit Native HDR's picture from its image, or scales it as SDR")
@@ -180,7 +182,7 @@ def check_fsr4():
     prepare = function(fsr4, "int prepare(")
     if "const bool hdr = hdr_allowed && present_native_pq.load(std::memory_order_relaxed);" not in prepare or \
             'env_switch("RX_VK_FSR4_HDR")' not in prepare or "opts.hdr" in prepare or \
-            "s.context->hdr != hdr" not in prepare or "make_context(ow, oh, hdr)" not in prepare:
+            "s.context->hdr != hdr" not in prepare or "make_context(ow, oh, hdr, want)" not in prepare:
         sys.exit("FAIL: FSR 4's context is not made for HDR colour while the game presents PQ (and again when that changes)")
     make = function(fsr4, "std::shared_ptr<Context> make_context(")
     if "FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE | FFX_UPSCALE_ENABLE_AUTO_EXPOSURE" not in make or \
@@ -189,7 +191,7 @@ def check_fsr4():
     evaluate = function(fsr4, "bool evaluate(")
     if "d.flags = s.context->hdr ? 0u : (uint32_t)FFX_UPSCALE_FLAG_NON_LINEAR_COLOR_SRGB;" not in evaluate:
         sys.exit("FAIL: FSR 4's dispatch calls HDR colour sRGB (it is linear light there)")
-    if "start, prepare, evaluate, release, memory, hdr}" not in fsr4:
+    if "start, prepare, evaluate, release, memory, hdr" not in fsr4:   # (fields may follow it)
         sys.exit("FAIL: vk_fsr4.cpp's engine does not tell the chain it takes HDR colour")
 
 
@@ -250,7 +252,7 @@ if args.glslang:
         out = Path(d, "h.h")
         subprocess.run([args.glslang, "-V", "--target-env", "vulkan1.2", "--vn", "HDR_ENCODE_COMP_SPV", "-o", str(out),
                         str(SHADERS / "hdr_encode.comp")], check=True, capture_output=True)
-        if out.read_text() != "\n".join(header.splitlines(True)[1:]) and out.read_text() != "".join(header.splitlines(True)[1:]):
+        if out.read_text() != "".join(header.splitlines(True)[2:]):
             sys.exit("FAIL: hdr_encode_comp_spv.h differs from the shader compiled now")
 print("PASS: the HDR10 pass's header is its shader, PQ, the highlight expansion and the contrast grading as intended, "
       "and the HDR paths around it")

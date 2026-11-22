@@ -1,4 +1,4 @@
-"""Exercise the Builder's state-list import and cache save with game-free call stubs."""
+"""Exercise FSR 4 warm-up ordering, state-list import and cache save with game-free call stubs."""
 import argparse, os, struct, subprocess, tempfile
 from pathlib import Path
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
@@ -39,6 +39,7 @@ void operator delete(void* p,size_t) noexcept{std::free(p);}
 std::string keys_path;
 std::string predicted_keys_path(){return keys_path;}
 uint64_t program_cache_stamp(){return 42;}
+bool pipelines_stamp_ok(uint64_t stamp){return stamp==program_cache_stamp();}   // (vk_progcache.cpp: this one; no earlier format here)
 """+readers+r"""
 std::vector<int> calls;
 bool empty_states=false;
@@ -77,6 +78,7 @@ bool compile_all(){return all_mode;}   // (the level read; the real completion r
 void precompile_run(void(*progress)(size_t,size_t)){calls.push_back(2);progress(1,2);}
 void pipeline_cache_save(bool force){if(!force)std::exit(2);calls.push_back(3);}
 std::string skipped_path(){return "sentinel";}
+void fsr4_prepare_shaders(){calls.push_back(7);}
 void prepare_watchdog(){}   // (vk_main.cpp: the run's watchdog, tests/test_prepare_stall.py)
 void prepare_moved(int,size_t,size_t){}
 bool prepare_left_workers(){return false;}
@@ -110,7 +112,7 @@ int main(int argc,char** argv){
  empty_states=mode=="empty";
  pending=mode=="pending";
  all_mode=std::string(argv[2])=="all";
- std::vector<int> want{1};
+ std::vector<int> want{7,1};
  if(!fresh_seed)want.push_back(6);
  if(std::string(argv[3])=="1")want.push_back(5);
  for(int call:{2,3,4})want.push_back(call);
@@ -152,7 +154,9 @@ with tempfile.TemporaryDirectory(prefix='prepare-cache-') as tmp:
         for record in ('missing','zero'):
             for level in ('all','most'): check(mode,level,record,level=='all')
     check('recheck','all','missing',False)   # Missing -> valid zero -> truncated, in one process: no cached absence.
+    # (Most leaves the prediction's part out of the total from the start, #1618: a seed's states then are 4 of 6 parts' worth,
+    # not 4 of 8 with the prediction's guess in, which All has until it knows the prediction is not run)
     for mode, level, expected in [('fresh', 'all', ['0.714']), ('fresh', 'most', ['0.600']), ('refresh', 'all', ['0.125','0.500','0.750']),
-                                  ('refresh', 'most', ['0.125','0.500','0.750']), ('empty', 'all', ['0.500']), ('empty', 'most', ['0.500'])]:
+                                  ('refresh', 'most', ['0.166','0.666','0.750']), ('empty', 'all', ['0.500']), ('empty', 'most', ['0.500'])]:
         check(mode,level,'zero',mode=='fresh' and level=='all',expected)
     print("PASS: Builder upgrades Most to All, skips valid completed predictions (including zero keys), and preserves import/progress/save")

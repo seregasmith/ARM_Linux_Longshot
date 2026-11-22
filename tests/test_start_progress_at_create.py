@@ -77,10 +77,12 @@ static bool notes_lost_by_driver() { return false; }
 // (the arm64 port's check whether the caches answer the notes already: not here, the warm runs as before)
 static bool notes_answered_by_caches() { return false; }
 struct Notes { size_t size() const { return 0; } };
-static Notes pipe_notes_refs() { return {}; }
+static Notes start_note_refs(bool) { return {}; }
 struct Plan { uint64_t coverage() const { return 0; } };
 static Plan compute_warm_plan() { return {}; }
 static void precompile_built_write(size_t, uint64_t) {}
+struct StartNoteRefs {};   // (vk_draw.cpp: the start's kept references of the notes, let go when the load at create is not run)
+static StartNoteRefs start_note_refs_kept;
 static bool prepare_stopped() { return false; }
 static size_t program_cache_fallback_steps() { return steps_guess; }
 static void precompile_warm(Progress progress) {

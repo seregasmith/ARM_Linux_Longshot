@@ -20,7 +20,7 @@ spec = importlib.util.spec_from_file_location("run_all", ROOT / "tests" / "run_a
 run_all = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(run_all)
 
-TOOLS = {"cxx": None, "vulkan_headers": None, "spirv_headers": None, "spirv_val": None, "glslang": None, "dotnet": None,
+TOOLS = {"cc": None, "cxx": None, "vulkan_headers": None, "spirv_headers": None, "spirv_val": None, "glslang": None, "dotnet": None,
          "dav1d": None}
 
 
@@ -128,6 +128,22 @@ class Reader(unittest.TestCase):
 
 
 class Runner(unittest.TestCase):
+    @unittest.skipIf(sys.platform == "win32", "POSIX shell quoting")
+    def test_invalid_cc_is_a_preflight_result(self):
+        decl = {"args": ["--cc", "{cc}"], "modules": []}
+        _, missing = run_all.python_check("tests/test_input_background.py", decl, dict(TOOLS, cc="clang '"), 10)
+        self.assertEqual(missing, ["invalid compiler setting: clang '"])
+
+    def test_cc_command_keeps_flags_for_fixture(self):
+        decl = {"args": ["--cc", "{cc}"], "modules": []}
+        tools = dict(TOOLS, cc="clang -m64")
+        with mock.patch.object(run_all, "which", side_effect=lambda name: "/bin/clang" if name == "clang" else None), \
+                mock.patch.object(run_all, "run_check") as run:
+            check, missing = run_all.python_check("tests/test_input_background.py", decl, tools, 10)
+            self.assertEqual(missing, [])
+            check()
+            self.assertEqual(run.call_args.args[0][-2:], ["--cc", "clang -m64"])
+
     def run_main(self, root, *argv):
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(run_all, "ROOT", root), mock.patch.object(sys, "argv", ["run_all.py", *argv]), \

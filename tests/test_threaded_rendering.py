@@ -23,7 +23,7 @@ Checked:
  - the source: the gate is the only one and on; the row is Auto by default and takes a restart; the menu resolves the row
    once, from usable_cores, asks the pools' mirrors in both Auto tiers and logs describe's line; RX_VK_ASYNC is read in one
    place; the host's present poll asks the renderer (HOS_OPT_RENDER_THREAD); the device policy and the facts count cores;
-   the row's help, the readme, the development guide and the switch table say the tiers;
+   the row's help, the settings page, the developer docs and the switch table say the tiers;
  - and the checks have teeth: broken copies (the recorder thread on at 4 cores, SMT siblings counted as cores, the 4-core
    tier missing, the logical count back, the recorder hooked to the render thread's half, the mirrors asked in one tier
    only, and others) must each fail.
@@ -40,6 +40,9 @@ from pathlib import Path
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 ROOT = Path(__file__).resolve().parents[1]
+import sys  # noqa: E402
+sys.path.insert(0, str(ROOT / "tests"))
+from menu_model_fixture import menu_text  # noqa: E402
 VK = ROOT / "gpu" / "vk"
 
 # The rule and the count: threaded_rendering.h alone, and usable_cores cut from vk_progcache.cpp on stand-ins
@@ -269,7 +272,6 @@ static mkwvk::threaded::Choice row;   // (the menu's threaded_choice, for the ar
 namespace rec {
 @@MODE_ENUM@@
 inline bool (*g_setting_thread)() = nullptr;
-@@PARALLEL@@
 @@MODE_FROM_ENV@@
 }
 @@RENDER_THREAD_MODE@@
@@ -307,11 +309,8 @@ READER_CASES = [
     (AUTO, 2, 0, {"RX_VK_ASYNC": "1"}, 1, REC_OFF, 0),
     (OFF, 16, 0, {"RX_VK_ASYNC": "1", "RX_VK_RECORDER": "thread"}, 1, THREAD, 0),
     (ON, 16, 0, {"RX_VK_ASYNC": "0", "RX_VK_RECORDER": "sync"}, 0, SYNC, 0),
-    # (the recorder thread refused beside the parallel replay, the row's as the switch's; nothing to refuse with 4 cores)
-    (AUTO, 6, 0, {"RX_VK_PARALLEL": "2"}, 1, REC_OFF, 1),
-    (AUTO, 4, 0, {"RX_VK_PARALLEL": "2"}, 1, REC_OFF, 0),
 ]
-SWITCHES = ("RX_VK_ASYNC", "RX_VK_RECORDER", "RX_VK_PARALLEL")
+SWITCHES = ("RX_VK_ASYNC", "RX_VK_RECORDER")
 
 
 def block(text, marker):
@@ -329,9 +328,12 @@ def read_sources():
     paths = dict(rule=VK / "threaded_rendering.h", menu=VK / "vk_menu.cpp", menu_h=VK / "vk_menu.h", replay=VK / "vk_replay.cpp",
                  recorder=VK / "vk_recorder.h", api=VK / "vk_api.h", progcache=VK / "vk_progcache.cpp",
                  internal=VK / "vk_internal.h", policy=VK / "device_policy.h", main=VK / "vk_main.cpp",
-                 switches=VK / "switches.def", native=ROOT / "host" / "nvn_native.c", readme=ROOT / "README.md",
-                 docs=ROOT / "docs" / "development.md")
-    return {k: p.read_text(encoding="utf-8") for k, p in paths.items()}
+                 switches=VK / "switches.def", native=ROOT / "host" / "nvn_native.c",
+                 settings=ROOT / "docs" / "user" / "graphics-and-controls.md",
+                 docs=ROOT / "docs" / "dev" / "reference" / "switches.md")
+    s = {k: p.read_text(encoding="utf-8") for k, p in paths.items()}
+    s["menu"] = menu_text(ROOT)   # (vk_menu.cpp and its modules, their rows as table lines, #1633: threads.cpp's row)
+    return s
 
 
 def constant(rule, name):
@@ -439,23 +441,31 @@ def check_sources(s):
         if "menu_threaded_rendering" in s[key] or re.search(r"\bWhy::Auto(Cpus|FewCpus)\b", s[key]):
             bad.append("%s still names menu_threaded_rendering or Why::AutoCpus: the row has two halves now" % key)
 
+    # (the segment workers stay gone, 19 Nov 2026: 3-35% slower on every PC measured; the recorder thread is back)
+    for key in ("menu", "menu_h", "replay", "recorder", "policy", "native", "rule", "internal"):
+        if re.search(r"\b(menu_segment_workers|par_ceiling|par_threads|workers_for|kAutoWorkerCores|kMaxWorkers|ParLock|"
+                     r"par_active|parallel_configured)\b", s[key]):
+            bad.append("%s still names the segment workers" % key)
+    if not re.search(r'^GONE\(RX_VK_PARALLEL, ', s["switches"], re.M):
+        bad.append("switches.def: RX_VK_PARALLEL is not a GONE row")
+
     # (said where the settings and the switches are)
-    readme, docs = s["readme"], s["docs"]
-    table = [line for line in readme.splitlines() if line.startswith("| | Developer: Threaded rendering | Auto, On, Off")]
-    start = readme.find("- **Threaded rendering:**")
-    para = readme[start:start + 900].replace("\n  ", " ") if start >= 0 else ""
+    settings, docs = s["settings"], s["docs"]
+    table = [line for line in settings.splitlines() if line.startswith("| | Developer: Threaded rendering | Auto, On, Off")]
+    start = settings.find("- **Threaded rendering:**")
+    para = settings[start:start + 900].replace("\n  ", " ") if start >= 0 else ""
     if len(table) != 1 or not para:
-        bad.append("README.md: no Threaded rendering line in the option table, or no paragraph on it")
+        bad.append("docs/user/graphics-and-controls.md: no Threaded rendering line in the settings table, or no paragraph on it")
     else:
         for where, text in (("the option table", table[0]), ("the paragraph", para)):
             if "%d or more" % tiers[0] not in text or "%d or %d" % tiers[1:] not in text or "12 or more" in text:
-                bad.append("README.md: %s does not say Auto's tiers (%d or more cores, %d or %d)" % ((where,) + tiers))
-    rows = [line for line in docs.splitlines() if line.startswith("| Threaded rendering (the Insert menu's row")]
+                bad.append("docs/user/graphics-and-controls.md: %s does not say Auto's tiers (%d or more cores, %d or %d)" % ((where,) + tiers))
+    rows = [line for line in docs.splitlines() if line.startswith("| `threaded_rendering` |")]
     if len(rows) != 1 or "threaded::kAutoEnabled" not in rows[0]:
-        bad.append("docs/development.md: no row for Threaded rendering, or it does not name the gate")
+        bad.append("docs/dev/reference/switches.md: no threaded_rendering row in the options file's keys, or it does not name the gate")
     elif "%d or more cores, the render thread and the recorder thread" % tiers[0] not in rows[0] or \
             "%d or %d, the render thread alone" % tiers[1:] not in rows[0] or "usable_cores" not in rows[0]:
-        bad.append("docs/development.md: the Threaded rendering row does not say Auto's tiers by cores (usable_cores)")
+        bad.append("docs/dev/reference/switches.md: the threaded_rendering row does not say Auto's tiers by cores (usable_cores)")
     for name, need in (("RX_VK_ASYNC", "on from %d physical cores" % render_cores),
                        ("RX_VK_RECORDER", "Auto from %d physical cores" % recorder_cores)):
         m = re.search(r'^SW\(%s, \w+, \w+, "([^"]*)"' % name, s["switches"], re.M)
@@ -500,7 +510,6 @@ def check_readers(cxx, s, tmp, name="readers"):
     hook = re.search(r"\(rec::g_setting_thread = (\w+), true\)", s["replay"])
     enum = re.search(r"enum Mode : int \{[^}]*\};", s["recorder"])
     source = READERS_FIXTURE.replace("@@MODE_ENUM@@", enum.group(0) if enum else "") \
-                            .replace("@@PARALLEL@@", block(s["recorder"], "inline bool parallel_configured() {")) \
                             .replace("@@MODE_FROM_ENV@@", block(s["recorder"], "inline int mode_from_env(bool* refused) {")) \
                             .replace("@@RENDER_THREAD_MODE@@", block(s["replay"], "int render_thread_mode() {")) \
                             .replace("@@HOOK@@", hook.group(1) if hook else "nullptr")
@@ -572,11 +581,14 @@ def main():
     bad = check_sources(s)
     if bad:
         raise SystemExit("FAIL: " + "\nFAIL: ".join(bad))
-    for path in sorted(list(VK.glob("*.cpp")) + list(VK.glob("*.h")) + list((ROOT / "host").glob("*.c"))):
+    for path in sorted(list(VK.glob("*.cpp")) + list(VK.glob("*.h")) + list((VK / "menu").glob("*.cpp")) +
+                       list((ROOT / "host").glob("*.c"))):
         text = path.read_text(encoding="utf-8", errors="replace")
         reads = len(re.findall(r'getenv\("RX_VK_ASYNC"\)', text))
-        # (vk_menu.cpp's one is threaded_env, the row's line that says the switch is set: it decides nothing)
-        if reads != (1 if path.name in ("vk_replay.cpp", "vk_menu.cpp") else 0):
+        # (the menu's one is threaded_env, the row's line that says the switch is set: it decides nothing. Its module's,
+        # gpu/vk/menu/threads.cpp, #1633; vk_menu.cpp's before the modules)
+        menu_reader = "threads.cpp" if (VK / "menu" / "threads.cpp").exists() else "vk_menu.cpp"
+        if reads != (1 if path.name in ("vk_replay.cpp", menu_reader) else 0):
             raise SystemExit("FAIL: %s reads RX_VK_ASYNC itself (%d times): only render_thread_mode() decides by it, once, so "
                              "the row and the switch cannot disagree" % (path.relative_to(ROOT).as_posix(), reads))
 

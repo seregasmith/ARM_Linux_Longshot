@@ -81,7 +81,7 @@ def main():
     if stray:
         raise SystemExit("FAIL: a device lost that does not end the process: " + "; ".join(stray))
     # (the report is logf lines, which the host queues on Windows: replay_fatal writes the queue out before _Exit)
-    fatal = block(replay, "[[noreturn]] void replay_fatal(")
+    fatal = block(replay, "[[noreturn]] void replay_fatal(const char* why) {")   # (the definition, not its declaration)
     if "host->log_flush()" not in fatal or fatal.index("host->log_flush()") > fatal.index("std::_Exit("):
         raise SystemExit("FAIL: replay_fatal ends the process without writing out the host's queued log")
     backend = (ROOT / "host" / "rx_backend.c").read_text(encoding="utf-8")

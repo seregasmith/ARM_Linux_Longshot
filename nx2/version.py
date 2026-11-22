@@ -45,7 +45,7 @@ def release(root=ROOT):
 
 def long_path(p):
     """(Windows) p as an extended-length path (\\\\?\\...): a builder unpacked in a deep folder has sources past 260
-    characters (#1115: a portable launcher in Downloads), which a plain path can't open and a plain walk doesn't list.
+    characters (a portable launcher in Downloads), which a plain path can't open and a plain walk doesn't list.
     Python takes these without Windows' long-paths setting. Elsewhere, or one already: as is (nup.py's)"""
     if os.name != "nt" or not p:
         return p

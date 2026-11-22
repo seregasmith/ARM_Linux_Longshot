@@ -90,6 +90,11 @@ static bool typed_upscale(VkCommandBuffer cmd,VkImageView input,VkImageView outp
     ++upscale_calls;forwarded_cmd=cmd;forwarded_input=input;forwarded_output=output;forwarded_texture=out;
     forwarded_level=level;forwarded_key=key;forwarded_text=text;forwarded_temporal=temporal;return upscale_result;
 }
+// (the FPS counter footer's record, upscale_route.h: nobody reads it here, so nothing is published or looked up for it)
+namespace upscale_route { enum class Route { Network, StandIn, Blit, Engine, Stretch }; static bool wanted(){return false;} }
+namespace upscaler_rows { enum { GAME = 0 }; }
+static bool gameplay_network(uint64_t){return false;}
+static void route_publish(upscale_route::Route,bool,const Texture*,const Texture*,uint32_t,int=0,bool=false){}
 '''
 
 SUFFIX = r'''

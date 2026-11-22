@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include "common/alignment.h"
 #include "shader_recompiler/environment.h"
 #include "shader_recompiler/frontend/ir/modifiers.h"
@@ -984,6 +985,9 @@ thread_local u32 g_nvn2_compute_ssbo_count{16};
 thread_local u32 g_nvn2_compute_layout_end{0};
 /// (RX_VK_MISS_LOG: whether the program being translated gets the miss log; vk_shader.cpp sets it per program)
 thread_local bool g_nvn2_miss_log_this{true};
+/// (longshot, RX_VK_GP_TABLE=2: vertex, fragment and compute programs with global loads whose storage buffers left no room for the
+/// check's buffer: their loads are not checked, and vk_draw.cpp's check line counts them)
+std::atomic<u32> g_table_check_unchecked{0};
 /// (RX_VK_ALL_GLOBAL_PROGS=<key prefix>[,...], a test: the program's memory accesses all left global, none bound)
 thread_local bool g_all_global_this{false};
 thread_local bool g_gm_port_this{false};   // (longshot: EDEN_NX2_GM_PORT_PROGS names the program being translated)

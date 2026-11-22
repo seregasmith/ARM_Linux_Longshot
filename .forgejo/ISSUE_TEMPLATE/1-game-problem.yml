@@ -24,7 +24,6 @@ body:
       description: The Longshot Launcher's channel you installed from.
       options:
         - Release
-        - Release candidate
         - Nightly
         - Built from source
     validations:

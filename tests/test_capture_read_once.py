@@ -60,7 +60,7 @@ std::atomic<bool> captures_seen{true};
 std::atomic<uint64_t> cap_view_gen{1};
 bool capture_on() { return true; }
 struct SubmittedPage { uint64_t page, pgen, view; } entry{};
-uint32_t page_gen(uint64_t p) { assert(p < kPages); return 1; }
+uint64_t page_gen(uint64_t p) { assert(p < kPages); return 1; }
 SubmittedPage& submitted_page_for(uint64_t) { return entry; }
 bool submitted_page_reuse(uint64_t p,uint64_t g,uint64_t v,uint64_t q,uint64_t h,uint64_t w) {
     return p==q && g==h && v==w;
@@ -77,7 +77,7 @@ struct SubmittedRead { uint64_t gpu; void* dst; uint64_t n; };
 """
     if "int64_t mapped_submitted_read_locked(" in source:
         funcs.insert(1, "int64_t mapped_submitted_read_locked(")
-    funcs.append("uint32_t memory_page_stamp(")
+    funcs.append("uint64_t memory_page_stamp(")
     fixture += "\n".join(block(source, f) for f in funcs)
     fixture += r"""
 int main() {

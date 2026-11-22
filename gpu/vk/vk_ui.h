@@ -23,21 +23,66 @@ inline ImU32 alpha(ImU32 c, float k) {
     return (c & ~IM_COL32_A_MASK) | ((ImU32)std::clamp(a, 0, 255) << IM_COL32_A_SHIFT);
 }
 
-// ---- the palette ----
-constexpr ImU32 kInk = rgba(240, 232, 214), kInkBright = rgba(255, 250, 240), kSoft = rgba(214, 204, 184), kDim = rgba(168, 156, 136),
-                kGold = rgba(222, 152, 40), kGoldHi = rgba(238, 168, 52), kGoldInk = rgba(36, 24, 8), kAccent = rgba(214, 170, 96),
-                kEdge = rgba(122, 98, 64, 150), kCellDark = rgba(30, 25, 19, 246), kCellName = rgba(60, 47, 32, 240),
-                kCellNameSel = rgba(92, 70, 42, 248), kBronze = rgba(84, 64, 38), kColumn = rgba(34, 26, 17, 228),
-                kBannerTop = rgba(184, 146, 96, 246), kBanner = rgba(176, 138, 88, 246), kBannerInk = rgba(46, 30, 12),
-                kBannerEdge = rgba(70, 48, 24), kTabInset = rgba(84, 56, 30, 250), kBox = rgba(36, 28, 19, 248),
-                kBoxEdge = rgba(122, 98, 64, 220), kBar = rgba(22, 17, 11, 232), kListen = rgba(150, 120, 40);
+// ---- the palette: the Menu theme's (set_theme), Classic until the menu first draws ----
+// (kGold, kGoldHi and kGoldInk: the selected value's fill and its ink, gold in Classic and blue in Modern dark)
+inline ImU32 kInk = rgba(240, 232, 214), kInkBright = rgba(255, 250, 240), kSoft = rgba(214, 204, 184), kDim = rgba(168, 156, 136),
+             kGold = rgba(222, 152, 40), kGoldHi = rgba(238, 168, 52), kGoldInk = rgba(36, 24, 8), kAccent = rgba(214, 170, 96),
+             kEdge = rgba(122, 98, 64, 150), kCellDark = rgba(30, 25, 19, 246), kCellName = rgba(60, 47, 32, 240),
+             kCellNameSel = rgba(92, 70, 42, 248), kBronze = rgba(84, 64, 38), kColumn = rgba(34, 26, 17, 228),
+             kBannerTop = rgba(184, 146, 96, 246), kBanner = rgba(176, 138, 88, 246), kBannerInk = rgba(46, 30, 12),
+             kBannerEdge = rgba(70, 48, 24), kTabInset = rgba(84, 56, 30, 250), kBox = rgba(36, 28, 19, 248),
+             kBoxEdge = rgba(122, 98, 64, 220), kBar = rgba(22, 17, 11, 232), kListen = rgba(150, 120, 40),
+             kSelStart = rgba(118, 86, 44, 250),   // (the selected row's name cell at its gold bar, fading to kCellNameSel)
+             kTabEdge = rgba(52, 34, 16), kBannerHi = rgba(226, 192, 138, 140),   // (the shown tab's frame; the banner's lit line)
+             kShade = rgba(8, 5, 2, 185),   // (the game behind the menu, dimmed)
+             kKeyInk = rgba(40, 30, 20), kKeyDim = rgba(150, 140, 126),   // (on a prompt's key cap or button)
+             kFrame = rgba(190, 154, 98, 90), kFrameSel = rgba(36, 24, 8, 60),   // (a button's inner frame)
+             kTrackSel = rgba(36, 24, 8, 80), kPanel = rgba(14, 10, 6, 235),   // (a selected slider's track; the compact bar)
+             kOutline = rgba(255, 238, 206),
+             kKeyCap = rgba(46, 30, 12), kKeyCapHi = rgba(84, 56, 30, 250),   // (the banner's Q and E caps; under the mouse)
+             kStartBg = rgba(14, 10, 6), kStartGlow = rgba(46, 33, 18, 4), kWordmark = rgba(246, 232, 204);   // (the start-up screen)   // (the selection's ring)
+inline float kRound = 0;   // (cells' and boxes' corners, points: square in Classic)
 constexpr int kDimAlpha = 185;   // (the game behind the menu)
+enum Theme { kModernDark = 0, kClassic = 1 };
+/// The Menu theme's palette (opts.menu_theme): Modern dark, slate greys with a soft blue for the selection; Classic, the game's
+/// own pause menu's tan and gold. Each text keeps its 4.5:1 on its background in both
+inline void set_theme(int theme) {
+    if (theme == kClassic) {
+        kInk = rgba(240, 232, 214), kInkBright = rgba(255, 250, 240), kSoft = rgba(214, 204, 184), kDim = rgba(168, 156, 136);
+        kGold = rgba(222, 152, 40), kGoldHi = rgba(238, 168, 52), kGoldInk = rgba(36, 24, 8), kAccent = rgba(214, 170, 96);
+        kEdge = rgba(122, 98, 64, 150), kCellDark = rgba(30, 25, 19, 246), kCellName = rgba(60, 47, 32, 240);
+        kCellNameSel = rgba(92, 70, 42, 248), kBronze = rgba(84, 64, 38), kColumn = rgba(34, 26, 17, 228);
+        kBannerTop = rgba(184, 146, 96, 246), kBanner = rgba(176, 138, 88, 246), kBannerInk = rgba(46, 30, 12);
+        kBannerEdge = rgba(70, 48, 24), kTabInset = rgba(84, 56, 30, 250), kBox = rgba(36, 28, 19, 248);
+        kBoxEdge = rgba(122, 98, 64, 220), kBar = rgba(22, 17, 11, 232), kListen = rgba(150, 120, 40);
+        kSelStart = rgba(118, 86, 44, 250), kTabEdge = rgba(52, 34, 16), kBannerHi = rgba(226, 192, 138, 140);
+        kShade = rgba(8, 5, 2, kDimAlpha), kKeyInk = rgba(40, 30, 20), kKeyDim = rgba(150, 140, 126);
+        kFrame = rgba(190, 154, 98, 90), kFrameSel = rgba(36, 24, 8, 60), kTrackSel = rgba(36, 24, 8, 80);
+        kPanel = rgba(14, 10, 6, 235), kOutline = rgba(255, 238, 206), kRound = 0;
+        kKeyCap = rgba(46, 30, 12), kKeyCapHi = rgba(84, 56, 30, 250);
+        kStartBg = rgba(14, 10, 6), kStartGlow = rgba(46, 33, 18, 4), kWordmark = rgba(246, 232, 204);
+        return;
+    }
+    kInk = rgba(226, 230, 238), kInkBright = rgba(255, 255, 255), kSoft = rgba(190, 197, 210), kDim = rgba(140, 148, 164);
+    kGold = rgba(110, 148, 250), kGoldHi = rgba(138, 172, 255), kGoldInk = rgba(8, 14, 32), kAccent = rgba(138, 174, 255);
+    kEdge = rgba(255, 255, 255, 24), kCellDark = rgba(17, 19, 25, 242), kCellName = rgba(29, 32, 41, 238);
+    kCellNameSel = rgba(38, 44, 60, 248), kBronze = rgba(52, 58, 74), kColumn = rgba(12, 14, 19, 232);
+    kBannerTop = rgba(27, 30, 39, 250), kBanner = rgba(19, 21, 28, 250), kBannerInk = rgba(178, 186, 202);
+    kBannerEdge = rgba(8, 9, 12), kTabInset = rgba(40, 46, 64, 250), kBox = rgba(21, 23, 30, 250);
+    kBoxEdge = rgba(255, 255, 255, 40), kBar = rgba(12, 13, 18, 238), kListen = rgba(70, 104, 200);
+    kSelStart = rgba(54, 70, 112, 250), kTabEdge = rgba(255, 255, 255, 28), kBannerHi = rgba(255, 255, 255, 14);
+    kShade = rgba(5, 6, 9, kDimAlpha), kKeyInk = rgba(18, 20, 28), kKeyDim = rgba(128, 136, 152);
+    kFrame = rgba(255, 255, 255, 20), kFrameSel = rgba(8, 14, 32, 50), kTrackSel = rgba(8, 14, 32, 90);
+    kPanel = rgba(14, 16, 21, 240), kOutline = rgba(206, 220, 255), kRound = 4;
+    kKeyCap = rgba(50, 57, 76), kKeyCapHi = rgba(72, 84, 116);
+    kStartBg = rgba(8, 9, 12), kStartGlow = rgba(30, 38, 60, 2), kWordmark = rgba(236, 240, 248);
+}
 
 /// The unit: pixels per point. By the window's height and the Menu size (1 Small, 2 Medium, 3 Large; anything else, as the
 /// 0 Auto of older options files: Medium, whatever the input); *margin: the edge kept clear (5% at Large, the TV size)
 inline float unit(float h, int size, float* margin) {
     if (size < 1 || size > 3) size = 2;
-    const float k = size == 1 ? 0.85f : size == 3 ? 1.3f : 1.0f;
+    const float k = size == 1 ? 0.78f : size == 3 ? 1.2f : 0.9f;
     *margin = h * (size == 3 ? 0.05f : 0.025f);
     return h / 720.0f * k;
 }
@@ -50,7 +95,7 @@ struct Ctx {
     float safe;   // (the margin kept clear at each edge, pixels)
     bool pad;     // (a controller was the last input: its buttons in the prompts)
     int confirm_dot = 3, back_dot = 1;   // (the face buttons that confirm and go back: vk_menu_keys.h dot, 3 the bottom, 1 the right)
-    int paste_dot = 0;   // (longshot: the one that pastes into a text field, vk_menu_keys.h paste)
+    int paste_dot = 0;   // (the spare face button for Paste in text fields or Clear in the binding grid)
 };
 
 inline ImVec2 size_of(ImFont* font, float px, const char* t, float wrap = 0) {
@@ -165,19 +210,21 @@ inline void flourish(Ctx& c, float x0, float x1, float y, ImU32 col) {
     }
     diamond(c, ImVec2(m, y), 2.2f * s, alpha(col, 0.8f));
 }
-/// The selection: a bright outline with a soft warm-white glow around it
+/// The selection: a fine ring just outside it, a faint second one beyond (no haze)
 inline void glow(Ctx& c, ImVec2 a0, ImVec2 b0) {
-    const float s = c.s;
-    for (int i = 6; i >= 1; i--)
-        c.d->AddRect(a0 - ImVec2(i * 1.5f * s, i * 1.5f * s), b0 + ImVec2(i * 1.5f * s, i * 1.5f * s), rgba(255, 244, 220, 12 + 4 * (6 - i)),
-                     2 * s, 2.2f * s);
-    c.d->AddRect(a0 - ImVec2(1.5f * s, 1.5f * s), b0 + ImVec2(1.5f * s, 1.5f * s), kInkBright, 2 * s, 3 * s);
+    const float s = c.s, o = 2.5f * s, r = kRound * s;
+    c.d->AddRect(a0 - ImVec2(o + 2.5f * s, o + 2.5f * s), b0 + ImVec2(o + 2.5f * s, o + 2.5f * s), alpha(kOutline, 0.16f), r + o + 2.5f * s, 0,
+                 2 * s);
+    c.d->AddRect(a0 - ImVec2(o, o), b0 + ImVec2(o, o), kOutline, r + o, 0, std::max(1.0f, 1.75f * s));
 }
-/// A gold fill, lighter at its top
-inline void gold(Ctx& c, ImVec2 a0, ImVec2 b0) { c.d->AddRectFilledMultiColor(a0, b0, kGoldHi, kGoldHi, kGold, kGold); }
+/// The selected value's fill: lighter at its top in Classic; one colour, its corners rounded, in Modern dark
+inline void gold(Ctx& c, ImVec2 a0, ImVec2 b0) {
+    if (kRound > 0) c.d->AddRectFilled(a0, b0, kGold, kRound * c.s);
+    else c.d->AddRectFilledMultiColor(a0, b0, kGoldHi, kGoldHi, kGold, kGold);
+}
 
 // ---- the button prompts: the keys, or a controller's buttons by position (any layout: the dot lit) ----
-enum Glyph { kUpDown, kLeftRight, kTabs, kConfirm, kBack, kKey, kCompact, kPaste, kAddChar, kRemoveChar };
+enum Glyph { kUpDown, kLeftRight, kTabs, kConfirm, kBack, kKey, kCompact, kPaste, kAddChar, kRemoveChar, kClear };
 struct Prompt {
     Glyph g;
     const char* what;
@@ -186,7 +233,7 @@ struct Prompt {
 /// One glyph at p (its top left; the line px + 10 points high); its width. draw false: measured only
 inline float glyph(Ctx& c, float px, ImVec2 p, const Prompt& pr, bool draw) {
     const float s = c.s, hh = px + 10 * s, my = p.y + hh * 0.5f, kpx = px * 0.84f;
-    const ImU32 cap = kInk, ink = rgba(40, 30, 20), dim = rgba(150, 140, 126);
+    const ImU32 cap = kInk, ink = kKeyInk, dim = kKeyDim;
     auto key = [&](float x, const char* label) {   // (a key's cap, its label in it)
         const float w = label ? std::max(hh, size_of(c.f.strong, kpx, label).x + 14 * s) : hh;
         if (draw) {
@@ -227,6 +274,7 @@ inline float glyph(Ctx& c, float px, ImVec2 p, const Prompt& pr, bool draw) {
         case kConfirm: return key(p.x, "Enter");
         case kPaste: return key(p.x, "Ctrl+V");
         case kAddChar: return key(p.x, "Ins");
+        case kClear:
         case kRemoveChar: return key(p.x, "Del");
         default: return key(p.x, "Esc");
         }
@@ -255,7 +303,7 @@ inline float glyph(Ctx& c, float px, ImVec2 p, const Prompt& pr, bool draw) {
         c.d->AddRectFilled(m - ImVec2(len, arm), m + ImVec2(len, arm), v ? dim : ink, arm * 0.5f);
         c.d->AddRectFilled(m - ImVec2(arm, arm), m + ImVec2(arm, arm), ink);
     } else {   // (the face buttons, four dots: the bottom one confirms, the right one goes back)
-        const int lit = pr.g == kConfirm ? c.confirm_dot : pr.g == kPaste ? c.paste_dot : c.back_dot;   // (0 top, 1 right, 2 left, 3 bottom)
+        const int lit = pr.g == kConfirm ? c.confirm_dot : (pr.g == kPaste || pr.g == kClear) ? c.paste_dot : c.back_dot;
         const ImVec2 at[4] = {m + ImVec2(0, -r * 0.5f), m + ImVec2(r * 0.5f, 0), m + ImVec2(-r * 0.5f, 0), m + ImVec2(0, r * 0.5f)};
         for (int i = 0; i < 4; i++) {
             if (i == lit) c.d->AddCircleFilled(at[i], r * 0.27f, ink);
@@ -298,22 +346,22 @@ inline void banner(Ctx& c, float hh) {
     const float s = c.s;
     c.d->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(c.w, hh), kBannerTop, kBannerTop, kBanner, kBanner);
     c.d->AddRectFilled(ImVec2(0, hh - 3 * s), ImVec2(c.w, hh), kBannerEdge);
-    c.d->AddLine(ImVec2(0, hh - 4 * s), ImVec2(c.w, hh - 4 * s), rgba(226, 192, 138, 140), std::max(1.0f, s));
+    c.d->AddLine(ImVec2(0, hh - 4 * s), ImVec2(c.w, hh - 4 * s), kBannerHi, std::max(1.0f, s));
 }
 /// A box (the help, the restart question): opaque, a fine edge, a soft shadow
 inline void box(Ctx& c, ImVec2 a, ImVec2 b) {
     shadow(c, a, b, 18 * c.s, 0.8f, 4 * c.s);
-    c.d->AddRectFilled(a, b, kBox);
-    c.d->AddRect(a, b, kBoxEdge, 0, 1.5f * c.s);
+    c.d->AddRectFilled(a, b, kBox, kRound * 1.5f * c.s);
+    c.d->AddRect(a, b, kBoxEdge, kRound * 1.5f * c.s, 0, 1.5f * c.s);
 }
 /// A button as the game's pause menu draws its own: a warm cell with a fine inner frame; selected, gold with the outline
 inline void button(Ctx& c, ImVec2 a0, ImVec2 b0, const char* label, bool sel) {
-    const float s = c.s;
+    const float s = c.s, r = kRound * s;
     if (sel) gold(c, a0, b0);
-    else c.d->AddRectFilled(a0, b0, kCellName);
-    c.d->AddRect(a0 + ImVec2(4 * s, 4 * s), b0 - ImVec2(4 * s, 4 * s), sel ? rgba(36, 24, 8, 60) : rgba(190, 154, 98, 90), 0,
+    else c.d->AddRectFilled(a0, b0, kCellName, r);
+    c.d->AddRect(a0 + ImVec2(4 * s, 4 * s), b0 - ImVec2(4 * s, 4 * s), sel ? kFrameSel : kFrame, std::max(0.0f, r - 2 * s), 0,
                  std::max(1.0f, s));
-    c.d->AddRect(a0, b0, kBannerEdge, 0, std::max(1.0f, s));
+    c.d->AddRect(a0, b0, kBannerEdge, r, 0, std::max(1.0f, s));
     ImFont* f = sel ? c.f.strong : c.f.body;
     text_mid_centre(c, f, 20 * s, (a0.x + b0.x) * 0.5f, (a0.y + b0.y) * 0.5f, sel ? kGoldInk : kInk, label);
     if (sel) glow(c, a0, b0);

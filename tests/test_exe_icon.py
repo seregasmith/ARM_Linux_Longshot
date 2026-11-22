@@ -11,6 +11,7 @@ import os
 import struct
 import sys
 import tempfile
+import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,11 +36,88 @@ def entries(res):
     return out
 
 
+def rgba(png):
+    """(width, height, RGBA bytes) of an 8-bit, non-interlaced RGBA PNG, decoded here: the builders have no Pillow"""
+    width, height, depth, kind, _, _, interlace = struct.unpack(">IIBBBBB", png[16:29])
+    if (depth, kind, interlace) != (8, 6, 0):
+        fail("a PNG that is not 8-bit RGBA without interlacing (depth %d, colour type %d, interlace %d)" % (depth, kind, interlace))
+    data, at = b"", 8
+    while at < len(png):
+        size, tag = struct.unpack(">I4s", png[at:at + 8])
+        if tag == b"IDAT":
+            data += png[at + 8:at + 8 + size]
+        at += 12 + size
+    raw, stride = zlib.decompress(data), width * 4
+    out, prev = bytearray(), bytearray(stride)
+    for y in range(height):
+        f, row = raw[y * (stride + 1)], bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        for i in range(stride):
+            a = row[i - 4] if i >= 4 else 0
+            b, c = prev[i], (prev[i - 4] if i >= 4 else 0)
+            if f == 1:
+                row[i] = (row[i] + a) & 255
+            elif f == 2:
+                row[i] = (row[i] + b) & 255
+            elif f == 3:
+                row[i] = (row[i] + ((a + b) >> 1)) & 255
+            elif f == 4:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                row[i] = (row[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+        out += row
+        prev = row
+    return width, height, bytes(out)
+
+
+def shrunk(picture, size):
+    """an RGBA picture (rgba's) averaged down to size x size, colour weighted by alpha: [(r, g, b, a)]"""
+    width, height, px = picture
+    out = []
+    for by in range(size):
+        for bx in range(size):
+            r = g = b = a = n = 0
+            for y in range(by * height // size, (by + 1) * height // size):
+                for x in range(bx * width // size, (bx + 1) * width // size):
+                    i = (y * width + x) * 4
+                    w = px[i + 3]
+                    r, g, b, a, n = r + px[i] * w, g + px[i + 1] * w, b + px[i + 2] * w, a + w, n + 1
+            out.append((r / a, g / a, b / a, a / n) if a else (0, 0, 0, 0))
+    return out
+
+
+def distance(one, two):
+    """the mean difference of two shrunk pictures, colour counted where both are drawn (0 to 255)"""
+    total = 0
+    for (r1, g1, b1, a1), (r2, g2, b2, a2) in zip(one, two):
+        total += abs(a1 - a2)
+        if a1 > 64 and a2 > 64:
+            total += (abs(r1 - r2) + abs(g1 - g2) + abs(b1 - b2)) / 3
+    return total / len(one)
+
+
+SAME = 12   # (the largest distance at which the icon is still the picture: make_icon's own images are 7.8 at 32 pixels and
+#              1.7 at 256, the Hookshot icon's 35)
+
+
+def check_picture(images):
+    """the .ico's 32 and 256 pixel images are assets/longshot.png's. builder/setup/longshot.ico was renamed from
+    hookshot.ico when the project became Longshot and kept the Hookshot picture in every exe since, while the logo changed"""
+    picture = rgba((ROOT / "assets" / "longshot.png").read_bytes())
+    for size, png in images:
+        if size in (32, 256):
+            got = distance(shrunk(rgba(png), 16), shrunk(picture, 16))
+            if got > SAME:
+                fail("builder/setup/longshot.ico's %d pixel image is not assets/longshot.png (distance %.1f, above %d): "
+                     "make it again: python nx2/make_icon.py assets/longshot.png work, then copy work/longshot.ico to builder/setup/"
+                     % (size, got, SAME))
+
+
 def main():
     ico = (ROOT / "builder" / "setup" / "longshot.ico").read_bytes()
     images = make_icon.images_of_ico(ico)
     if [s for s, _ in images] != list(make_icon.SIZES):
         fail("builder/setup/longshot.ico's sizes are %s, not %s" % ([s for s, _ in images], list(make_icon.SIZES)))
+    check_picture(images)
     if make_icon.ico_of(images) != ico:
         fail("make_icon.ico_of does not write longshot.ico back as it is: images_of_ico read it wrong")
     build = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")

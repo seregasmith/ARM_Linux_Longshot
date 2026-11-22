@@ -36,6 +36,7 @@ static void logf(const char* fmt, ...) {
     std::printf("\n");
     logged++;
 }
+static std::mutex options_save_mu;
 static int wrote = 0;
 %s
     wrote++;   // (save() goes on to write the file from here)

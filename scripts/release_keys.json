@@ -1,5 +1,5 @@
 {
-  "comment": "The public key the Longshot Launcher trusts (its Core/ReleaseTrust.cs, ReleaseKeys.BuiltIn): the same one. scripts/release.py verify checks a release with it. docs/releases.md, One-time setup.",
+  "comment": "The public key the Longshot Launcher trusts (its Core/ReleaseTrust.cs, ReleaseKeys.BuiltIn): the same one. scripts/release.py verify checks a release with it. docs/dev/reference/releases.md, Signing.",
   "keys": [
     "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE5PKAyo4V9MLugswS3bMuUstnNAeNqaQBHbrDfpyhHu58osA/N8hEFI7WXqMwFh1oUFYfLaCe+AkTQ5IlTWirCQ=="
   ]

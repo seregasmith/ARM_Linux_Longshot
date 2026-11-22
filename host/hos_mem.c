@@ -27,9 +27,17 @@ static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
 uint64_t hos_heap_size, hos_heap_used, hos_total_memory, hos_program_size;
 static uint64_t sys_next = HOS_SYSTEM_BASE;
+static uint64_t mapped_bytes, mapped_peak, mapped_logged;
+/* The output preview uses a host-owned region charged for the life of this run. */
+static uint64_t output_boot_addr, output_boot_bytes;
+static int output_boot_enabled;
+static unsigned output_page_changes;
+static int64_t pages_count_locked(uint64_t addr, uint64_t size, int map);
+#define OUTPUT_BOOT_BYTES 0x790000ULL  /* 7.5 MiB of textures plus descriptors, rounded to 64 KiB */
 
-/* Address regions are handed out top-down from HOS_SPACE_END; the heap grows up from HOS_HEAP_BASE. */
-typedef struct { uint64_t addr, size; } Range;
+/* Address regions are handed out top-down from HOS_SPACE_END; the heap grows up from HOS_HEAP_BASE. A region being freed
+   stays listed, and so taken, until its pages are discarded (freeing: hos_region_free). */
+typedef struct { uint64_t addr, size; int freeing; } Range;
 static Range *regions;
 static int nregions, capregions;
 static uint64_t region_floor = ~0ULL;   /* the lowest region (none yet: the window's end) */
@@ -39,6 +47,12 @@ static uint64_t region_floor = ~0ULL;   /* the lowest region (none yet: the wind
 static uint64_t low_hole[2][2];
 
 void hos_mem_init(uint64_t image_end) {
+#ifdef _WIN32
+    uint32_t hos_output_size(int height);
+    output_boot_enabled = !env_on("HOS_HEADLESS") && !getenv("HOS_OUTPUT_RES") &&
+                          !strcmp(hos_main_build_id, "e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348") &&
+                          hos_output_size(0) == 1280 && hos_output_size(1) == 720;
+#endif
     hos_program_size = image_end - hos_image_base;
     hos_commit(HOS_SYSTEM_BASE, HOS_SYSTEM_END - HOS_SYSTEM_BASE);
     low_hole[0][0] = 0x00100000ULL, low_hole[0][1] = HOS_SYSTEM_BASE;
@@ -63,7 +77,9 @@ uint64_t hos_region_floor(void) { return region_floor; }
 
 /* (longshot, the control bridge: host/control.c) Whether [addr, addr + size) is wholly inside memory the runtime has
    mapped for the game: the image, the system region in use (our own objects), the heap, or an address region. A read or
-   write outside it is refused, never faulted. The classes it may fall in (0 none): */
+   write outside it is refused, never faulted. A region being freed (hos_region_free) counts as mapped until its pages are
+   handed back: a bridge read there meanwhile may return zeros, or old and new bytes mixed (harmless: the guest has freed
+   it). The classes it may fall in (0 none): */
 enum { HOS_MEM_IMAGE = 1, HOS_MEM_SYSTEM, HOS_MEM_HEAP, HOS_MEM_REGION };
 int hos_mem_region(uint64_t addr, uint64_t size) {
     uint64_t end;
@@ -94,10 +110,49 @@ uint64_t hos_sys_alloc(uint64_t size, uint64_t align) {
     return a;
 }
 
-uint64_t hos_region_alloc(uint64_t size, uint64_t align) {
+/* Hold admission until the page operation actually finishes. Discard can yield to the renderer, so it
+   cannot hold the address map lock. Boot reservation fails if an operation is still in flight. */
+int hos_output_page_change_begin(uint64_t addr, uint64_t size) {
+    if (!output_boot_enabled) return 1;
+    LOCK();
+    const int overlaps = output_boot_bytes && size && addr < output_boot_addr + output_boot_bytes &&
+                         (addr >= output_boot_addr || size > output_boot_addr - addr);
+    if (!overlaps) output_page_changes++;
+    UNLOCK();
+    return !overlaps;
+}
+
+void hos_output_page_change_end(void) {
+    if (!output_boot_enabled) return;
+    LOCK();
+    output_page_changes--;
+    UNLOCK();
+}
+
+void hos_output_boot_region(uint64_t *addr, uint64_t *size) {
+    *addr = *size = 0;
+    if (!output_boot_enabled) return;
+    LOCK();
+    *addr = output_boot_addr;
+    *size = output_boot_bytes;
+    UNLOCK();
+}
+
+static uint64_t region_alloc(uint64_t size, uint64_t align, int boot_output, int force_refusal) {
     if (align < 0x1000) align = 0x1000;
     size = (size + 0xFFF) & ~0xFFFULL;
     LOCK();
+    if (boot_output) {
+        uint64_t used = hos_program_size;
+        if (output_boot_addr || output_page_changes || !hos_heap_size || size != OUTPUT_BOOT_BYTES || align != 0x10000 ||
+            __builtin_add_overflow(used, 16ULL << 20, &used) ||
+            __builtin_add_overflow(used, hos_heap_size, &used) ||
+            __builtin_add_overflow(used, mapped_bytes, &used) ||
+            used > hos_total_memory || size > hos_total_memory - used) {
+            UNLOCK();
+            return 0;
+        }
+    }
     /* first fit, top-down, between existing regions (kept sorted by address, descending) */
     uint64_t top = HOS_SPACE_END, found = 0;
     int at = nregions;
@@ -127,20 +182,62 @@ uint64_t hos_region_alloc(uint64_t size, uint64_t align) {
         }
     if (found) {
         if (nregions == capregions) {
-            capregions = capregions ? capregions * 2 : 64;
-            regions = (Range *)realloc(regions, capregions * sizeof(Range));
+            const int capacity = capregions ? capregions * 2 : 64;
+            Range *grown = (Range *)realloc(regions, capacity * sizeof *regions);
+            if (!grown) {
+                UNLOCK();
+                if (boot_output) return 0;
+                hos_fatal(NULL, "cannot grow guest address region table");
+                return 0;
+            }
+            regions = grown;
+            capregions = capacity;
+        }
+        if (boot_output) {
+            /* One non-waiting commit while the address is still private. Refusal leaves the address map unchanged. */
+#ifdef _WIN32
+            MEMORY_BASIC_INFORMATION info;
+            if (force_refusal || (uint64_t)pages_count_locked(found, size, 2) != size ||
+                !VirtualQuery(GP(found), &info, sizeof info) || info.State != MEM_RESERVE ||
+                (uintptr_t)GP(found) - (uintptr_t)info.BaseAddress > info.RegionSize ||
+                size > info.RegionSize - ((uintptr_t)GP(found) - (uintptr_t)info.BaseAddress) ||
+                !VirtualAlloc(GP(found), (SIZE_T)size, MEM_COMMIT, PAGE_READWRITE)) {
+                UNLOCK();
+                return 0;
+            }
+#else
+            (void)force_refusal;
+            UNLOCK();
+            return 0;
+#endif
+            output_boot_addr = found;
+            output_boot_bytes = size;
         }
         memmove(&regions[at + 1], &regions[at], (nregions - at) * sizeof(Range));
         regions[at].addr = found;
         regions[at].size = size;
+        regions[at].freeing = 0;   /* (the slot still holds the entry moved up from it, which may be being freed) */
         nregions++;
         if (found < region_floor && found >= HOS_HEAP_BASE) region_floor = found;   /* (not the holes below) */
     }
     UNLOCK();
+    if (boot_output) return found;
     if (found) hos_commit(found, size);
     if (!found) hos_fatal(NULL, "address space exhausted (%#llx bytes asked, heap %#llx)", (unsigned long long)size,
                           (unsigned long long)hos_heap_size);
     return found;
+}
+
+uint64_t hos_region_alloc(uint64_t size, uint64_t align) {
+    return region_alloc(size, align, 0, 0);
+}
+
+uint64_t hos_output_boot_reserve(int force_refusal, uint64_t *bytes) {
+    *bytes = 0;
+    if (!output_boot_enabled || env_on("HOS_MEMINFO_OLD")) return 0;
+    const uint64_t addr = region_alloc(OUTPUT_BOOT_BYTES, 0x10000, 1, force_refusal);
+    if (addr) *bytes = OUTPUT_BOOT_BYTES;
+    return addr;
 }
 
 static uint64_t pages_used[(1ULL << 32) / 0x1000 / 64];
@@ -197,21 +294,61 @@ int hos_regions(uint64_t (*out)[2], int cap) {
     return n;
 }
 
+/* nn::os::FreeAddressRegion's work. The discard hands the pages back to the system, milliseconds for a large region: the
+   thread gives its virtual core up for it, as for a file read, so the threads that share the core (on the console, often
+   of a higher priority than the game's resource memory thread that frees) are not held up for all of it. The region stays
+   listed until its pages are discarded, marked as being freed, so that no hos_region_alloc meanwhile is handed pages the
+   discard would wipe. A second free of the address meanwhile (the guest freeing it twice) finds it marked and does
+   nothing: were it to unlist the region, the address could be handed out again while the first discard still runs, and
+   the first free would then unlist the new region. The region leaves the list before the thread waits for its core
+   again. The renderer's question in discard_pages (rx_guest_imported) gives a core up and takes one back on its own;
+   here the thread holds none by then, so its hos_vcore_away answers 0 (this away has cleared any escape) and only the
+   hos_vcore_back below takes a core back: once for each region freed, as before this function gave its core up */
 void hos_region_free(uint64_t addr) {
-    uint64_t freed = 0, freed_size = 0;
+    if (!hos_output_page_change_begin(addr, 1)) return;
+    uint64_t size = 0;
+    int found = 0;
     LOCK();
     for (int i = 0; i < nregions; i++) {
-        if (regions[i].addr == addr) {
+        if (regions[i].addr == addr && !regions[i].freeing) {
+            regions[i].freeing = 1;
             pages_mark_used_locked(regions[i].addr, regions[i].size);
-            freed = regions[i].addr;
-            freed_size = regions[i].size;
+            size = regions[i].size;
+            found = 1;
+            break;
+        }
+    }
+    UNLOCK();
+    if (!found) {
+        hos_output_page_change_end();
+        return;
+    }
+    const int away = hos_vcore_away();
+    discard_pages(addr, size);   /* (nothing for a region of no size) */
+    LOCK();
+    for (int i = 0; i < nregions; i++) {
+        if (regions[i].addr == addr && regions[i].freeing) {
             memmove(&regions[i], &regions[i + 1], (nregions - i - 1) * sizeof(Range));
             nregions--;
             break;
         }
     }
     UNLOCK();
-    if (freed_size) discard_pages(freed, freed_size);
+    hos_output_page_change_end();
+    if (away) hos_vcore_back();
+}
+
+/* (hookshot) whether [addr, addr + n) is guest memory the game was given: the image, the heap so far, or one address region
+   (host/cheats.c checks its reads and writes with it) */
+int hos_mem_mapped(uint64_t addr, uint64_t n) {
+    if (addr + n < addr) return 0;
+    if (addr >= hos_image_base && addr + n <= hos_image_end) return 1;
+    if (addr >= HOS_HEAP_BASE && addr + n <= HOS_HEAP_BASE + hos_heap_size) return 1;
+    int ok = 0;
+    LOCK();
+    for (int i = 0; i < nregions && !ok; i++) ok = addr >= regions[i].addr && addr + n <= regions[i].addr + regions[i].size;
+    UNLOCK();
+    return ok;
 }
 
 /* ---- nn::os memory -------------------------------------------------------------------------------------- */
@@ -236,7 +373,12 @@ int hos_heap_size_fits(uint64_t size) {
 HLE(_ZN2nn2os17SetMemoryHeapSizeEm) {
     uint64_t size = ARG(0);
     HOS_TRACE_CALL("SetMemoryHeapSize");
+    if (!hos_output_page_change_begin(HOS_HEAP_BASE, size)) {
+        RET(0xCA01);
+        return;
+    }
     if (!hos_heap_size_fits(size)) {
+        hos_output_page_change_end();
         hos_log("SetMemoryHeapSize(%#llx): collides with address regions at %#llx", (unsigned long long)size,
                 (unsigned long long)region_floor);
         RET(0xCA01);   /* svc::ResultOutOfMemory */
@@ -266,6 +408,7 @@ HLE(_ZN2nn2os17SetMemoryHeapSizeEm) {
     if (size > hos_heap_size) hos_commit(HOS_HEAP_BASE + hos_heap_size, size - hos_heap_size);
 #endif
     hos_heap_size = size;
+    hos_output_page_change_end();
     hos_log("heap: %llu MB at %#llx", (unsigned long long)(size >> 20), (unsigned long long)HOS_HEAP_BASE);
     RET(0);
 }
@@ -313,7 +456,6 @@ HLE(_ZN2nn2os17FreeAddressRegionEm) {
 #define PAGES_LEAF_SHIFT 30   /* (a GB of the window: 2^18 pages, 4096 words of bits) */
 #define PAGES_LEAF_PAGES (1ULL << (PAGES_LEAF_SHIFT - 12))
 static uint64_t *mapped_bits[(HOS_GUEST_SPACE + (1ULL << PAGES_LEAF_SHIFT) - 1) >> PAGES_LEAF_SHIFT];
-static uint64_t mapped_bytes, mapped_peak, mapped_logged;
 /* map 1: marked mapped, 0: marked free, 2: nothing changed. The bytes that change (or would, for 2: those not mapped yet) */
 static int64_t pages_count_locked(uint64_t a, uint64_t n, int map) {
     int64_t changed = 0;
@@ -354,7 +496,7 @@ uint64_t hos_used_memory(uint64_t base) {
     if (old < 0) old = env_on("HOS_MEMINFO_OLD");
     if (old) return base;
     LOCK();
-    const uint64_t mapped = mapped_bytes;
+    const uint64_t mapped = mapped_bytes + output_boot_bytes;
     UNLOCK();
     const uint64_t used = base + hos_heap_size + mapped;
     return used < hos_total_memory ? used : hos_total_memory;
@@ -369,12 +511,21 @@ HLE(_ZN2nn2os19AllocateMemoryPagesEmm) {
         RET(0xCA01);   /* svc::ResultOutOfMemory */
         return;
     }
+    if (!n) {
+        RET(0);
+        return;
+    }
+    if (!hos_output_page_change_begin(a, n)) {
+        RET(0xCA01);
+        return;
+    }
     {
         static int limit = -1;
         if (limit < 0) limit = env_on("HOS_PAGES_LIMIT");
         LOCK();
-        if (limit && hos_heap_size + mapped_bytes + (uint64_t)pages_count_locked(a, n, 2) > hos_total_memory) {
+        if (limit && hos_heap_size + mapped_bytes + output_boot_bytes + (uint64_t)pages_count_locked(a, n, 2) > hos_total_memory) {
             UNLOCK();
+            hos_output_page_change_end();
             static int told;
             if (told++ < 20)
                 hos_log("mem: AllocateMemoryPages(%#llx, %llu MB) refused: %llu MB mapped + %llu MB heap would pass the console's %llu MB",
@@ -421,6 +572,7 @@ HLE(_ZN2nn2os19AllocateMemoryPagesEmm) {
             for (int i = 0; i < nruns; i++) memset(GP(runs[i][0]), 0, runs[i][1] - runs[i][0]);
     }
     HOS_WRITTEN(GP(a), n);
+    hos_output_page_change_end();
     RET(0);
 }
 
@@ -429,6 +581,14 @@ HLE(_ZN2nn2os15FreeMemoryPagesEmm) {
     HOS_TRACE_CALL("FreeMemoryPages");
     if (!hos_guest_range(ARG(0), ARG(1))) {   /* (longshot: decommitted or discarded: guest pages only) */
         hos_log("FreeMemoryPages(%#llx, %#llx): outside the guest window", (unsigned long long)ARG(0), (unsigned long long)ARG(1));
+        RET(0xCA01);
+        return;
+    }
+    if (!ARG(1)) {
+        RET(0);
+        return;
+    }
+    if (!hos_output_page_change_begin(ARG(0), ARG(1))) {
         RET(0xCA01);
         return;
     }
@@ -452,10 +612,10 @@ HLE(_ZN2nn2os15FreeMemoryPagesEmm) {
             hos_posix_guest_discard(GP(lo), (size_t)(hi - lo));
         }
 #endif
-        RET(0);
-        return;
+    } else {
+        discard_pages(ARG(0), ARG(1));
     }
-    discard_pages(ARG(0), ARG(1));
+    hos_output_page_change_end();
     RET(0);
 }
 

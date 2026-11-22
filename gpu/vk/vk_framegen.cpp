@@ -16,6 +16,7 @@
 #include <deque>
 #include <mutex>
 #include <thread>
+#include <utility>   // (std::exchange: framegen_idle)
 
 #include <cmath>
 
@@ -23,6 +24,7 @@
 #ifdef TRACY_ENABLE
 #include "../../host/hos_tracy.h"   // (LONGSHOT_TRACY: the profiler's zones; nothing in any other build)
 #endif
+#include "framegen_idle.h"   // (longshot: when its images are let go, framegen_idle)
 #include "vk_antilag.h"   // (AMD Anti-Lag 2: which game frame a set shows, antilag_frame / antilag_present_frame)
 #include "vk_dlss.h"   // (NVIDIA DLSS Frame Generation through NGX: dlss_fg_frames)
 #include "vk_reflex.h"   // (NVIDIA Reflex: which game frame a set shows, reflex_frame / reflex_present_frame)
@@ -38,6 +40,8 @@
 #include "shaders/fg_copy_comp_spv.h"
 #include "shaders/fg_flow_comp_spv.h"
 #include "shaders/fg_hud_comp_spv.h"   // (AMD FSR 3.1's interpolation source with the HUD marked: hud_source)
+#include "shaders/fg_hud_composite_comp_spv.h"   // (the HUD over FSR 3.1's made frames: fsr3fi_frames)
+#include "shaders/fg_hud_layer_comp_spv.h"   // (how see-through the HUD is: hud_source)
 #include "shaders/fg_luma_comp_spv.h"
 #include "shaders/fg_median_comp_spv.h"
 #include "shaders/fg_scale_comp_spv.h"
@@ -205,7 +209,7 @@ void fixed_dues(int64_t last, int64_t now, int made, int64_t delay, int64_t* due
 /// one), and its game frame that much later, where the next set's first one follows
 int64_t pace_lead(int64_t frame, int made) { return made > 0 ? frame * made / (made + 1) : 0; }
 
-// doc: docs/design.md#13-frame-generations-presents-as-rules (rule 3: the GPU's delay from sets taken as they came)
+// doc: docs/dev/reference/architecture.md#frame-generations-presents (rule 3: the GPU's delay from sets taken as they came)
 /// (longshot) The GPU's delay that a fixed multiplier's sets are shown at past their lead (fg.late_ns), from what the last
 /// set needed: its own delay (extra_ns) and how late (negative: early) its first frame could be shown against its time,
 /// and a millisecond to spare. The set's frames are done with the game frame's GPU work, so shown at times that did not
@@ -218,7 +222,7 @@ int64_t pace_delay(int64_t extra, int64_t need, int64_t frame) {
     return std::clamp<int64_t>(extra, 0, frame);
 }
 
-// doc: docs/design.md#13-frame-generations-presents-as-rules (rule 2: sets on the game's timeline, any mode)
+// doc: docs/dev/reference/architecture.md#frame-generations-presents (rule 2: sets on the game's timeline, any mode)
 /// (longshot) Whether display_main shows a fixed multiplier's set at its times on the game's timeline (by_time): whatever
 /// Frame pacing says and whatever the swapchain's mode. Where it does not wait for a refresh (immediate: V-Sync Off;
 /// mailbox), shown as they came, a set's frames went out within a millisecond, the made frames hardly on the screen, and
@@ -251,7 +255,7 @@ int fifo_pick(int frames, int shown, int k) {
     return ((k + 1) * frames * 2 + shown) / (2 * shown) - 1;
 }
 
-// doc: docs/design.md#13-frame-generations-presents-as-rules (rule 6: under FIFO the made frames do not queue)
+// doc: docs/dev/reference/architecture.md#frame-generations-presents (rule 6: under FIFO the made frames do not queue)
 /// (longshot) FIFO's catch-up (display_main's take): how many made frames a fixed multiplier's set on the game's timeline
 /// leaves out, spread over it (fifo_pick). The frames shown go a refresh apart at the least (fifo_slot), the first a
 /// refresh after each of the set before's frames still to show (left, the first of them at slot; 0: all shown, slot the
@@ -721,7 +725,7 @@ void fg_latency_note(int64_t at, int64_t called, bool game, uint64_t present_id,
     }
 }
 
-// doc: docs/design.md#13-frame-generations-presents-as-rules (rule 4: the spare images a set presented ahead holds)
+// doc: docs/dev/reference/architecture.md#frame-generations-presents (rule 4: the spare images a set presented ahead holds)
 /// Present ahead (display_main): a set's copies go to the GPU together, ahead of their presents, which holds as many
 /// swapchain images acquired at once as the set has frames, so only where the swapchain has that many to spare (an acquire
 /// past them has to time out, the Vulkan spec); a set it cannot hold is shown one frame at a time. pace: Frame pacing On,
@@ -782,9 +786,9 @@ void display_main() {
         present_image(j.set->frame[f].image, fg.w, fg.h, nullptr, j.set->frame[f].view);
         present_defer_into = nullptr;
         // (as it came: taken within 3 ms of its coming, and its first copy not held in present_image over 3 ms, waiting for a
-        // frame slot, a swapchain image or a new swapchain: the review, 2026-11-17. A wait there grows with the delay; the
+        // frame slot, a swapchain image or a new swapchain. A wait there grows with the delay; the
         // copy's own time to submit (the game's held submits, the queue's lock) is the pipeline's and counts in the delay:
-        // timed from after it, a CPU that takes 3 ms to submit left every set out, and the delay stayed at 0)
+        // timed from after it, a CPU that takes 3 ms to submit would leave every set out, and the delay would stay at 0)
         if (k == 0) s.as_came = t0 - j.queued <= 3000000 && now_ns() - t0 <= 3000000;
     };
     // The copies of a set presented ahead still to go to the GPU, in order, for as many of its frames as `room` (the spare
@@ -831,21 +835,21 @@ void display_main() {
         s.auto_timed = j.set->shown >= 0;   // (Auto: each frame at its own refresh's time)
         s.shown = s.auto_timed ? j.set->shown : j.set->made + 1;
         // (longshot) FIFO's catch-up: a set whose game frame would come over a refresh late leaves made frames out, spread
-        // over it, and their copies (fifo_catch_up, fifo_pick). 3x at 165 Hz and 60 a second without it: the game frame 82
-        // ms from its hand-over to the screen, against 51 before #1442 (its latency A/B); 6x: 138 ms. left: the set
-        // before's frames still to show. Only a set on the timeline, which the swapchain holds whole (present_ahead_wanted):
-        // one shown a frame at a time (7x and 8x under FIFO on an NVIDIA surface by the renderer's own or FSR 3.1: DLSS
-        // FG runs them at 6x, #1486) goes out as before, all its frames
+        // over it, and their copies (fifo_catch_up, fifo_pick). Without it, 3x at 165 Hz and 60 a second puts the game frame
+        // ~80 ms from its hand-over to the screen (~50 with it); 6x: 138 ms. left: the set before's frames still to show.
+        // Only a set on the timeline, which the swapchain holds whole (present_ahead_wanted): one shown a frame at a time
+        // (7x and 8x under FIFO on an NVIDIA surface by the renderer's own or FSR 3.1: DLSS FG runs them at 6x) goes out
+        // whole, all its frames
         if (!s.auto_timed && dev.swap_mode == VK_PRESENT_MODE_FIFO_KHR && on_line(j.set) &&
             present_ahead_wanted(true, j.set->made + 1, dev.swap_spare.load(std::memory_order_relaxed)) &&
             (s.first = fifo_catch_up(j.set->made, j.set->due, slot, left, fifo_refresh, now_ns())))
             s.shown -= s.first, stat.caught += s.first;
         s.step = interval / std::max(s.shown, 1);
         if (s.auto_timed) menu_note_frame(true, 0);   // (the overlay's game rate: Auto counts each game frame, given a refresh or not)
-        // (longshot) Present ahead (#1702). Each frame's copy into the window was submitted at its
-        // time, behind the game's next frame on the same queue, and shown only once that frame's rendering was done: at 2x the
-        // game's own frames reached the screen ~3 ms after the made ones, 5.7 and 11 ms apart instead of 8.3 (PresentMon, RTX
-        // 5080, 60 fps), and a VRR display's refresh changed every frame (flicker on OLED). Now a set's copies go to the GPU
+        // (longshot) Present ahead. A frame's copy into the window submitted at its time sits behind the game's next frame on
+        // the same queue, and is shown only once that frame's rendering is done: at 2x the game's own frames reach the screen
+        // ~3 ms after the made ones, unevenly apart, and a VRR display's refresh changes every frame (flicker on OLED).
+        // So a set's copies go to the GPU
         // together, the first one's end is waited for, and only the presents keep their times on the line.
         const bool line = on_line(j.set);
         s.ahead = present_ahead_wanted(pace || line, s.shown, dev.swap_spare.load(std::memory_order_relaxed));
@@ -935,7 +939,7 @@ void display_main() {
             int64_t due = timed ? j.set->due[f] : pace ? next_show : 0;
             // (a frame on the game's timeline is late against its own time, below; under FIFO against its refresh slot, a
             // refresh after the slot before, also where fifo_slot starts again from now: so a set late from the GPU or a
-            // held thread is counted, the review, 2026-11-17)
+            // held thread is counted)
             int64_t own = due;
             int64_t now = now_ns();
             if (s.refresh && dev.swap_mode == VK_PRESENT_MODE_FIFO_KHR) {   // (one a refresh at most)
@@ -1020,6 +1024,11 @@ void note_maker(FgMaker m) {
     maker_at.store(now_ns(), std::memory_order_relaxed);
 }
 
+// (longshot) This present gave FSR 3.1 a frame (fsr3fi_frames, right before fsr3fi::generate): its own images were in use, whatever
+// came of it and whichever made frames were shown. framegen_idle takes it, and clears it for the next present: both on the replay
+// thread, framegen_record before framegen_idle in every present
+bool fsr_given = false;
+
 } // namespace
 
 int framegen_capped(int framegen, int dlss_most) {
@@ -1051,6 +1060,28 @@ bool framegen_on() {
     return framegen_wanted(opts.framegen, allow) && !dev.offscreen && !fg.failed;
 }
 
+void framegen_idle(bool recorded) {
+    using namespace framegen_idle_rule;
+    static Counts counts;
+    const bool on = framegen_on();
+    // (FSR's own images by this present's own use of them, not by `recorded`: a set the built-in or DLSS-G made leaves them unused)
+    const bool fsr_used = std::exchange(fsr_given, false);
+    const Release due = step(counts, {on, on && fsr3fi::frames_wanted(), recorded, fsr_used, fg.w != 0});
+    if (due.fsr) fsr3fi::release();
+    if (!due.shared) return;
+    {   // (as ensure_size: the display thread done with the sets, then every queue idle)
+        std::unique_lock lk(fg.mu);
+        fg.cv.wait(lk, [] { return fg.jobs.empty() && !fg.sets[0].busy && !fg.sets[1].busy && !fg.sets[2].busy; });
+    }
+    {
+        std::lock_guard qk(dev.present_mu);
+        device_wait_idle_locked();
+    }
+    const uint64_t mb = ((uint64_t)fg.w * fg.h * 4 * (2 + 3 * (uint64_t)fg.mult)) >> 20;   // (the RGBA8 frames; lumas and flows are small)
+    logf("vk: frame interpolation off: its images (%ux%u, %dx) let go, about %llu MB", fg.w, fg.h, fg.mult, (unsigned long long)mb);
+    drop_size();
+}
+
 // Ultrawide's menus (the Insert menu's Ultrawide menus): which of nx2/oot_wide.py's keep-list screens keep the whole picture, told
 // to the game's side each present, and, while a menu shows, the sides of the middle 16:9 to show out of focus (1)
 // or black (2), as fractions of the width. A menu's layout is set up once, when it is first opened: what tells one is
@@ -1065,7 +1096,7 @@ WideSides wide_sides() {
     // (KEEP_VTABLES 1 and 3: the pause / system menus and the loading fade, whose layout host/hos_wide_ui.c then places as the
     // HUD's. 0, the item wheel's background, and 2, the event fade, keep covering the whole picture)
     constexpr uint32_t kMenus = 0xa;
-    const float margin = host->wide_menus(opts.wide_menus ? 0xfu & ~kMenus : 0xfu);
+    const float margin = host->wide_menus(opts.wide_menus ? 0x1fu & ~kMenus : 0x1fu);
     extern std::atomic<int64_t> world_drawn_at;
     extern int64_t presents_now;
     extern std::atomic<int64_t> wheel_drawn_at;
@@ -1073,8 +1104,10 @@ WideSides wide_sides() {
     // console: its sides are left as the game draws them)
     const bool no_world = presents_now - world_drawn_at.load(std::memory_order_relaxed) > 3 &&
                           presents_now - wheel_drawn_at.load(std::memory_order_relaxed) > 3;
-    wide_possible.store(opts.wide_menus && margin > 0.0f, std::memory_order_relaxed);
-    if (opts.wide_menus && margin > 0.0f && no_world) w.x0 = margin, w.side = opts.wide_menus;
+    // (3, Extended: the menus at their own size with their side panes at the screen's edges, host/hos_wide_ui.c: no sides of their own)
+    const bool centred = opts.wide_menus == 1 || opts.wide_menus == 2;
+    wide_possible.store(centred && margin > 0.0f, std::memory_order_relaxed);
+    if (centred && margin > 0.0f && no_world) w.x0 = margin, w.side = opts.wide_menus;
     static int told = 0;
     if (w.side != told) {   // (each change logged: a report of blurred sides in play says when they came and went)
         logf("vk: ultrawide menu sides %s at present %lld (the world last drawn at present %lld)", w.side ? "on" : "off",
@@ -1173,7 +1206,7 @@ VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint
     }
     struct { int mode; float sharp; float x0, x1; int side; } pc{opts.upscale, opts.sharpness / 100.0f, wide.x0, 1.0f - wide.x0, wide.side};
     if (wide.side == 1) {   // (the blurred sides: first the picture at 1/8, each pixel the mean of its 8 x 8, which they blur)
-        // (from #1448's checked source rectangle, as the crop above: the picture src now holds)
+        // (the checked source rectangle, as the crop above: the picture src now holds)
         const uint32_t smw = std::max(1u, source.w / 8), smh = std::max(1u, source.h / 8);
         if (scale.small_w != smw || scale.small_h != smh) {
             {
@@ -1218,7 +1251,7 @@ VkImageView framegen_scaled_view() { return scale.output_view; }
 /// Native's scaled picture, else black).
 /// src is the SDR picture, expanded, or with pq the game's own HDR10 picture (Native); either graded by the HDR contrast row
 VkImage framegen_hdr(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t sh, const int crop[4], uint32_t dw, uint32_t dh,
-                     bool pq) {
+                     bool pq, int colour_vision) {
     if (!src || !sw || !sh || !dw || !dh) return VK_NULL_HANDLE;
     const PresentSourceRect source = present_source_rect(sw, sh, crop);
     if (!source.w || !source.h) return VK_NULL_HANDLE;
@@ -1250,10 +1283,10 @@ VkImage framegen_hdr(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     }
     const float x0 = source.x / (float)sw, y0 = source.y / (float)sh;
     const float x1 = (source.x + source.w) / (float)sw, y1 = (source.y + source.h) / (float)sh;
-    // (hdr_encode.comp's push constants: the crop, paper white, peak, knee, mode, contrast, exposure (1: none), two pads)
-    const struct { float uv[4]; float white, peak, knee, mode, contrast, exposure, pad0, pad1; } pc{
+    // (hdr_encode.comp's push constants: the crop, paper white, peak, knee, mode, contrast, exposure (1: none), colour vision mode, pad)
+    const struct { float uv[4]; float white, peak, knee, mode, contrast, exposure, colour_vision, pad1; } pc{
         {x0, y0, x1, y1}, (float)std::clamp(opts.hdr_white, 80, 500), (float)std::clamp(opts.hdr_peak, 400, 10000), 0.6f,
-        pq ? 1.0f : 0.0f, std::clamp(opts.hdr_contrast, 50, 200) / 100.0f, 1.0f, 0.0f, 0.0f};
+        pq ? 1.0f : 0.0f, std::clamp(opts.hdr_contrast, 50, 200) / 100.0f, 1.0f, (float)colour_vision, 0.0f};
     pass(cmd, hdr.pipe, {{src, scale.linear}, {hdr.out.view, VK_NULL_HANDLE}}, dw, dh, &pc, sizeof pc);
     return hdr.out.image;
 }
@@ -1269,28 +1302,45 @@ VkImage framegen_made_image(uint32_t* w, uint32_t* h, int* index) {
     return fg.recorded->frame[k].image;
 }
 
-// (longshot) The HUD for AMD FSR 3.1's frame interpolation (#1310, #1420). The game draws its HUD (hearts, minimap, button
-// prompts) into the same picture as the scene, after its gameplay upscale, and has no HUD-less colour. The patched
-// interpolation used to guess the HUD as the pixels the same in both frames while the scene moved: the see-through parts
-// (the minimap, the prompts' backing), the soft edges and anything animated failed the guess and were moved with the
-// scene, a HUD that smeared and shook with every turn of the camera. So the picture is copied just after the upscale wrote
+// (longshot) The HUD for AMD FSR 3.1's frame interpolation. The game draws its HUD (hearts, minimap, button
+// prompts) into the same picture as the scene, after its gameplay upscale, and has no HUD-less colour. Guessing the HUD
+// as the pixels the same in both frames while the scene moves fails for the see-through parts (the minimap, the prompts'
+// backing), the soft edges and anything animated, which are moved with the scene: a HUD that smears and shakes with every
+// turn of the camera. So the picture is copied just after the upscale wrote
 // it (framegen_hud_before, from vk_draw.cpp's dispatch of the upscale, whoever drew it); at the present what differs from
 // that copy is the HUD, marked in the interpolation source's alpha (shaders/fg_hud.comp), and the interpolation keeps
 // those pixels where they are (vk_fsr3fi.h Inputs::hud_mask). A frame without the copy (no gameplay upscale: a menu, a
-// movie) keeps the old guess.
-// The mark alone still let the HUD smear (#1310 after #1464): the frame before's HUD stayed in the interpolation's previous
-// source and was dragged with the scene, and the inpainting spread the HUD's colours into the holes a turn opens beside it.
+// movie) keeps the guess.
+// The mark alone still lets the HUD smear: the frame before's HUD stays in the interpolation's previous
+// source and is dragged with the scene, and the inpainting spreads the HUD's colours into the holes a turn opens beside it.
 // So the copy itself, cropped as the frame (hud.hudless), is what FSR 3.1 interpolates: its own HUD-less colour, the HUD in
 // neither frame, and this frame's HUD laid over the made frame after, where the presented frame differs from it
-// (vk_fsr3fi.h Inputs::present; RX_VK_FSR_FG_HUDLESS=0: the mark as before). The copy only where the HUD is: elsewhere the
+// (vk_fsr3fi.h Inputs::present; RX_VK_FSR_FG_HUDLESS=0: the mark alone). The copy only where the HUD is: elsewhere the
 // presented frame's own pixels, or FSR 3.1 finds the two different everywhere (the copy is from before the game's last
 // pass) and every made frame is the presented one (shaders/fg_hud.comp).
+// Laid over whole, the presented pixel still brings this frame's scene with it wherever the HUD lets the scene through
+// (the hearts' glow, the item box's shadow, the faint icons, the minimap): a halo of the real frame's background around
+// every HUD element of every made frame. So how see-through each HUD pixel is (T) is learned from frame to frame,
+// the HUD staying where it is while the scene behind it moves (shaders/fg_hud_layer.comp: hud.layer, the HUD's own colour
+// and T); FSR 3.1 is given the HUD-less colour as its present too, so it lays nothing over its made frames, and the HUD goes
+// over each made frame's own scene (shaders/fg_hud_composite.comp); where T is not known, the presented pixel
+// (RX_VK_FSR_FG_HUD_LAYER=0: everywhere, for an A/B).
 namespace {
 struct HudState {
     std::mutex mu;   // (framegen_hud_before is called from the replay's workers)
     bool init = false, failed = false;
     Pipe mask;
-    Img before, after;   // (the picture after the upscale, and as presented: its format and size)
+    // (the picture after the upscale, and as presented: its format and size; two of each, this frame's at k and the frame
+    // before's at k ^ 1, for the HUD layer's fit: prev says the frame before's are there and its pair)
+    Img before[2], after[2];
+    int k = 0;
+    bool prev = false;
+    Pipe fit_pipe, over_pipe;
+    bool layer_failed = false;
+    Img fit;     // (the HUD layer's fit, kept from frame to frame: the crop's size, RGBA16F)
+    Img layer;   // (the HUD's colour and how see-through it is, the crop's size, RGBA16F: fg_hud_layer.comp)
+    bool layered = false;   // (this present's layer made: fsr3fi_frames lays the HUD over the made frames with it)
+    uint64_t layers = 0;    // (presents with it: the 600-present line)
     Img source;          // (the interpolation source: the frame's crop, RGBA8, the HUD's alpha 0)
     Img hudless;         // (the same crop of the picture before the HUD, RGBA8: FSR 3.1's HUD-less colour)
     VkFormat format = VK_FORMAT_UNDEFINED;
@@ -1332,47 +1382,105 @@ bool hud_image(VkCommandBuffer cmd, Img& i, uint32_t w, uint32_t h, VkFormat f, 
     return true;
 }
 
+/// Whether the HUD goes over FSR 3.1's made frames by its layer (RX_VK_FSR_FG_HUD_LAYER, read once): with the HUD-less
+/// colour only (RX_VK_FSR_FG_HUDLESS)
+bool hud_layer_wanted() {
+    static const bool on = [] {
+        const char* e = getenv("RX_VK_FSR_FG_HUD_LAYER");
+        return !(e && *e && atoi(e) == 0);
+    }();
+    return on;
+}
+bool hudless_wanted(bool native_pq) {
+    // The game captures the HUD's linear target before its HDR encode. Treating that colour as PQ
+    // corrupts both the HUD-less input and the learned layer. Use the mask with the game's PQ present.
+    if (native_pq) return false;
+    static const bool on = [] {
+        const char* e = getenv("RX_VK_FSR_FG_HUDLESS");
+        return !(e && *e && atoi(e) == 0);
+    }();
+    return on;
+}
+
+/// The HUD layer of this present (hud.layer, shaders/fg_hud_layer.comp), from this frame's pictures and the frame before's:
+/// how see-through the HUD is where it is known. False: none (the HUD laid over the made frames whole, as presented)
+bool hud_layer(VkCommandBuffer cmd, int x0, int y0, uint32_t w, uint32_t h) {
+    if (hud.layer_failed || !hud_layer_wanted()) return false;
+    const VkDescriptorType S = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, I = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    if (!hud.fit_pipe.pipe && (!make_pipe(hud.fit_pipe, BUILTIN_SPV_ARGS(FG_HUD_LAYER_COMP_SPV), {S, S, S, S, I, I}, 20) ||
+                               !make_pipe(hud.over_pipe, BUILTIN_SPV_ARGS(FG_HUD_COMPOSITE_COMP_SPV), {I, S, S}, 12))) {
+        hud.layer_failed = true;
+        logf("vk: fsr3fi: the HUD layer's pipelines were not made: the HUD laid over the made frames as presented");
+        return false;
+    }
+    const VkImageUsageFlags rw = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    if (!hud_image(cmd, hud.fit, w, h, VK_FORMAT_R16G16B16A16_SFLOAT, rw) ||
+        !hud_image(cmd, hud.layer, w, h, VK_FORMAT_R16G16B16A16_SFLOAT, rw)) {
+        hud.layer_failed = true;
+        logf("vk: fsr3fi: the HUD layer's images (%ux%u) were not made: the HUD laid over the made frames as presented", w, h);
+        return false;
+    }
+    const int k = hud.k, j = hud.prev ? k ^ 1 : k;   // (no frame before: this frame's bound in its place, not read)
+    const int32_t pc[5] = {x0, y0, (int32_t)w, (int32_t)h, hud.prev ? 1 : 0};
+    pass(cmd, hud.fit_pipe,
+         {{hud.before[k].view, fg.nearest},
+          {hud.after[k].view, fg.nearest},
+          {hud.before[j].view, fg.nearest},
+          {hud.after[j].view, fg.nearest},
+          {hud.fit.view, VK_NULL_HANDLE},
+          {hud.layer.view, VK_NULL_HANDLE}},
+         w, h, pc, sizeof pc);
+    if (hud.layers++ == 0)
+        logf("vk: fsr3fi: the HUD laid over the made frames by how see-through it is, learned from frame to frame (%ux%u)", w,
+             h);
+    return true;
+}
+
 /// This present's interpolation source with the HUD marked (hud.source), from the game's frame cropped into fg.frames[cur]
 /// (at x0, y0 of the presented picture, sw x sh): when the picture was copied after its upscale this frame and is the
-/// presented picture's size. False: the frame as it is, the HUD guessed.
+/// presented picture's size. False: the frame as it is, the HUD guessed. And its HUD layer (hud_layer: hud.layered)
 bool hud_source(VkCommandBuffer cmd, int cur, uint32_t sw, uint32_t sh, int x0, int y0, uint32_t w, uint32_t h, bool pq) {
     std::lock_guard lk(hud.mu);
     hud_free_dead();
-    hud.ready = false;
+    hud.ready = hud.layered = false;
     const bool fresh = hud.fresh;
     hud.fresh = false;
+    const int k = hud.k;
     if (!fresh || hud.failed || !hud.picture || hud.pw != sw || hud.ph != sh || !fsr3fi::frames_wanted() ||
         !texture_alive(hud.gpu, hud.tex, hud.picture))   // (the picture destroyed since, or moved: nothing to copy from)
-        return false;
+        return hud.prev = false;
     if (!hud.init) {
         hud.init = true;
         const VkDescriptorType S = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, I = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         if (!make_pipe(hud.mask, BUILTIN_SPV_ARGS(FG_HUD_COMP_SPV), {S, S, S, I, I}, 20)) {
             hud.failed = true;
             logf("vk: fsr3fi: the HUD mask's pipeline was not made: the HUD guessed");
-            return false;
+            return hud.prev = false;
         }
     }
-    if (hud.sw != w || hud.sh != h) hud_retire(hud.source), hud_retire(hud.hudless), hud.sw = w, hud.sh = h;
+    if (hud.sw != w || hud.sh != h) {   // (the layer's fit is the crop's: started again)
+        hud_retire(hud.source), hud_retire(hud.hudless), hud_retire(hud.fit), hud_retire(hud.layer);
+        hud.sw = w, hud.sh = h, hud.prev = false;
+    }
     const VkImageUsageFlags rw = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    if (!hud_image(cmd, hud.after, sw, sh, hud.format, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT) ||
+    if (!hud_image(cmd, hud.after[k], sw, sh, hud.format, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT) ||
         !hud_image(cmd, hud.source, w, h, VK_FORMAT_R8G8B8A8_UNORM, rw | VK_IMAGE_USAGE_TRANSFER_SRC_BIT) ||
         !hud_image(cmd, hud.hudless, w, h, VK_FORMAT_R8G8B8A8_UNORM, rw | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
         hud.failed = true;
         logf("vk: fsr3fi: the HUD mask's images (%ux%u) were not made: the HUD guessed", w, h);
-        return false;
+        return hud.prev = false;
     }
     full_barrier(cmd);   // (the picture's last writes and reads, and the last readers of this source)
     const VkImageCopy c{{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0},
                         {sw, sh, 1}};
-    vkCmdCopyImage(cmd, hud.picture, VK_IMAGE_LAYOUT_GENERAL, hud.after.image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+    vkCmdCopyImage(cmd, hud.picture, VK_IMAGE_LAYOUT_GENERAL, hud.after[k].image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
     full_barrier(cmd);
     // (pq: the native HDR picture, already encoded as the frame is; else linear, sRGB-encoded under the HUD: fg_hud.comp)
     const int32_t pc[5] = {x0, y0, (int32_t)w, (int32_t)h, pq ? 1 : 0};
     pass(cmd, hud.mask,
          {{fg.frames[cur].view, fg.nearest},
-          {hud.before.view, fg.nearest},
-          {hud.after.view, fg.nearest},
+          {hud.before[k].view, fg.nearest},
+          {hud.after[k].view, fg.nearest},
           {hud.source.view, VK_NULL_HANDLE},
           {hud.hudless.view, VK_NULL_HANDLE}},
          w, h, pc, sizeof pc);
@@ -1381,6 +1489,10 @@ bool hud_source(VkCommandBuffer cmd, int cur, uint32_t sw, uint32_t sh, int x0, 
         logf("vk: fsr3fi: the HUD marked for it: what the game drew over its picture after the upscale (%ux%u, format %d)",
              sw, sh, (int)hud.format);
     }
+    hud.layered = hudless_wanted(pq) && hud_layer(cmd, x0, y0, w, h);
+    // (a fit uses the preceding pair only if its layer ran; a Native HDR capture must not feed the next sRGB fit)
+    hud.prev = hud.layered;
+    hud.k ^= 1;
     hud.marked++;
     return hud.ready = true;
 }
@@ -1395,18 +1507,19 @@ void framegen_hud_before(VkCommandBuffer cmd, Texture* picture, uint32_t level) 
     std::lock_guard lk(hud.mu);
     if (hud.failed) return;
     if (hud.format != picture->format || hud.pw != picture->width || hud.ph != picture->height) {
-        hud_retire(hud.before), hud_retire(hud.after);
-        hud.format = picture->format, hud.pw = picture->width, hud.ph = picture->height;
+        for (int i = 0; i < 2; i++) hud_retire(hud.before[i]), hud_retire(hud.after[i]);
+        hud.format = picture->format, hud.pw = picture->width, hud.ph = picture->height, hud.prev = false;
     }
-    if (!hud_image(cmd, hud.before, hud.pw, hud.ph, hud.format, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {
+    Img& before = hud.before[hud.k];   // (this frame's: the frame before's, at k ^ 1, is the HUD layer's)
+    if (!hud_image(cmd, before, hud.pw, hud.ph, hud.format, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {
         hud.failed = true;
         logf("vk: fsr3fi: the HUD mask's copy (%ux%u) was not made: the HUD guessed", hud.pw, hud.ph);
         return;
     }
-    full_barrier(cmd);   // (the upscale's writes; and the last present's mask pass, which read this copy)
+    full_barrier(cmd);   // (the upscale's writes; and the last presents' mask and layer passes, which read this copy)
     const VkImageCopy c{{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0},
                         {hud.pw, hud.ph, 1}};
-    vkCmdCopyImage(cmd, picture->image, VK_IMAGE_LAYOUT_GENERAL, hud.before.image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+    vkCmdCopyImage(cmd, picture->image, VK_IMAGE_LAYOUT_GENERAL, before.image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
     full_barrier(cmd);   // (before the game draws its HUD into the picture)
     hud.picture = picture->image, hud.tex = picture, hud.gpu = picture->gpu;
     hud.fresh = true;
@@ -1422,15 +1535,16 @@ void framegen_hud_before(VkCommandBuffer cmd, Texture* picture, uint32_t level) 
 int fsr3fi_frames(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_t uh, uint64_t sequence, bool native_pq,
                   const float* t, const int* slot, int count) {
     // (every 600 presents asked: how many sets FSR made, and how many it left to the interpolation below and why)
-    static uint64_t asked = 0, made = 0, no_inputs = 0, taken_before = 0, age[2] = {}, marked_before = 0;
+    static uint64_t asked = 0, made = 0, no_inputs = 0, taken_before = 0, age[2] = {}, marked_before = 0, layers_before = 0;
     if (++asked % 600 == 0) {
         const uint64_t taken = fsr3_inputs::motions_taken();
         logf("vk: fsr3fi: of the last 600 presents %llu made by FSR 3.1, %llu without its inputs (the renderer's own made "
              "them); %llu frames with the chain's motion (the skinned draws' own); inputs this frame's %llu, the frame before's "
-             "%llu; %llu with the HUD marked", (unsigned long long)made, (unsigned long long)no_inputs,
-             (unsigned long long)(taken - taken_before), (unsigned long long)age[0], (unsigned long long)age[1],
-             (unsigned long long)(hud.marked - marked_before));
-        made = no_inputs = 0, taken_before = taken, age[0] = age[1] = 0, marked_before = hud.marked;
+             "%llu; %llu with the HUD marked, %llu with its HUD layer", (unsigned long long)made,
+             (unsigned long long)no_inputs, (unsigned long long)(taken - taken_before), (unsigned long long)age[0],
+             (unsigned long long)age[1], (unsigned long long)(hud.marked - marked_before),
+             (unsigned long long)(hud.layers - layers_before));
+        made = no_inputs = 0, taken_before = taken, age[0] = age[1] = 0, marked_before = hud.marked, layers_before = hud.layers;
     }
     fsr3_inputs::Frame f;
     if (!fsr3_inputs::take(f)) return no_inputs++, 0;
@@ -1438,13 +1552,13 @@ int fsr3fi_frames(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32
     fsr3fi::Inputs in;
     in.color = fg.frames[cur].view;
     in.color_image = fg.frames[cur].image;
-    static const bool hudless = [] {
-        const char* e = getenv("RX_VK_FSR_FG_HUDLESS");
-        return !(e && *e && atoi(e) == 0);
-    }();
+    const bool hudless = hudless_wanted(native_pq);
+    // (the HUD layer: FSR 3.1 given the HUD-less colour as its present too, so it lays nothing over the made frames, and the
+    // HUD goes over them below by how see-through it is)
+    const bool layered = hud.ready && hudless && hud.layered;
     if (hud.ready && hudless) {   // (the picture before the HUD, interpolated; this frame, HUD and all, laid over it)
         in.color = hud.hudless.view, in.color_image = hud.hudless.image;
-        in.present = fg.frames[cur].view;
+        in.present = layered ? hud.hudless.view : fg.frames[cur].view;
     } else if (hud.ready) {   // (the same frame, the HUD marked in its alpha: hud_source)
         in.color = hud.source.view, in.color_image = hud.source.image;
         in.hud_mask = true;
@@ -1460,6 +1574,8 @@ int fsr3fi_frames(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32
     in.frame_time_ms = f.frame_ms;
     in.reset = f.reset;
     in.sequence = sequence;
+    // (its images in use this present from here, whatever generate makes of it: a reset, its history alone, none made)
+    fsr_given = true;
     if (count <= 0) return (void)fsr3fi::generate(cmd, in, t, 0), 0;   // (its history alone)
     if ((int)fsr3fi::generate(cmd, in, t, (uint32_t)count) != count) return 0;
     const VkImageCopy c{{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0},
@@ -1468,6 +1584,14 @@ int fsr3fi_frames(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32
         const VkImage image = fsr3fi::made_image((uint32_t)i);
         if (!image) return 0;
         vkCmdCopyImage(cmd, image, VK_IMAGE_LAYOUT_GENERAL, set.frame[slot[i]].image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+    }
+    if (layered) {   // (this frame's HUD over each made frame's own scene: shaders/fg_hud_composite.comp)
+        full_barrier(cmd);
+        const int32_t pc[3] = {(int32_t)uw, (int32_t)uh, native_pq ? 1 : 0};
+        for (int i = 0; i < count; i++)
+            pass(cmd, hud.over_pipe,
+                 {{set.frame[slot[i]].view, VK_NULL_HANDLE}, {fg.frames[cur].view, fg.nearest}, {hud.layer.view, fg.nearest}},
+                 uw, uh, pc, sizeof pc);
     }
     made++;
     static int told = 0;

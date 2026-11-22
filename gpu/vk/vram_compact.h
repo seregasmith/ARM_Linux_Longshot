@@ -30,13 +30,12 @@ inline uint64_t default_min_free(uint64_t allowed) {
     return allowed ? std::clamp<uint64_t>(allowed / 16, 64ull << 20, 512ull << 20) : (512ull << 20);}
 inline uint64_t run_from(uint64_t min_free, bool is_pressed) { return is_pressed ? std::min<uint64_t>(min_free, 192ull << 20) : min_free; }
 
-/// The blocks a pool starts with (#2438: each block made in play is a vkAllocateMemory on the replay thread, ~170 ms on AMD's
+/// The blocks a pool starts with (each block made in play is a vkAllocateMemory on the replay thread, ~170 ms on AMD's
 /// Windows driver): 15% of the card's memory, 2 to 24, in the pool the sampled textures are made in (holds_textures) and in no
-/// other. They were the images' pool's, where the textures went when #2438 was measured; compacted, the textures have a pool of
-/// their own, and the images' pool is left DLSS's, the frame interpolation's and the scratch images. There the blocks stayed
-/// empty: the driver counted them (1152 MB on an 8 GB card), no texture could take them, so reclaimable() rightly left them in
-/// the count and the hold cut the texture budget by as much (#2690: an RTX 3070 in Castle Town Market, 31-36 fps against 54-56
-/// without them), and the textures' blocks were made in play as before. In the textures' pool the scene's textures fill them,
+/// other. Compacted, the textures have a pool of their own, and the images' pool is left DLSS's, the frame interpolation's and
+/// the scratch images: blocks there would stay empty, counted by the driver (1152 MB on an 8 GB card) but taken by no texture,
+/// so reclaimable() would rightly leave them in the count and the hold cut the texture budget by as much (fps far down).
+/// In the textures' pool the scene's textures fill them,
 /// and what they hold free is that pool's free space, which the budget takes off the count already.
 /// None on an integrated GPU: its heap is the PC's RAM, which the game needs too, and VMA keeps those blocks for the whole run.
 /// On a UHD Graphics with 16 GB (i3-1115G4) nine blocks (1152 MB) stayed while the textures' budget fell to 720 MB; the pool
@@ -66,10 +65,10 @@ inline bool kept_only(uint64_t block_bytes, uint64_t kept) { return kept && bloc
 inline uint64_t count_line_pct(bool integrated) { return integrated ? 90 : 97; }
 
 /// Whether VMA's blocks hold room enough (an eighth of the allowance free) that the count line's squeeze waits: new images take
-/// that space and the count does not grow. Not past the allowance, where a dedicated card's driver pages (#2156), and not on an
+/// that space and the count does not grow. Not past the allowance, where a dedicated card's driver pages, and not on an
 /// integrated GPU: what grows there near the line is the driver's own (pipelines, command memory) and the staging arenas, which
-/// no block's free space takes. The UHD Graphics above sat at 6,709 of 7,172 MB with 1,121 MB of it free in the blocks, so the
-/// squeeze waited; Hyrule Castle's load then took the count to 7.5 GB
+/// no block's free space takes (with a GB free in the blocks the squeeze would wait while an area's load takes the count past
+/// the allowance)
 inline bool room_in_blocks(uint64_t used, uint64_t allowed, uint64_t block_free, bool integrated) {
     return !integrated && used <= allowed && block_free >= allowed / 8;
 }
@@ -84,9 +83,8 @@ inline uint64_t short_excess(uint64_t used, uint64_t count_line) {
 }
 
 /// The allowance as the rules take it, from the driver's count (used) and allowance: one the driver gives as the count itself,
-/// within kAtCount, is past: AMD's Windows driver reports a process over what it allows as allowed what it uses (an RX 6600 at
-/// 5940 of 5940 MB, another at 6.6 of 6.6 GB after 5.3 of 6.5: #933, #1025). Taken as it is, every rule saw the count within it
-/// while the driver paged. Then a tenth under the count (kPastShare), so the rules give back until the driver says again how
+/// within kAtCount, is past: AMD's Windows driver reports a process over what it allows as allowed what it uses (5940 of
+/// 5940 MB). Taken as it is, every rule would see the count within it while the driver paged. Then a tenth under the count (kPastShare), so the rules give back until the driver says again how
 /// much it allows. An allowance under the count is past already and stays as it is; 0 (unknown) too
 inline constexpr uint64_t kAtCount = 16ull << 20;
 inline constexpr uint64_t kPastShare = 10;
@@ -112,6 +110,16 @@ inline uint64_t texture_min_floor(uint64_t allowed) {
     if (allowed < GLOBAL_MIN_GRAPHICS_REQ) return 1800ull << 20;
     return std::max<uint64_t>(1800ull << 20, allowed / 4);
 }
+
+/// A texture floor as the rules may hold it: none once the driver's count is past its allowance. There the driver pages VRAM out
+/// to system memory and every frame reads some of it over PCIe, which costs more than textures made again: a GTX 1060 6 GB
+/// (#939) sat at 6128 MB of the 5231 it allowed with 1606 MB of textures, under the 1800 MB floor, so no rule could take one,
+/// and Hyrule Field went from 31 to 14 fps until a restart. Past it the textures used in the eviction's last 60 presents are
+/// what stays (vk_texture.cpp texture_frame's min_unused); within it the floor keeps the working set from a downward ratchet
+inline uint64_t floor_within(uint64_t floor, uint64_t used, uint64_t allowed) { return allowed && used > allowed ? 0 : floor; }
+
+/// The floor of the count line's squeeze (97% of the allowance): texture_min_floor, given way past the allowance (floor_within)
+inline uint64_t count_line_floor(uint64_t used, uint64_t allowed) { return floor_within(texture_min_floor(allowed), used, allowed); }
 
 /// Dynamic texture floor with hysteresis targeting the 86%-92% VRAM sweet spot on constrained GPUs.
 inline uint64_t update_dynamic_floor(uint64_t current_floor, uint64_t total_bytes, uint64_t used, uint64_t pressure, uint64_t allowed) {
@@ -149,7 +157,7 @@ inline uint64_t held_budget(uint64_t budget, uint64_t total, uint64_t used, uint
     // Damped contraction (alpha = 0.25) on < 8 GB GPUs to smoothly absorb transient frame spikes without thrashing.
     const uint64_t damped_over = (allowed < GLOBAL_MIN_GRAPHICS_REQ) ? (over / 4) : over;
     uint64_t target = total > damped_over ? total - damped_over : 0;
-    const uint64_t floor = floor_override ? floor_override : texture_min_floor(allowed);
+    const uint64_t floor = floor_within(floor_override ? floor_override : texture_min_floor(allowed), used, allowed);
     if (floor && target < floor) {
         target = floor;
     }

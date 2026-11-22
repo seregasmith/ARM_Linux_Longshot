@@ -22,8 +22,8 @@ launcher keeps its backups; Windows: %LOCALAPPDATA%\\Longshot\\oot-save-backups;
 script made on Linux stay in $XDG_DATA_HOME/oot-save-backups. Close every game first: --force skips that check.
 scrub makes a save in the repository (assets/saves) from one slot: its picture made mid-grey and its saved date set
 to 2026-01-01 00:00:00 (there is no player's name in these saves); check-repo-saves checks them all.
-docs/saves-script.md has the rules.
-Standard library only; the guide is docs/saves.md.
+docs/dev/reference/saves.md has the rules.
+Standard library only; the guide is docs/user/saves.md.
 """
 import argparse
 import collections
@@ -39,52 +39,57 @@ import tempfile
 
 TITLE = "0400486024DEC000"
 NO_ACCOUNT = "0000000000000000"
-# The one user Longshot and Hookshot play as (host/nn_applet.c's user_uid, as host/nn_fs.c names its save folder): a save
-# copied into either of them when it has none yet goes in save/<this>
-USER_ID = "5a3c9e1f0b7d24680000000000000001"
 WINDOWS = os.name == "nt"
 
-Program = collections.namedtuple("Program", "name display folders processes aliases")
-
-# Everything that runs the game and where it keeps its data, one entry each. folders: per OS, where to look, in order
-# ({data} = $XDG_DATA_HOME or ~/.local/share, {appdata} = %APPDATA%, {localappdata} = %LOCALAPPDATA%, {home} = the
-# home folder; a * matches any folder); the saves are then found under it by LAYOUTS. processes: lower case, without
-# .exe, for the running-game check. The sources are in docs/saves.md.
-EDEN = {"linux": ["{data}/eden"], "windows": ["{appdata}/eden"]}
+# ---- Where things are: every folder this script looks in or writes to, per OS ----
+# {data} = $XDG_DATA_HOME or ~/.local/share, {appdata} = %APPDATA%, {localappdata} = %LOCALAPPDATA%, {home} = the home
+# folder; a * at the end matches any folder there. The sources are in docs/user/saves.md.
+# Longshot: its data folder on Linux. On Windows the launcher's folder, which it starts every build with as --user (saves in
+# its save\<id>), then the game folder of before the launcher, the builder's and a build started on its own (saves in its
+# user\save\<id>)
+LONGSHOT_FOLDERS = {"linux": ["{data}/longshot"], "windows": ["{appdata}/Longshot", "{home}/Games/Longshot"]}
+HOOKSHOT_FOLDERS = {"linux": ["{data}/hookshot"], "windows": ["{home}/Games/Hookshot", "{home}/Games/Hookshot/*"]}
+EDEN_FOLDERS = {"linux": ["{data}/eden"], "windows": ["{appdata}/eden"]}
 # (Lichii has a data folder of its own since its build 150, 2026-11-10; a build from before keeps its saves in Eden's)
-LICHII = {"linux": ["{data}/lichii"] + EDEN["linux"], "windows": ["{appdata}/lichii"] + EDEN["windows"]}
-EMULATORS = [
-    Program("lichii", "Lichii", LICHII, ["lichii"], []),
-    Program("frizti", "Frizti (Fritchii)", EDEN, ["lichii", "fritchii"], ["fritchii"]),
-    Program("orchid", "Orchid", EDEN, ["orchid"], []),
-    Program("pokedinner", "PokeDinner", EDEN, ["eglantine"], []),
-    Program("eden", "Eden", EDEN, ["eden"], []),
-    Program("eglantine", "Eglantine", {"linux": ["{data}/eglantine"], "windows": ["{appdata}/eglantine"]},
-            ["eglantine"], []),
-    Program("nx2navi", "NX2navi", {"linux": ["{home}/Games/Ocarina"],
-                                   "windows": ["{localappdata}/Programs/NX2navi/game", "C:/Games/Ocarina"]},
-            ["nx2navi", "ocarina"], []),
-]
-# (Windows: the launcher's folder, which it starts every build with as --user, saves in its save\<id>; then the game folder
-# of before the launcher, the builder's and a build started on its own, saves in its user\save\<id>)
-LONGSHOT = Program("longshot", "Longshot", {"linux": ["{data}/longshot"],
-                                            "windows": ["{appdata}/Longshot", "{home}/Games/Longshot"]},
-                   ["longshot"], [])
-HOOKSHOT = Program("hookshot", "Hookshot", {"linux": ["{data}/hookshot"],
-                                            "windows": ["{home}/Games/Hookshot", "{home}/Games/Hookshot/*"]},
-                   ["hookshot"], [])
-OTHERS = [HOOKSHOT] + EMULATORS   # (what import and export take by name)
-FOLDER = Program("folder", "the folder", {"linux": [], "windows": []}, [], [])
-
-# Where the save folders sit under a data folder. "<id>" is one folder per user profile (its name is the id shown).
-# A folder deeper down the same path is accepted too. The first layout that finds a profile wins.
+LICHII_FOLDERS = {"linux": ["{data}/lichii"] + EDEN_FOLDERS["linux"], "windows": ["{appdata}/lichii"] + EDEN_FOLDERS["windows"]}
+EGLANTINE_FOLDERS = {"linux": ["{data}/eglantine"], "windows": ["{appdata}/eglantine"]}
+NX2NAVI_FOLDERS = {"linux": ["{home}/Games/Ocarina"], "windows": ["{localappdata}/Programs/NX2navi/game", "C:/Games/Ocarina"]}
+# Where a copy's backup of the side it overwrites goes: the launcher's backups folder, so the launcher finds the script's
+# backups with its own (Linux: beside Longshot's saves)
+BACKUP_FOLDER = {"linux": "{data}/longshot/save-backup", "windows": "{localappdata}/Longshot/oot-save-backups"}
+# Longshot's and Hookshot's saves under their data folder: SAVE_DIR/<user id>, or GAME_SAVE_DIR/<user id> in a Windows game
+# folder. The one user they play as is host/nn_applet.c's user_uid (host/nn_fs.c names its save folder after it): a save
+# copied into either when it has none yet goes in a folder of that name
+SAVE_DIR = "save"
+GAME_SAVE_DIR = os.path.join("user", "save")
+USER_ID = "5a3c9e1f0b7d24680000000000000001"
+# Where the save folders sit under any program's data folder. "<id>" is one folder per user profile (its name is the id
+# shown). A folder deeper down the same path is accepted too. The first layout that finds a profile wins.
 LAYOUTS = (
     ("nand", "user", "save", "account", "<id>", TITLE, "0"),   # Eden's newer layout: used first when it exists
     ("nand", "user", "save", NO_ACCOUNT, "<id>", TITLE),        # Eden and its forks (Lichii, Eglantine, ...)
     ("profile", "save", "<id>"),                                 # NX2navi's game folder
-    ("user", "save", "<id>"),                                    # Longshot's and Hookshot's game folder on Windows
-    ("save", "<id>"),                                            # their data folder on Linux
+    tuple(GAME_SAVE_DIR.split(os.sep)) + ("<id>",),              # Longshot's and Hookshot's game folder on Windows
+    (SAVE_DIR, "<id>"),                                          # their data folder on Linux, the launcher's on Windows
 )
+
+# Everything that runs the game, one entry each: its folders (above), and the processes of the running-game check (lower
+# case, without .exe). import and export take OTHERS by name (or an alias).
+Program = collections.namedtuple("Program", "name display folders processes aliases")
+EMULATORS = [
+    Program("lichii", "Lichii", LICHII_FOLDERS, ["lichii"], []),
+    Program("frizti", "Frizti (Fritchii)", EDEN_FOLDERS, ["lichii", "fritchii"], ["fritchii"]),
+    Program("orchid", "Orchid", EDEN_FOLDERS, ["orchid"], []),
+    Program("pokedinner", "PokeDinner", EDEN_FOLDERS, ["eglantine"], []),
+    Program("eden", "Eden", EDEN_FOLDERS, ["eden"], []),
+    Program("eglantine", "Eglantine", EGLANTINE_FOLDERS, ["eglantine"], []),
+    Program("nx2navi", "NX2navi", NX2NAVI_FOLDERS, ["nx2navi", "ocarina"], []),
+]
+LONGSHOT = Program("longshot", "Longshot", LONGSHOT_FOLDERS, ["longshot"], [])
+HOOKSHOT = Program("hookshot", "Hookshot", HOOKSHOT_FOLDERS, ["hookshot"], [])
+OTHERS = [HOOKSHOT] + EMULATORS
+FOLDER = Program("folder", "the folder", {"linux": [], "windows": []}, [], [])
+
 SLOT = re.compile(r"slot_\d{2,3}$")
 MAX_SAVE_FILE = 4 << 20   # (a save file is a few kilobytes: anything larger is not one)
 
@@ -93,30 +98,28 @@ class Fail(Exception):
     pass
 
 
-def data_home():
-    return os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
+def expand(template):
+    """A folder of the tables above, its {data}, {home}, {appdata} and {localappdata} filled in for this user"""
+    home = os.path.expanduser("~")
+    return os.path.normpath(template.format(
+        data=os.environ.get("XDG_DATA_HOME") or os.path.join(home, ".local", "share"), home=home,
+        appdata=os.environ.get("APPDATA") or os.path.join(home, "AppData", "Roaming"),
+        localappdata=os.environ.get("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")))
+
+
+def this_os(table):
+    return table["windows" if WINDOWS else "linux"]
 
 
 def default_backup_dir():
-    """Where a copy's backup goes: the launcher's backups folder, so the launcher finds the script's backups with its own
-    (LongshotLauncher issue 188). Windows: %LOCALAPPDATA%\\Longshot\\oot-save-backups. Linux: longshot/save-backup in the data
-    folder, beside Longshot's saves, as the launcher since LongshotLauncher#80 (the script used oot-save-backups in the data
-    folder before; the backups made there stay there)."""
-    if WINDOWS:
-        base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
-        return os.path.join(base, "Longshot", "oot-save-backups")
-    return os.path.join(data_home(), "longshot", "save-backup")
+    return expand(this_os(BACKUP_FOLDER))
 
 
 def folders(program):
     """program's data folders on this OS, in the order they are tried (a * expanded to the folders there, by name)."""
-    home = os.path.expanduser("~")
-    values = {"data": data_home(), "home": home,
-              "appdata": os.environ.get("APPDATA") or os.path.join(home, "AppData", "Roaming"),
-              "localappdata": os.environ.get("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")}
     out = []
-    for t in program.folders["windows" if WINDOWS else "linux"]:
-        path = os.path.normpath(t.format(**values))
+    for t in this_os(program.folders):
+        path = expand(t)
         out += sorted(p for p in glob.glob(glob.escape(path[:-1]) + "*") if os.path.isdir(p)) if path.endswith("*") else [path]
     return out
 
@@ -147,9 +150,16 @@ def walk(root, parts, key):
             yield from walk(os.path.join(root, n), parts[1:], key)
 
 
+def in_save_work(path):
+    return any(part.lower() == "save-work" for name in (os.path.abspath(path), os.path.realpath(path))
+               for part in name.replace("\\", "/").split("/"))
+
+
 def find_saves(root):
     """The game's save folders under root, as {profile id: path}; root may be the save folder itself."""
     norm = os.path.normpath(os.path.abspath(root))
+    if in_save_work(norm):
+        return {}
     title_folder = os.path.basename(norm).upper() == TITLE
     if is_save_folder(norm) or title_folder and "0" not in subdirs(norm):
         key = norm
@@ -171,7 +181,7 @@ def find_saves(root):
             for k, path in walk(norm, layout[start:], key):
                 # A folder named by the layout (the title id folder) counts as soon as it is there: the game may not
                 # have saved yet. A profile folder counts only when it holds a save (Eden's profile folders do not).
-                if (layout[-1] != "<id>" or is_save_folder(path)) and k not in found and path not in found.values():
+                if (layout[-1] != "<id>" or is_save_folder(path)) and not in_save_work(path) and k not in found and path not in found.values():
                     found[k] = path
     return found
 
@@ -201,10 +211,10 @@ def old_folder_note(program, override, used):
     if not WINDOWS or program is not LONGSHOT or override is not None:
         return None
     launcher, old = folders(program)[:2]
-    where = os.path.join(launcher, "save")
+    where = os.path.join(launcher, SAVE_DIR)
     if used != launcher:
         return ("note: Longshot's save is in %s, the old game folder (where Longshot kept it before the launcher). The launcher "
-                "keeps it in %s and moves an old one in when it opens (docs/saves.md)" % (used, where))
+                "keeps it in %s and moves an old one in when it opens (docs/user/saves.md)" % (used, where))
     if os.path.isdir(old) and find_saves(old):
         return ("note: %s, the old game folder, also holds a save (the launcher moves it into %s when it opens); this uses the "
                 "launcher's. --longshot %s uses the old one" % (old, where, old))
@@ -221,11 +231,11 @@ def new_save_folder(program, override):
         return None
     root = override if override is not None else folders(program)[0]
     if not WINDOWS or program is LONGSHOT and override is None:
-        return os.path.join(root, "save", USER_ID)
+        return os.path.join(root, SAVE_DIR, USER_ID)
     if not os.path.isdir(root):
         return None
-    user_folder = os.path.isdir(os.path.join(root, "save")) and not os.path.isdir(os.path.join(root, "user"))
-    return os.path.join(root, "save" if user_folder else os.path.join("user", "save"), USER_ID)
+    user_folder = os.path.isdir(os.path.join(root, SAVE_DIR)) and not os.path.isdir(os.path.join(root, "user"))
+    return os.path.join(root, SAVE_DIR if user_folder else GAME_SAVE_DIR, USER_ID)
 
 
 def pick(found, name, flag, wanted=None):
@@ -414,6 +424,13 @@ def save_problems(path):
 
 
 def copy_saves(src, dst, backup, keep_settings, dry_run):
+    for path in (src, dst):
+        if in_save_work(path):
+            raise Fail("save-work is a working copy: copy only the committed save/ folder")
+        parent = os.path.dirname(os.path.abspath(path))
+        journal = os.path.join(os.path.dirname(parent), "save-work", os.path.basename(path) + ".journal")
+        if os.path.basename(parent).lower() == "save" and os.path.lexists(journal):
+            raise Fail("a save commit is waiting in %s: start the game and close it before copying" % journal)
     target_path = os.path.normcase(os.path.realpath(dst))
     backup_path = os.path.normcase(os.path.realpath(backup))
     try:

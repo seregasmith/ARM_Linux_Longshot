@@ -45,7 +45,7 @@ struct ArrayCensus {
     };
     Limits limits;
     std::set<std::pair<uint64_t, uint32_t>> seen;   // (program key, stage index)
-    uint64_t stages = 0, with_arrays = 0, arrays = 0, near = 0;
+    uint64_t stages = 0, with_arrays = 0, arrays = 0, near_count = 0;   // (near_count, not near: windef.h defines near and far as empty macros)
     uint64_t sizes[kStages][kKinds][kSizes]{};
     uint32_t longest[kStages]{};
     int named = 0;
@@ -104,7 +104,7 @@ struct ArrayCensus {
                     add(b);
                 }
                 if (why.empty()) continue;
-                near++;
+                near_count++;
                 if (named >= kNamed) continue;
                 named++;
                 std::snprintf(b, sizeof b, "vk: indexed descriptor array, program %016llx's %s stage: %s[%u]", (unsigned long long)program,
@@ -129,11 +129,11 @@ struct ArrayCensus {
             return lines;
         }
         char named_text[48] = "";
-        if (near > (uint64_t)named) std::snprintf(named_text, sizeof named_text, " (the first %d named above)", named);
-        else if (near) std::snprintf(named_text, sizeof named_text, " (named above)");
+        if (near_count > (uint64_t)named) std::snprintf(named_text, sizeof named_text, " (the first %d named above)", named);
+        else if (near_count) std::snprintf(named_text, sizeof named_text, " (named above)");
         std::snprintf(b, sizeof b, "vk: indexed descriptor arrays (%s): %llu in %llu of %llu program stages, %llu of them near a "
                       "limit%s", when, (unsigned long long)arrays, (unsigned long long)with_arrays, (unsigned long long)stages,
-                      (unsigned long long)near, named_text);
+                      (unsigned long long)near_count, named_text);
         lines.push_back(b);
         for (int s = 0; s < kStages; s++) {
             if (!longest[s]) continue;

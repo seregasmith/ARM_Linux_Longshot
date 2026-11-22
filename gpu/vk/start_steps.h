@@ -1,8 +1,8 @@
 // (longshot) The first start after a preparation, under RX_VK_LOAD=create, runs two passes on the start-up bar's one part:
 // precompile_warm (every noted pipeline built into the pipeline cache) and then precompile_at_create (each mesh fallback
-// program's compute pipelines, then the kept programs' noted pipelines). Each counted its own steps: the warm reached its
-// total, the bar never goes back (PrepareBar), and the screen read 100% through the second pass, 91 s on a Steam Deck (#1522).
-// One count over both, as #714 did for the predicted pipelines: the warm's steps, then the second pass's, counted before the
+// program's compute pipelines, then the kept programs' noted pipelines). Each counting its own steps, the warm reaches its
+// total, the bar never goes back (PrepareBar), and the screen reads 100% through the second pass (91 s on a Steam Deck).
+// So one count over both, as for the predicted pipelines: the warm's steps, then the second pass's, counted before the
 // warm (create_steps) and at least one step held for it, so the warm's end is never the bar's. vk_draw.cpp precompile_run;
 // tests/test_start_progress_at_create.py.
 #pragma once

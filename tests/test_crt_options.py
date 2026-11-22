@@ -1,21 +1,26 @@
 """CRT rows use the menu's real defaults, labels, keys, read/write and preset paths.
 
-Compile production Options, Row, the two CRT rows, their labels/hints, ini_key,
-save, menu_init's file-reading block, set_row, apply_preset and apply_auto.
-Only unrelated device, output-mode and host hooks are stand-ins; no CRT option
-behavior is replaced. No game or GPU is opened. --source ROOT runs the same
-fixture against another checkout, including a main without the CRT rows.
+Compile production Options, Row, the two CRT rows (gpu/vk/menu/crt.cpp's settings, made into the menu's rows as
+vk_menu.cpp's row_table makes a module's), their labels/hints, ini_key, save, menu_init's file-reading block, set_row,
+and the Quality preset's apply_preset and apply_auto (gpu/vk/menu/preset.cpp). Only unrelated device, output-mode and
+host hooks are stand-ins; no CRT option behavior is replaced. Where the rows are is read from the Graphics tab as the
+menu model lays it out (tests/menu_model_fixture.py built_menu). No game or GPU is opened. --source ROOT runs the same
+fixture against another checkout.
 """
 import argparse
 import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests"))   # (python -I leaves the check's own folder off the path)
+from menu_model_fixture import built_menu, menu_model_prelude  # noqa: E402
+from srccut import between  # noqa: E402
 
 
 def block(text, start):
@@ -44,9 +49,18 @@ def declaration(text, pattern, what):
 
 
 FIXTURE = r'''
+/* MODEL */
 #include "upscaler_rows.h"
 #include "auto_settings.h"
 #include "menu_restart.h"
+#include "menu/preset.h"
+#include "monitor_choice.h"
+#ifdef _WIN32   // (save's: the file written beside its target and moved over it)
+#include <windows.h>
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -62,16 +76,41 @@ FIXTURE = r'''
 #include <vector>
 
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL %d: %s\n", __LINE__, #x); std::exit(1); } } while (0)
+/* MODULE_HINTS */
+namespace mkwvk {
 /* OPTIONS */
 Options opts;
 /* TABS */
 /* ROW */
 /* AUTO_PRESET */
 std::atomic<bool> present_native_pq{false};
-/* HINT_HELPERS */
-/* CRT_LABELS */
-/* CRT_HINTS */
-Row rows[] = {/* CRT_FILTER_ROW */, /* CRT_LINES_ROW */};
+bool crt_native_pq() { return present_native_pq.load(); }   // (vk_menu.cpp's, for the module: the game presents PQ)
+/* MENU_TEXT */
+namespace {
+/* CRT_TEXTS */
+}
+// (the module's two rows, gpu/vk/menu/crt.cpp's text, and the Rows the menu makes of them as row_table makes one)
+const menu::Setting crt_settings[] = {menu::Setting/* CRT_FILTER_SETTING */, menu::Setting/* CRT_LINES_SETTING */};
+template <int I> const char* crt_text(int v) {
+    static std::string s;
+    s = crt_settings[I].text(v);
+    return s.c_str();
+}
+template <int I> const char* crt_hint(int v, int variant) { return crt_settings[I].hint(v, variant); }
+template <int I> Row crt_row() {
+    const menu::Setting* st = &crt_settings[I];
+    Row r{TAB_GRAPHICS, st->label, nullptr, 0, 0, 0, nullptr, nullptr};
+    r.value = st->value;
+    r.lo = st->lo, r.hi = st->hi, r.step = st->step;
+    r.text = crt_text<I>;
+    r.help = st->help;
+    r.hint = st->hint ? crt_hint<I> : nullptr;
+    r.restart = st->restart;
+    r.preset_exempt = st->preset_exempt;
+    r.setting = st;
+    return r;
+}
+Row rows[] = {crt_row<0>(), crt_row<1>()};
 constexpr int kRows = sizeof rows / sizeof rows[0];
 
 // Output enumeration stands in for the monitor, not for any CRT operation.
@@ -94,21 +133,46 @@ bool aspect_follows_host(int) { return false; }
 int aspect_started = 0, ultrawide_read = 1;
 void logf(const char*, ...) {}
 
-namespace ur = mkwvk::upscaler_rows;
+namespace ur = upscaler_rows;
 int upscaler() { return opts.dlss; }
+// (the Output resolution's preview in play, none; a module's row locked by its own locked(), none: the CRT rows have none)
+Out output_preview_target{};
+bool module_locked(const int*) { return false; }
+// (the device rows' choices, saved by their ids: none here)
+int output_pick = 0, monitor_pick = 0;
+std::string output_want, output_saved_name, monitor_want, monitor_saved_name;
+namespace gpu_choice { struct Card {}; inline std::string card_id(const std::vector<Card>&, int) { return {}; } }
+std::vector<gpu_choice::Card> gpu_device_cards;
+std::string gpu_saved_card;
+bool gpu_card_missing = false;
+std::mutex options_save_mu;
+std::string output_id_key(const char* id) { return id; }
+std::string output_name_key(const char* name) { return name; }
+void refresh_outputs() {}
+bool can_outputs() { return false; }
+void refresh_monitors() {}
+bool can_monitors() { return false; }
+int mods_slot = -1;   // (the Mods tab's restart slot: no mods here)
+bool can_mods() { return false; }
+// (set_row's other rows' actions: none is a CRT row's)
+bool debug_warning = false, menu_refresh = false;
+int debug_warning_choice = 0;
+bool output_forced() { return false; }
+Out picture_for(int v) { return output_at(v); }
+bool request_native_preview(Out) { CHECK(false); return false; }
+void sync_transition_autosave() { CHECK(false); }
+std::atomic<int> grass_distance_now{0};
 unsigned upscalers_available() { return ur::bit(ur::GAME) | ur::dlss_bits(true); }
 bool filter_needed() { return true; }
 const char* dlss_preset_env() { return nullptr; }
 bool framegen_by_fixed() { return false; }   // (vk_menu.cpp: Frame generation by with nothing to choose)
 /* ROW_FIXED */
 /* STOPS */
-/* BUDGETS */
-/* SYNC_BUDGETS */
-/* AUTO_STATE */
+namespace {   // (vk_menu.cpp's anonymous namespace, which the helpers close and open again around env_release)
 /* ENV_HELPERS */
-void apply_auto(bool keep_own);
-/* APPLY_PRESET */
-/* APPLY_AUTO */
+}
+[[maybe_unused]] void (*const env_override_unused)(int*, int) = env_override;   // (an environment's override: no CRT case sets one)
+/* PRESET_ENGINE */
 
 std::string ini_file;
 std::string ini_path() { return ini_file; }
@@ -118,13 +182,15 @@ void refresh_mics() {}
 void mic_tell_host() {}
 namespace i18n { int game_lang_index() { return 0; } }   // no external language.txt in this fixture
 /* RUMBLE_STEP */
-constexpr int HOS_KEY_N = 1, HOS_SW_N = 1, HOS_SW_PLUS = 10, HOS_SW_MINUS = 11, HOS_BIND_PAD = 0, HOS_BIND_KEY = 1;
-constexpr int HOS_KEY_OC_NOTE_L = 1, HOS_KEY_OC_NOTE_X = 1;
+constexpr int HOS_KEY_N = 1, HOS_SW_N = 1, HOS_SW_PLUS = 10, HOS_SW_MINUS = 11, HOS_BIND_PAD = 0, HOS_BIND_KEY = 1, HOS_BIND_SPRINT_AUTO = 2;
+constexpr int HOS_KEY_OC_NOTE_L = 1, HOS_KEY_OC_NOTE_X = 1, HOS_KEY_TOGGLE_HUD = 1, HOS_KEY_SPRINT = 1, HOS_BIND_SPRINT_TOGGLE = 5;
 const char* const bind_names[HOS_KEY_N] = {"a"};
-struct Host { int (*binding)(int, int, int); float (*aspect_ratio)(); };
+struct Host { int (*binding)(int, int, int); float (*aspect_ratio)(); int version; void (*bind)(int, int, int, int);
+              void (*audio_output_select)(const char*); void (*monitor_select)(const char*); uint64_t (*mods_changed)(); };
 Host host_value{}, *host = &host_value;
 bool can_bind() { return false; }
 /* INI_KEY */
+/* TOGGLE_HELPERS */
 /* SAVE */
 
 // The real read block, including old-file migrations, can run more than once
@@ -140,7 +206,7 @@ bool load_options() {
     return has_options;
 }
 
-namespace mr = mkwvk::menu_restart;
+namespace mr = menu_restart;
 mr::State restart_state;
 int restart_slot[kRows];
 const char* restart_names[mr::kMax];
@@ -214,8 +280,14 @@ void test_rows_and_labels() {
     CHECK(std::strstr(rows[0].help, "HUD") && std::strstr(rows[0].help, "overlays"));
     CHECK(std::strstr(rows[1].help, "half the destination height") && std::strstr(rows[1].help, "moire"));
     CHECK(std::strstr(rows[0].hint(1, 0), "not a calibrated Sony model"));
+    // (CRT lines only with a filter on: its shown(); the filter's row always)
+    CHECK(!rows[0].setting->shown && rows[1].setting->shown && !rows[1].setting->shown());
+    opts.crt_filter = 1;
+    CHECK(rows[1].setting->shown());
+    opts.crt_filter = 0;
     restart_init();
-    CHECK(restart_state.n == 0 && restart_pending() == 0);
+    // (no restart slot of the CRT rows'; the one there is the Mods tab's, restart_init's own)
+    CHECK(restart_slot[0] < 0 && restart_slot[1] < 0 && restart_state.n == (mods_slot >= 0 ? 1 : 0) && restart_pending() == 0);
     std::puts("PASS: CRT rows default to Off/240, use ordinary keys, stay live and have bounded labels");
 }
 void test_hdr_hints() {
@@ -296,7 +368,7 @@ void test_presets_and_live_changes() {
                 apply_preset(kAutoPreset);   // The production Auto path, not a no-op stand-in.
                 CHECK(opts.preset == kAutoPreset && opts.crt_filter == filter && opts.crt_lines == lines);
                 CHECK(opts.output_res == 1);
-                apply_auto(true);           // Choosing again after the hardware changes also preserves CRT.
+                apply_auto();               // Choosing again after the hardware changes also preserves CRT.
                 CHECK(opts.crt_filter == filter && opts.crt_lines == lines);
                 CHECK(opts.output_res == 1);
             }
@@ -319,54 +391,57 @@ void test_presets_and_live_changes() {
     check_saved(opts.crt_filter, opts.crt_lines);
     std::puts("PASS: every quality preset and Auto preserve CRT; live row changes and wrapping preserve the preset");
 }
-int main(int argc, char** argv) {
+int run(int argc, char** argv) {
     CHECK(argc == 2);
     ini_file = argv[1];   // Always inside the driver's new temporary directory.
     test_rows_and_labels();
     test_hdr_hints();
     test_persistence();
     test_presets_and_live_changes();
+    return 0;
 }
+} // namespace mkwvk
+int main(int argc, char** argv) { return mkwvk::run(argc, argv); }
 '''
 
 
 def fixture(source):
     menu = (source / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8")
     header = (source / "gpu/vk/vk_menu.h").read_text(encoding="utf-8")
-    table = block(menu, menu.index("Row rows[] = {"))
-    rows = {}
-    for name in ("CRT filter", "CRT lines"):
-        match = re.search(r'\{TAB_GRAPHICS, "' + name + r'",', table)
-        if not match:
-            raise SystemExit("FAIL: missing production " + name + " row")
-        rows[name] = block(table, match.start())
-    names = re.findall(r'\{TAB_GRAPHICS,\s*"([^"]+)"', table)
-    window = names.index("Window scaling filter")
-    if names[window + 1:window + 3] != ["CRT filter", "CRT lines"]:
-        raise SystemExit("FAIL: CRT filter and CRT lines must immediately follow Window scaling filter")
+    # (#1633: the CRT rows are gpu/vk/menu/crt.cpp's, the Quality preset's engine gpu/vk/menu/preset.cpp's, and what a module
+    # shares, menu_module.h's)
+    crt = (source / "gpu/vk/menu/crt.cpp").read_text(encoding="utf-8")
+    preset = (source / "gpu/vk/menu/preset.cpp").read_text(encoding="utf-8")
+    module_h = (source / "gpu/vk/menu_module.h").read_text(encoding="utf-8")
+    settings = {}
+    for key in ("crt_filter", "crt_lines"):
+        at = crt.find('.row({.key = "%s",' % key)
+        if at < 0:
+            raise SystemExit("FAIL: missing production %s row" % key)
+        row = block(crt, at)
+        settings[key] = row[row.index("{"):]
     init = definition(menu, "void menu_init")
     load_at = init.index('    if (FILE* f = fopen(ini_path().c_str(), "r")) {')
-    lines_hint = menu.index("MENU_HINTS(hn_crt_lines,")
+    hints_at = module_h.index("#define MODULE_HINTS(")
+    engine_at = preset.index("#ifndef MENU_LAYOUT_ONLY\nnamespace ur = upscaler_rows;")
     replacements = {
+        "/* MODEL */": menu_model_prelude(source),
+        "/* MODULE_HINTS */": module_h[hints_at:module_h.index("    }\n", hints_at) + 6],
         "/* OPTIONS */": declaration(header, r"struct Options \{.*?\n\};", "Options"),
         "/* TABS */": declaration(menu, r"enum MenuTab \{.*?\n\};", "MenuTab"),
         "/* ROW */": declaration(menu, r"struct Row \{.*?\n\};", "Row"),
         "/* AUTO_PRESET */": declaration(header, r"constexpr int kAutoPreset = \d+;", "kAutoPreset"),
-        "/* HINT_HELPERS */": menu[menu.index("const char* hint_in("):menu.index("const char* tx_framegen(")],
-        "/* CRT_LABELS */": definition(menu, "const char* tx_crt_filter") + "\n" + definition(menu, "const char* tx_crt_lines"),
-        "/* CRT_HINTS */": definition(menu, "const char* hn_crt_filter") + "\n" + menu[lines_hint:menu.index(")\n", lines_hint) + 2],
-        "/* CRT_FILTER_ROW */": rows["CRT filter"],
-        "/* CRT_LINES_ROW */": rows["CRT lines"],
+        "/* MENU_TEXT */": block(module_h, module_h.index("namespace menu_text {")),
+        "/* CRT_TEXTS */": between(crt, "namespace {\n", "} // namespace\n")[len("namespace {\n"):],
+        "/* CRT_FILTER_SETTING */": settings["crt_filter"],
+        "/* CRT_LINES_SETTING */": settings["crt_lines"],
         "/* ROW_FIXED */": definition(menu, "bool row_fixed"),
         "/* STOPS */": definition(menu, "bool stops_at_ends"),
-        "/* BUDGETS */": menu[menu.index("constexpr int kVramBudgets ="):menu.index("const char* tx_vram_budget(")],
-        "/* SYNC_BUDGETS */": definition(menu, "void sync_preset_budgets"),
-        "/* AUTO_STATE */": menu[menu.index("::auto_settings::Choice auto_choice;"):menu.index("void apply_auto(bool keep_own);")],
         "/* ENV_HELPERS */": menu[menu.index("struct EnvOverride {"):menu.index("std::string ini_path() {")],
-        "/* APPLY_PRESET */": definition(menu, "void apply_preset"),
-        "/* APPLY_AUTO */": definition(menu, "void apply_auto"),
+        "/* PRESET_ENGINE */": preset[engine_at + len("#ifndef MENU_LAYOUT_ONLY\n"):preset.index("#endif", engine_at)],
         "/* RUMBLE_STEP */": definition(menu, "int rumble_step"),
         "/* INI_KEY */": definition(menu, "const char* ini_key"),
+        "/* TOGGLE_HELPERS */": definition(menu, "bool has_toggle") + "\n" + definition(menu, "bool toggle_on") + "\n" + definition(menu, "void toggle_set"),
         "/* SAVE */": definition(menu, "void save"),
         "/* LOAD_OPTIONS */": init[load_at:init.index("    first_start = !has_options;", load_at)],
         "/* ROW_RESTART_VALUE */": definition(menu, "int row_restart_value"),
@@ -387,6 +462,12 @@ def main():
     parser.add_argument("--cxx", default="g++")
     args = parser.parse_args()
     source = args.source.resolve()
+    # (where the rows are: the Graphics tab as the menu model lays it out, gpu/vk/menu/crt.cpp's place for them)
+    pages, _ = built_menu(args.cxx, source)
+    keys = [item.key for item in pages["graphics"]]
+    window = keys.index("upscaling")   # (the Window scaling filter's key, ini_key)
+    if keys[window + 1:window + 3] != ["crt_filter", "crt_lines"]:
+        raise SystemExit("FAIL: CRT filter and CRT lines must immediately follow Window scaling filter")
     code = fixture(source)
     with tempfile.TemporaryDirectory(prefix="crt-options-") as tmp:
         cpp = Path(tmp) / "crt_options.cpp"

@@ -22,7 +22,8 @@ def main():
     p.add_argument("--source", type=Path, default=ROOT / "gpu/vk/vk_menu.cpp")
     a = p.parse_args()
     fn = block(a.source.read_text(encoding="utf-8"), "void menu_record(")
-    fixture = r'''#include <algorithm>
+    colour_mode = 2 if "int colour_vision" in fn else 0
+    fixture = f"#define EXPECTED_COLOUR_MODE {colour_mode}\n" + r'''#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -40,7 +41,11 @@ namespace ui {
 struct Ctx {};
 bool begin(uint32_t, uint32_t) { calls += "b"; return can_draw; }
 void idle() { calls += "i"; }
-void record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) { CHECK(cmd == 1 && index == 2 && w == 640 && h == 360); calls += "r"; }
+void record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h, int colour_mode = 0) {
+    CHECK(cmd == 1 && index == 2 && w == 640 && h == 360);
+    CHECK(colour_mode == EXPECTED_COLOUR_MODE);
+    calls += "r";
+}
 }
 namespace mkwvk::rec {   // (RX_VK_RECORDER: the boundary before each Dear ImGui recording, logged as "d")
 enum Bound { B_DIRECT };
@@ -84,6 +89,8 @@ int main() {
     with tempfile.TemporaryDirectory(prefix="fps-overlay-") as tmp:
         cpp = Path(tmp) / "fixture.cpp"
         exe = Path(tmp) / "fixture"
+        if colour_mode:
+            fixture = fixture.replace("menu_record(1, 2, 640, 360)", "menu_record(1, 2, 640, 360, EXPECTED_COLOUR_MODE)")
         cpp.write_text(fixture, encoding="utf-8")
         subprocess.run([a.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", str(cpp), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)

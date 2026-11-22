@@ -4,7 +4,7 @@ holds its output each end with the check, and the runner returns at its timeout.
 group end them, and a run under nohup is not stopped by SIGHUP.
 
 A copy of run_all.py runs in a scratch folder with one check that starts a spinner (a child of the check, as
-tests/test_recorder_sync.py starts a broken recorder that hangs on purpose) and then sleeps or exits. The spinner writes
+a check's broken fixture that hangs on purpose) and then sleeps or exits. The spinner writes
 its PID, then a line every 20 ms: once the runner returns, the file must stop growing. A spinner or check that survives
 is killed here, by its PID and only while its command line still names this check's scratch folder; a spinner ends by
 itself after 60 s either way.
@@ -73,6 +73,7 @@ class Reaped(unittest.TestCase):
         (self.tmp / "tests").mkdir()
         (self.tmp / "nx2").mkdir()
         shutil.copy(ROOT / "tests" / "run_all.py", self.tmp / "tests" / "run_all.py")
+        shutil.copy(ROOT / "tests" / "compiler_command.py", self.tmp / "tests" / "compiler_command.py")   # (run_all.py's)
         self.spinner = self.tmp / "tests" / "spinner.txt"
         self.check_pid = self.tmp / "tests" / "check.pid"
 

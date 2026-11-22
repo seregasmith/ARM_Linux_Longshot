@@ -63,7 +63,7 @@ static inline int hd_rumble_amp_code(float amp) {
     return c > HD_RUMBLE_AMP_TOP ? HD_RUMBLE_AMP_TOP : (int)c;
 }
 
-/* (issue 263, for HD rumble) The game's amplitudes as a Switch controller is to play them: OoT scales its rumble files
+/* (for HD rumble) The game's amplitudes as a Switch controller is to play them: OoT scales its rumble files
    by small gains (romfs RSDB/RumbleCall: 0.015 to 0.5, most effects 0.05 to 0.2), so what it asks for is mostly 0.02 to
    0.1 and played as it is a Pro Controller's actuators hardly move (a heart caught, 0.06 at 55 Hz, is not felt). Each
    band goes through the same curve as the motors' (nn_hid.c's rumble_motor, from Eden's SDL driver): (a + a^0.35) / 2,

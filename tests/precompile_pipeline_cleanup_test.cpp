@@ -35,6 +35,7 @@ static bool delay_build = false, building = false, resume_build = false;
 static VkPipeline next_pipeline = 100;
 static unsigned builds = 0;
 static unsigned note_targets(const PipeNote&) { return 5; }
+static bool note_key_holds(const Program&, const PipeNote&) { return true; }   // (every note's key holds here)
 static VkPipeline build_graphics(const Program&, unsigned s, unsigned targets, VkPrimitiveTopology topo) {
     CHECK(s == 3 && targets == 5 && topo == 4);
     CHECK(!note_locked); // Drivers may take arbitrarily long; do not hold the cache lock.

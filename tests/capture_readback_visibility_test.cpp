@@ -107,6 +107,7 @@ void read_shot(bool generated, bool owned = false) {
     uint64_t value = 17;
     int64_t presents = 1;
     const char* shots = "private-test";
+    int made_index = 0;
     /* MADE */
 }
 void seed(Allocation& allocation, size_t bytes, uint8_t value) {

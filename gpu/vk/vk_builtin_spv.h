@@ -1,4 +1,4 @@
-// The renderer's built-in shaders, from disk when asked (the dev-loop proposal's B2, #2636).
+// The renderer's built-in shaders, from disk when asked.
 //
 // RX_VK_SHADER_DIR=<folder>: each built-in shader is taken from <folder>/<name>.spv when that file is SPIR-V, and the log
 // names it; otherwise the words compiled in from gpu/vk/shaders/*_spv.h. <name> is the header's: clear_vert.spv for

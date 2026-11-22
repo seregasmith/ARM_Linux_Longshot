@@ -20,6 +20,24 @@ inline bool mma_software = false;   // (HMMA_nx2 in software: emit_spirv_warp.cp
 // chosen by vk_coopmat.cpp's self-test; and whether its quad broadcasts may be used (the device has quad operations in every stage)
 inline uint32_t mma_software_form = 0;
 inline bool mma_software_quad = false;
+// (longshot, AMD RDNA 3/4) HMMA_nx2 on 16x16x16 f16 cooperative matrices: the console's fragments are staged through a
+// per-subgroup tile of shared memory at their PTX m16n8k16 positions, so the device's own lane layout does not matter
+// (emit_spirv_warp.cpp DefineWmma16MatrixFunction, vk_coopmat.cpp). B and C are padded to 16 columns with zeros.
+inline bool mma_wmma16 = false;
+// (with mma_wmma16) one 16x16x16 multiply instead of two K=8 halves rounded to f16 between them as HMMA.F16 does
+inline bool mma_wmma16_fast = false;
+// (with mma_wmma16) fuse N-pairs (two HMMA_nx2 sharing A into one 16x16 [B0|B1] DontInline call)
+inline bool mma_wmma16_fused = true;
+// shared memory the WMMA16 tiles add per subgroup, in u32 words: A (16x16 row major), B's two K halves (each 16x16 column
+// major, the other half's rows zero) and C/D (16x16 row major), 16x16 f16 = 128 words each
+inline constexpr uint32_t mma_wmma16_tile_words = 4 * 128;
+inline constexpr uint32_t mma_wmma16_tile_bytes = mma_wmma16_tile_words * 4;
+// the device's maxComputeSharedMemorySize (vk_coopmat.cpp): a program whose tiles would pass it multiplies in software
+inline uint32_t mma_wmma16_shared_limit = 0;
+// the device's computeFullSubgroups (vk_coopmat.cpp): with it a workgroup X width that is a multiple of 32 is created with
+// REQUIRE_FULL_SUBGROUPS (vk_draw.cpp pin_subgroup), so no subgroup has lanes missing; without it no program uses the tiles
+inline bool mma_wmma16_full_subgroups = false;
+inline uint32_t mma_wmma16_max_subgroups = 0;
 // (amd-fix) float colour outputs carry no NaN or infinity to their target (EmitSetFragColor): one NaN texel spreads
 // through bloom/blur/downsample averages into glowing blocks (OoT's flowers on AMD, Longshot issue 606). On for every
 // card since v2.0.6 (vk_coopmat.cpp coopmat_init); RX_VK_NAN_GUARD=0 turns it off. Idea from NX2navi patch 0027.
@@ -39,6 +57,12 @@ inline bool fetch_bounds_buffers = false;
 // (longshot) isnan tested on the value's bits (IsNan in emit_spirv_floating_point.cpp), not OpIsNan, for AMD's older Windows
 // shader compiler (RX 5000 and RX 6000: gpu/vk/device_policy.h); RX_VK_NAN_BITS=0 or 1
 inline bool nan_bits = false;
+// (longshot) In compute-fallback mesh stages, emit NoContraction f32 multiplies as OpFma(a, b, -0.0f) (EmitFPMul32):
+// AMD's older Windows proprietary shader compiler (RDNA 1 and 2: gpu/vk/device_policy.h) ignores NoContraction and
+// reassociates fma(t, v * rsq, add) into fma(rsq * t, v, add) in depth-only mesh fallback shaders where gl_Position
+// cannot be decorated Invariant, causing grass tips to fail the colour pass's EQUAL depth test and flash white.
+// OpFma(a, b, -0.0f) is IEEE-754 bit-exact with a * b and blocks the reassociation; RX_VK_MESH_STRICT_FMUL=0 or 1
+inline bool mesh_fallback_strict_fmul = false;
 // (longshot) a storage buffer table's entries searched in a loop the driver is asked not to unroll (DefineGlobalMemoryFunctions),
 // not one test an entry written out sixteen times. Mesa inlines every function, DontInline or not: OoT's foliage culling
 // (53caac5f) has 46 global accesses, each with its ~70 table entries written out, over 100k instructions that Intel's
@@ -52,6 +76,12 @@ inline bool global_table_loop = false;
 // 12.3 ms a frame, 5.7 ms with its loads through the table, its 243 million loads the same words both ways. A storage buffer in a
 // virtual pool (from 1 TB) is not in the table and reads 0. On for Intel's Mesa driver (vk_coopmat.cpp); RX_VK_MESH_PAGES=0 or 1
 inline bool mesh_fallback_pages = false;
+// (longshot) Vertex, fragment and compute stages' global loads (and the mesh fallback's task and mesh stages') through the guest page
+// table alone, as mesh_fallback_pages does. The search
+// over every bound storage buffer, inlined at each load, made a vertex stage with 61 loads 585 ms of RADV's compile (44 ms through
+// the table). 1: the table alone; 2: the search kept, a load where the two disagree recorded in the miss log's buffer
+// (vk_draw.cpp gp_table_check_log). On by default where the table holds the pools (vk_coopmat.cpp); RX_VK_GP_TABLE=0, 1 or 2
+inline int graphics_table_loads = 0;
 // (longshot) The mesh fallback's mesh workgroups keep their attribute region (the stage buffer's vertex and primitive lines, up to
 // 32 KB) in a slot of a pool in the records buffer instead of in workgroup memory (emit_spirv.h MESH_FALLBACK_POOL_*). Intel
 // gives workgroup memory in powers of two, so Hyrule Castle's colour mesh stages, 9 to 18 KB of it, took 16 or 32 KB each: few

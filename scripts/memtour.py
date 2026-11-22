@@ -8,12 +8,13 @@ compare.
         [--dests 13,1,2,3,0,7,9,11 | all] [--dwell 40] [--laps 1] [--settle 20] [--interval 2]
         [--env NAME=VALUE ...] [--exe FILE] [--wrapper '["admission", "command"]']
 
-It uses `scripts/longshot_ctl.py` (docs/control.md): `launch --profile test` (headless, a copy of the save, the game
+It uses the control bridge's client, `scripts/longshot_bridge.py` (docs/dev/reference/control-bridge.md): a run with
+the test profile, as `longshot_ctl.py launch --profile test` (headless, a copy of the save, the game
 folder's own options), A pressed until the save is loaded, the OoT debug teleport to each destination (`longshot_ctl.py
 teleport` lists them; `all` takes every one) with a walk and camera swings for DWELL seconds in each, and a clean quit.
 A first start prepares shaders before the first frame: give it `--launch-timeout`, or run the game once first.
 
-Written to OUT (default `work/memtour-<time>`, a new folder):
+Written to OUT (default `runs/memtour-<time>` in the development folder, `dev.py paths runs`; a new folder):
     mem.csv      one row every INTERVAL seconds: the game's RssAnon, RssShmem, swap (anonymous and shared), the sum
                  `game_total` (resident + swapped, file pages left out: they can be dropped), MemAvailable, swap in use;
                  then the renderer's newest `vk: budget:` line of the run's log (every 600 presents, gpu/vk/mem_account.h):
@@ -28,7 +29,6 @@ Linux only (it reads /proc). The numbers are observations of one run: a change i
 PC, the same scene and the same settings, not by one run each way. Standard library only."""
 import argparse
 import csv
-import importlib.util
 import json
 import os
 import re
@@ -37,15 +37,18 @@ import threading
 import time
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import longshot_bridge  # noqa: E402
+from tours.memory import proc_mb  # noqa: E402
+
 DEFAULT_DESTS = "13,1,2,3,0,7,9,11"
 # (the renderer's pools by the ledger they can be in, as gpu/vk/vk_texture.cpp and vk_memory.cpp register them:
 # tests/test_mem_account.py checks that every registered name is here)
-BUDGET_VRAM = ["textures", "sparse textures", "target pool", "dead images", "dead buffers", "other images", "blocks free",
-               "mirrors", "shadows", "staging", "captures", "capture spares", "imports", "retired imports", "other buffers"]
+BUDGET_VRAM = ["textures", "sparse textures", "target pool", "dead images", "dead buffers", "reaper", "other images",
+               "blocks free", "mirrors", "shadows", "staging", "captures", "capture spares", "imports", "retired imports", "other buffers"]
 BUDGET_RAM = ["imports", "retired imports", "retired records", "captures", "capture spares", "capture staging spares",
-              "capture table", "staging", "textures in RAM", "target pool", "dead images", "dead buffers", "other images",
-              "other buffers"]
+              "capture table", "staging", "textures in RAM", "target pool", "dead images", "dead buffers", "reaper",
+              "other images", "other buffers"]
 BUDGET_COLUMNS = (["vram_sum", "vram_allowed", "vram_driver", "vram_unaccounted"]
                   + ["vram_" + n.replace(" ", "_") for n in BUDGET_VRAM] + ["vram_others", "ram_sum", "ram_private"]
                   + ["ram_" + n.replace(" ", "_") for n in BUDGET_RAM] + ["ram_others"])
@@ -56,33 +59,12 @@ BUDGET_LINE = re.compile(r"vk: budget: VRAM (\d+) of (\d+) MB \((\d+) MB by the 
                          r"n/a)\): (.*); RAM (\d+) MB \(the process's private memory (\d+) MB\): (.*)$")
 
 
-def load_ctl(path=None):
-    spec = importlib.util.spec_from_file_location("longshot_ctl", path or HERE / "longshot_ctl.py")
-    m = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(m)
-    return m
-
-
-def kv_mb(path, keys):
-    """{key: MB} for the `Key:   N kB` lines of a /proc file, or None when it can't be read (the process went away)"""
-    out = {}
-    try:
-        with open(path) as f:
-            for line in f:
-                k, _, v = line.partition(":")
-                if k in keys:
-                    out[k] = int(v.split()[0]) // 1024
-    except (OSError, ValueError, IndexError):
-        return None
-    return out
-
-
 def sample(pid, proc="/proc"):
     """One row of memory numbers (MB) for process `pid`, or None. game_total = RssAnon + RssShmem + smaps Swap: what the
     game holds in RAM and in swap, shared memory included (VmSwap counts only the anonymous swap entries)."""
-    st = kv_mb(f"{proc}/{pid}/status", ("VmRSS", "RssAnon", "RssShmem", "RssFile", "VmSwap"))
-    sm = kv_mb(f"{proc}/{pid}/smaps_rollup", ("Swap",))
-    mi = kv_mb(f"{proc}/meminfo", ("MemAvailable", "SwapTotal", "SwapFree", "Shmem"))
+    st = proc_mb(f"{proc}/{pid}/status", ("VmRSS", "RssAnon", "RssShmem", "RssFile", "VmSwap"))
+    sm = proc_mb(f"{proc}/{pid}/smaps_rollup", ("Swap",))
+    mi = proc_mb(f"{proc}/meminfo", ("MemAvailable", "SwapTotal", "SwapFree", "Shmem"))
     if not st or sm is None or not mi or "RssAnon" not in st or "MemAvailable" not in mi:
         return None
     swap_all, vmswap = sm.get("Swap", 0), st.get("VmSwap", 0)
@@ -193,7 +175,7 @@ WALK = [("L", 0, 1, 150), ("R", 0.6, 0, 60), ("L", 0.7, 0.7, 120), ("R", -0.6, 0
 
 
 class Tour:
-    """The tour itself, against a control bridge `b` (longshot_ctl.Bridge or anything with its request()) and the
+    """The tour itself, against a control bridge `b` (longshot_bridge.Bridge or anything with its request()) and the
     client module `ctl` (for Failed and check)"""
 
     def __init__(self, ctl, b, mark, clock=time.time, sleep=time.sleep):
@@ -330,7 +312,7 @@ def parse(argv):
     where.add_argument("--save", help="a save folder: a copy is the run's save, the source is only read")
     where.add_argument("--repo-save", help="a repository save (assets/saves/NAME, longshot_ctl.py saves --repo) instead")
     ap.add_argument("--slot")
-    ap.add_argument("--out", help="a new or empty folder (default work/memtour-<time>)")
+    ap.add_argument("--out", help="a new or empty folder (default runs/memtour-<time> in the development folder)")
     ap.add_argument("--dests", default=DEFAULT_DESTS, help="teleport indices, comma separated, or all")
     ap.add_argument("--dwell", type=float, default=40, help="seconds in each area")
     ap.add_argument("--laps", type=int, default=1)
@@ -351,7 +333,6 @@ def main(argv=None):
     if not sys.platform.startswith("linux"):
         print("memtour: memory is sampled from /proc: Linux only", file=sys.stderr)
         return 2
-    ctl = load_ctl()
     env = {}
     for kv in a.env:
         k, sep, v = kv.partition("=")
@@ -359,7 +340,7 @@ def main(argv=None):
             print("memtour: --env NAME=VALUE", file=sys.stderr)
             return 2
         env[k] = v
-    out = Path(a.out or "work/memtour-" + time.strftime("%Y%m%d-%H%M%S")).absolute()
+    out = Path(a.out or longshot_bridge.dev_home() / "runs" / ("memtour-" + time.strftime("%Y%m%d-%H%M%S"))).absolute()
     if out.is_symlink() or (out.exists() and (not out.is_dir() or any(out.iterdir()))):
         print(f"memtour: {out} is not a new or empty folder", file=sys.stderr)
         return 2
@@ -368,17 +349,17 @@ def main(argv=None):
     mark = Marks(out / "marks.csv")
     code = 0
     try:
-        session = ctl.start_session(a.game_dir, run=str(out / "run"), exe=a.exe, save=a.save, slot=a.slot,
+        session = longshot_bridge.start_session(a.game_dir, run=str(out / "run"), exe=a.exe, save=a.save, slot=a.slot,
                                     repo_save=a.repo_save, profile="test", env=env, timeout=a.launch_timeout,
                                     wrapper=json.loads(a.wrapper) if a.wrapper else None)
         info = session.info()
         mark("started", f'pid {info["pid"]}')
         sampler = Sampler(info["pid"], out / "mem.csv", a.interval, log=info.get("log"))
         sampler.start()
-        bridge = ctl.Bridge(info["socket"], 10)
-        tour = Tour(ctl, bridge, mark)
+        bridge = longshot_bridge.Bridge(info["socket"], 10)
+        tour = Tour(longshot_bridge, bridge, mark)
         tour.run(tour.destinations(a.dests), a.dwell, a.laps, a.settle)
-    except ctl.Failed as e:
+    except longshot_bridge.Failed as e:
         mark("error", e)
         print(f"memtour: {e}", file=sys.stderr)
         code = e.code if isinstance(e.code, int) and e.code else 1

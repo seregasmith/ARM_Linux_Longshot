@@ -27,6 +27,7 @@ class FailedOutputIntoAPipe(unittest.TestCase):
             (tmp / "tests").mkdir()
             (tmp / "nx2").mkdir()
             shutil.copy(ROOT / "tests" / "run_all.py", tmp / "tests" / "run_all.py")
+            shutil.copy(ROOT / "tests" / "compiler_command.py", tmp / "tests" / "compiler_command.py")   # (run_all.py imports it)
             (tmp / "tests" / "test_quotes.py").write_text(FAILING, encoding="utf-8")
             git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "core.autocrlf=false"]
             for cmd in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "t"]):

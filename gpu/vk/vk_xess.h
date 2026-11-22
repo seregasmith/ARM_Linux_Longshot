@@ -1,6 +1,6 @@
 // (longshot) Intel XeSS Super Resolution, one of the temporal upscaler's engines (vk_temporal.h; vk_xess.cpp), through XeSS's
 // Vulkan API. Only Intel's MIT API headers are built in (third_party/xess); Intel's libxess.dll is the player's (put there by
-// hand, or downloaded on their PC by a build with --fetch-xess-runtime: scripts/xess_sdk.py), loaded at run time from
+// hand, or downloaded on their PC by a build with --fetch-xess-runtime: scripts/fetch.py xess), loaded at run time from
 // RX_VK_XESS_DIR, the executable's folder or the game folder, never shipped with Longshot. Windows only: Intel makes
 // no XeSS library for Linux, where this says so and the game's own upscaler runs. XeSS Frame Generation and XeLL (Intel's
 // latency reduction) are D3D12 only, so they are not here.

@@ -48,8 +48,7 @@ struct NvnState {
     uint64_t samples_passed = 0;
     // (longshot) real occlusion counts (vk_replay.cpp, RX_VK_OCC_QUERIES): the draws from a samples-passed reset to its report
     // each get a query. They are numbered from one counter for every queue (occ_next_all, vk_replay.cpp): occ_next is this
-    // state's copy of it while one of its command buffers is replayed (occ_begin_buffer), so a parallel replay's dry pass and
-    // its workers, which start from copies of the state, agree on the numbers
+    // state's copy of it while one of its command buffers is replayed (occ_begin_buffer)
     uint64_t occ_next = 0, occ_first = 0;
     uint64_t occ_limit = 0;      // (queries are taken below it: set before a command buffer's replay, when the ring has room)
     bool occ_on = false;         // (a reset was seen and no report yet)

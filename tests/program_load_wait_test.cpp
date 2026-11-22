@@ -48,6 +48,7 @@ bool pipe_note_at(FILE*, unsigned, PipeNote*) {
 std::vector<uint64_t> deferred_keys;
 void pipeline_defer(unsigned key) { deferred_keys.push_back(key); }
 bool pipeline_keep_ready(unsigned, VkPipeline) { return true; }
+template <class P> bool note_key_holds(const P&, const PipeNote&) { return true; }   // (every note's key holds here)
 std::atomic<int> probes{0};
 struct {
     VkPipeline graphics(const Program&, const PipeNote&) {
@@ -67,7 +68,9 @@ void load_work(LoadJob& job) {
     for (const uint64_t key : job.keys) {
         auto p = std::make_unique<Program>();
         p->key = key;
+        size_t built = 0, left = 0;   // (load_work's: whether the program's modules may go once its notes are built)
 #include "load_graphics_notes.inc"
+        (void)built, (void)left;
         job.made.push_back({key, std::move(p)});
     }
     CHECK(bytes == (reads.load() - reads_before) * (int64_t)sizeof(PipeNote));

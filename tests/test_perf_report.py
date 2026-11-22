@@ -1,4 +1,4 @@
-"""The performance statistics (docs/performance-statistics.md): the game's summary (gpu/vk/perf_report.h, compiled with
+"""The performance statistics (docs/dev/reference/profiling.md, Performance statistics): the game's summary (gpu/vk/perf_report.h, compiled with
 tests/test_perf_report.cpp: buckets, hitches, pacing, the JSON, a frame's cost), the wiring (on only with the tick, a
 frame added at each present, the events where they happen), what the relay does with what the game sends, and the
 launcher's side (nx2/perf_report.py):
@@ -126,6 +126,56 @@ def launcher_side(tmp):
     check(not pr.sending(str(f)), "the tick is off by default")
     pr.set_sending(str(f), True)
     check(pr.sending(str(f)) and (f / pr.CHOICE).read_text() == "send=1\n", "on: send=1 in longshot_perf.ini")
+
+    # (the heartbeat: a sender whose send outlives one LEASE — a relay that trickles — keeps its lock: the holder's
+    #  lease is renewed while it sends, so a second sender is refused mid-send with the lease still in force)
+    beat = Relay()   # (one held-open request; the reply only goes when we say)
+    try:
+        import socket, time
+        hb = game_folder(tmp, "a send longer than one lease", summaries=1)
+        srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(1)
+        port = srv.getsockname()[1]
+        def serve():
+            conn, _ = srv.accept()
+            conn.recv(65536)
+            # (held ~2 s: six beats at the 0.3 s patched below — more than a whole wall second apart, so at least
+            #  one beat renews the lease end across a second boundary, whatever its phase; the heartbeat must beat
+            #  while we hold the reply)
+            time.sleep(2.0)
+            conn.sendall(b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n"); conn.close()
+        t = threading.Thread(target=serve, daemon=True); t.start()
+        lk = hb / pr.PENDING / pr.LOCK
+        real_beat, pr.BEAT = pr.BEAT, 0.3
+        try:
+            send_thread = threading.Thread(target=lambda: pr.send_waiting(str(hb), url="http://127.0.0.1:%d/perf" % port, timeout=8))
+            send_thread.start()
+            for _ in range(200):   # (wait for the sender to take its lock)
+                if lk.exists():
+                    break
+                time.sleep(0.02)
+            beaten = [lk.stat().st_mtime] if lk.exists() else []
+            for _ in range(160):
+                try:
+                    m = lk.stat().st_mtime   # (each beat rewrites the body: the lock's mtime walks with the beats;
+                except OSError:              #  watching it is phase-free — a lease end second can straddle a tick)
+                    break
+                if m > beaten[-1]:
+                    beaten.append(m)
+                    if len(beaten) >= 3:
+                        break   # (three beats at 0.3 s apart: the heartbeat beats while the send is in flight)
+                time.sleep(0.05)
+            refused = pr.take_send_lock(str(hb)) if send_thread.is_alive() else True
+            if refused:
+                pr.release_send_lock(str(hb))
+            send_thread.join(15)
+        finally:
+            pr.BEAT = real_beat
+            srv.close()
+        check(len(beaten) >= 3 and not refused and send_thread.is_alive() is False,
+              "a send outliving one lease: the heartbeat beats while it runs (lock mtime moved %d times) and a "
+              "second sender is refused mid-send" % (len(beaten) - 1))
+    finally:
+        beat.close()
 
     relay = Relay()
     try:
@@ -291,15 +341,25 @@ def sender_switches(tmp):
         f = game_folder(tmp, "a start's share", summaries=20)
         relay.bodies.clear()
         got = pr.send_waiting(str(f), url=relay.url)
-        check(got == {"sent": 12, "refused": 0, "left": 8} and [b["n"] for b in relay.bodies] == list(range(12)),
-              "at most 12 a start by default, oldest first; the rest wait (%s)" % got)
+        check(pr.MAX_SENDS == 5 and got == {"sent": 5, "refused": 0, "left": 15} and
+              [b["n"] for b in relay.bodies] == list(range(5)),
+              "at most 5 a start by default (pinned as a literal: the ingress route takes 6 a minute with a burst of "
+              "6 per address — raise one number, raise the other; docs/dev/reference/profiling.md says the same), "
+              "oldest first; the rest wait (%s)" % got)
+        doc = (ROOT / "docs" / "dev" / "reference" / "profiling.md").read_text(encoding="utf-8")
+        check("at most 5" in doc and "6 a minute" in doc and "burst of 6" in doc,
+              "the docs name the same two numbers (5 a start, 6 a minute burst 6): they live together")
+        src_line = next(l for l in (ROOT / "nx2" / "perf_report.py").read_text(encoding="utf-8").splitlines() if l.startswith("MAX_SENDS ="))
+        check("6 a minute" in src_line and "burst of 6" in src_line,
+              "the constant's own comment names the ingress pairing (%s)" % src_line.strip())
         with Env(LONGSHOT_PERF_MAX_SENDS="3"):
             got = pr.send_waiting(str(f), url=relay.url)
-        check(got == {"sent": 3, "refused": 0, "left": 5}, "LONGSHOT_PERF_MAX_SENDS=3 (%s)" % got)
+        check(got == {"sent": 3, "refused": 0, "left": 20 - pr.MAX_SENDS - 3}, "LONGSHOT_PERF_MAX_SENDS=3 (%s)" % got)
         with Env(LONGSHOT_PERF_MAX_SENDS="1000"):
-            check(pr.env_number("LONGSHOT_PERF_MAX_SENDS", 12, 1, 48) == 48, "a switch past its range: clamped")
+            check(pr.env_number("LONGSHOT_PERF_MAX_SENDS", pr.MAX_SENDS, 1, 48) == 48, "a switch past its range: clamped")
         with Env(LONGSHOT_PERF_MAX_SENDS="lots"):
-            check(pr.env_number("LONGSHOT_PERF_MAX_SENDS", 12, 1, 48) == 12, "a switch that isn't a number: the default")
+            check(pr.env_number("LONGSHOT_PERF_MAX_SENDS", pr.MAX_SENDS, 1, 48) == pr.MAX_SENDS,
+                  "a switch that isn't a number: the default")
         with Env(LONGSHOT_PERF_TIMEOUT="0"):
             check(pr.env_number("LONGSHOT_PERF_TIMEOUT", 10, 2, 60) == 2, "LONGSHOT_PERF_TIMEOUT at least 2 s")
     finally:
@@ -339,6 +399,247 @@ def sender_switches(tmp):
               "Retry-After as an HTTP date; one that can't be read is none")
     finally:
         busy.close()
+
+    statuses = Relay(codes=[404, 404])
+    try:
+        f = game_folder(tmp, "a route missing during a deploy", summaries=2)
+        got = pr.send_waiting(str(f), url=statuses.url)
+        check(got == {"sent": 0, "refused": 0, "left": 2} and
+              len(list((f / pr.PENDING).glob("*.json"))) == 2 and not (f / pr.PENDING / pr.NEXT).exists(),
+              "404 (the route missing during a deploy): both summaries stay, and no busy-backoff note either (%s)" % got)
+    finally:
+        statuses.close()
+
+    never = Relay(codes=[400, 413, 415, 422])
+    try:
+        f = game_folder(tmp, "will never be taken", summaries=4)
+        got = pr.send_waiting(str(f), url=never.url)
+        check(got == {"sent": 0, "refused": 4, "left": 0} and not list((f / pr.PENDING).glob("*.json")),
+              "400, 413, 415, 422: never to be taken: the summaries go (%s)" % got)
+    finally:
+        never.close()
+
+    check(all(pr.answer(c) == ("later", None) for c in (301, 302, 307, 308, 404, 408, 425)),
+          "3xx, 404, 408, 425: 'later' each (kept for the next start, none kept out of it)")
+    check(pr.answer(400)[0] == "refused" and pr.answer(413)[0] == "refused" and pr.answer(415)[0] == "refused" and
+          pr.answer(422)[0] == "refused" and pr.answer(204)[0] == "sent" and pr.answer(500)[0] == "busy" and
+          pr.answer(429, "5") == ("busy", 5),
+          "only 400/413/415/422 refused; 2xx sent; 429 and 5xx busy, Retry-After read")
+
+    lock = Relay()
+    try:
+        f = game_folder(tmp, "another sender holds it", summaries=3)
+        (f / pr.PENDING / pr.LOCK).write_text("%d %d\n" % (os.getppid(), int(pr.time.time() + pr.LEASE)))   # (a
+        #  sender that IS running (this suite's parent): its lease runs, its pid checks alive)
+        got = pr.send_waiting(str(f), url=lock.url)
+        check(got == {"sent": 0, "refused": 0, "left": 3} and not lock.bodies and
+              len(list((f / pr.PENDING).glob("*.json"))) == 3 and (f / pr.PENDING / pr.LOCK).exists(),
+              "another sender holds .sending: nothing sent, nothing posted, its lock stays its own (%s)" % got)
+        (f / pr.PENDING / pr.LOCK).write_text("999999999 %d\n" % int(pr.time.time() - 10))   # (its lease ran out: dead)
+        got = pr.send_waiting(str(f), url=lock.url)
+        check(got == {"sent": 3, "refused": 0, "left": 0} and not (f / pr.PENDING / pr.LOCK).exists(),
+              "a sender whose lease ran out un-renewed: the lock is taken over, the send runs, the lock is gone after (%s)" % got)
+        # (release is by OWNER, not by pathname: a holder that finished after someone else took its expired lock over
+        #  must not delete the new lock — the review's repro had a third sender then post the same summaries twice)
+        f = game_folder(tmp, "release by owner", summaries=1)
+        lk = f / pr.PENDING / pr.LOCK
+        lk.write_text("999999999 %d\n" % int(pr.time.time() - 1))   # (expired: this process takes it over)
+        check(pr.take_send_lock(str(f)), "an expired lock from a sender that is gone: taken over")
+        lk.write_text("%d %d\n" % (os.getppid(), int(pr.time.time()) + pr.LEASE))   # (a takeover happened meanwhile:
+        pr.release_send_lock(str(f))                                                #  the lock is another's now)
+        check(lk.exists() and lk.read_text().split()[0] == str(os.getppid()),
+              "release only removes the lock whose body names the releaser: another holder's lock stays")
+        lk.write_text("%d %d\n" % (os.getpid(), int(pr.time.time()) + pr.LEASE))    # (ours again by the body)
+        pr.release_send_lock(str(f))
+        check(not lk.exists(), "the holder's own release clears it")
+        # (a live holder is refused even when its lease expired, unless its pid is certainly gone; a dead pid is
+        #  taken over even when its lease still runs — the wall a backwards clock jump cannot move (issue #1265 review))
+        # (the install of a taken-over lock must be atomic: four senders racing over one folder post every summary
+        #  exactly once between them — a remove-then-create takeover lets two claim one expired lock and both send)
+        import multiprocessing as _mp
+        ctx = _mp.get_context("fork") if hasattr(_mp, "get_context") else None
+        if ctx is not None:   # (posix only: fork is what makes four senders real here)
+            f = game_folder(tmp, "four senders at once", summaries=4)
+            lock.bodies.clear()   # (the shared relay: only this race's POSTs count)
+            q = ctx.Queue()
+            def _send(folder, url):
+                q.put(pr.send_waiting(str(folder), url=url, timeout=2))
+            kids = [ctx.Process(target=_send, args=(str(f), lock.url)) for _ in range(4)]
+            [k.start() for k in kids]
+            [k.join(20) for k in kids]
+            results = [q.get(timeout=2) for _ in kids]
+            posted = sorted(b["n"] for b in lock.bodies)
+            check(posted == [0, 1, 2, 3] and not pr.waiting(str(f)) and not (f / pr.PENDING / pr.LOCK).exists(),
+                  "four senders race one folder: every summary posted exactly once, no lock left (%s, POSTs=%s)" % (results, posted))
+        # (the takeover install is atomic by construction — link, not remove-then-rename — pinned with a rendezvous
+        #  inside the claim: taker A moves the expired lock aside and pauses; B (this process) makes its lock; A's
+        #  install must then FAIL against B's (O_EXCL create), not overwrite it (issue #1265, review))
+        if ctx is not None:
+            f = game_folder(tmp, "the claim rendezvous", summaries=1)
+            lk = f / pr.PENDING / pr.LOCK
+            lk.write_text("999999999 %d\n" % (int(pr.time.time()) - 1))   # (expired: both takers eye it)
+            ev_claimed, ev_b_done = ctx.Event(), ctx.Event()
+            def taker_a(qq):
+                real_rename = pr.os.rename
+                def slow_rename(a, b, *rest):
+                    r = real_rename(a, b, *rest)
+                    if str(a).endswith(pr.LOCK):   # (the claim rename: hold A between claim and install)
+                        ev_claimed.set()
+                        ev_b_done.wait(10)
+                    return r
+                pr.os.rename = slow_rename
+                qq.put(pr.take_send_lock(str(f)))
+            qq = ctx.Queue()
+            kid = ctx.Process(target=taker_a, args=(qq,))
+            kid.start()
+            assert ev_claimed.wait(10), "taker A never claimed"
+            b_ok = pr.take_send_lock(str(f))   # (B: the expired lock is aside; a fresh lock is made here)
+            ev_b_done.set()
+            a_ok = qq.get(timeout=10)
+            kid.join(10)
+            body_pid = int(lk.read_text().split()[0]) if lk.exists() else None
+            check(b_ok and not a_ok and body_pid == os.getpid(),
+                  "taker A's install fails against B's fresh lock (O_EXCL create, not open-anything): A=%s B=%s lock owner=%s" % (a_ok, b_ok, body_pid))
+            pr.release_send_lock(str(f))
+        f = game_folder(tmp, "pid is the wall", summaries=1)
+        lk = f / pr.PENDING / pr.LOCK
+        lk.write_text("%d %d\n" % (os.getppid(), int(pr.time.time()) - 1))   # (lease expired, holder ALIVE (parent))
+        check(not pr.take_send_lock(str(f)), "a holder whose pid is running: its lock holds past its lease (a slow "
+                                             "sender mid-heartbeat is not taken over) (%s)")
+        lk.write_text("999999999 %d\n" % int(pr.time.time() + 10 * pr.LEASE))   # (dead pid, lease still running)
+        check(pr.take_send_lock(str(f)), "a holder whose pid is certainly gone: taken over mid-lease — no waiting "
+                                         "for the wall clock to catch up after a clock jump backwards")
+        pr.release_send_lock(str(f))
+        # (round three, the wall: a live holder's lock is NEVER claimable, however far past its lease. A review
+        #  reproduced four windows on 81923547f15ca684808bbb445f6e4f that all required a live holder's lock to read
+        #  stale — a taker mid-claim, an empty mid-create body, a parked beat, a check-then-unlink release. With the
+        #  wall none of them has anything to claim (issue #1265, review round three).)
+        f = game_folder(tmp, "the wall over a wedged sender", summaries=1)
+        lk = f / pr.PENDING / pr.LOCK
+        import os as _os
+        lk.write_text("%d %d\n" % (os.getppid(), int(pr.time.time()) - pr.STALL - 600))   # (alive, lease long gone:
+        check(not pr.take_send_lock(str(f)),                                              #  a send wedged on a stuck FS)
+              "a live holder wedged long past lease+STALL: holds while its mtime walks with its beats — a clock "
+              "jump forward cannot evict a working sender (issue #1265, review round three)")
+        _os.utime(str(lk), (pr.time.time() - 2 * pr.BEAT - 5, pr.time.time() - 2 * pr.BEAT - 5))   # (same live pid,
+        check(pr.take_send_lock(str(f)),                                                   #  but silent past 2 beats:
+              "a live-pid holder that has gone quiet past 2*BEAT is claimable — no permanent wedge, and a pid "     #  dead or recycled)
+              "recycled by an unrelated process cannot shut out sending forever (%s)")
+        lk.write_text("")   # (an empty body mid-create: a sender may be writing the pid this instant; not claimable
+        (f / pr.PENDING / pr.LOCK).touch()                                    #  until it ages past LEGACY)
+        _os.utime(str(lk), (pr.time.time() - 1, pr.time.time() - 1))          # (a fresh empty body: holds)
+        check(not pr.take_send_lock(str(f)), "an empty lock body younger than LEGACY: a mid-create sender holds; "
+                                             "claiming through it double-posted in the round-three review")
+        lk.write_text("")
+        _os.utime(str(lk), (pr.time.time() - pr.LEGACY - 5, pr.time.time() - pr.LEGACY - 5))
+        check(pr.take_send_lock(str(f)), "an unreadable body older than LEGACY: a corpse, cleared and claimed")
+        pr.release_send_lock(str(f))
+        # (round three, the pre-claim TOCTOU the review reproduced: A judges the expired lock stale and pauses before
+        #  its claim rename; B takes over cleanly in that breath; A's rename then moves B's FRESH lock away. Shipped
+        #  code inspects what the claim moved: it names a live sender, so A slides it back into the free path and
+        #  retries — B keeps its lock and A is refused. Rendezvous-pinned, not raced (issue #1265, review round three).)
+        if ctx is not None:
+            f = game_folder(tmp, "the claim inspects its corpse", summaries=1)
+            lk = f / pr.PENDING / pr.LOCK
+            lk.write_text("999999999 %d\n" % (int(pr.time.time()) - 1))   # (expired: A eyes it)
+            ev_paused, ev_b_done = ctx.Event(), ctx.Event()
+            def taker_a(qq):
+                real_judge = pr._lock_holds
+                def judge(path, *rest):
+                    r = real_judge(path, *rest)
+                    if str(path).endswith(pr.LOCK) and not r:   # (A just judged it claimable: pause THERE,
+                        ev_paused.set()                          #  before the claim rename touches anything
+                        ev_b_done.wait(10)
+                    return r
+                pr._lock_holds = judge
+                qq.put(pr.take_send_lock(str(f)))
+            qq = ctx.Queue()
+            kid = ctx.Process(target=taker_a, args=(qq,))
+            kid.start()
+            assert ev_paused.wait(10), "taker A never judged-and-paused"
+            b_ok = pr.take_send_lock(str(f))   # (B claims the expired lock and installs its own, cleanly)
+            ev_b_done.set()
+            a_ok = qq.get(timeout=10)
+            kid.join(10)
+            body_pid = int(lk.read_text().split()[0]) if lk.exists() else None
+            check(b_ok and not a_ok and body_pid == os.getpid(),
+                  "A judged stale, B took over mid-judgement, A's claim moved B's live lock and put it back: "
+                  "A=%s B=%s lock owner=%s (issue #1265, review round three)" % (a_ok, b_ok, body_pid))
+            pr.release_send_lock(str(f))
+        # (a .sending left as a DIRECTORY — an older or broken form — must not wedge sending forever)
+        f = game_folder(tmp, "lock as a directory", summaries=1)
+        (f / pr.PENDING / pr.LOCK).mkdir()
+        got = pr.send_waiting(str(f), url=lock.url)
+        check(got["sent"] == 1, "a .sending left as a directory: cleared, the send runs (%s)" % got)
+        # (a lock whose body couldn't be written (a full disk) must be removed, not handed out unreadable and not
+        #  left to block the retry: the sender itself goes ahead, and the next start finds no lock at all)
+        import errno as _e
+        from unittest import mock
+        f = game_folder(tmp, "a full disk at the lock", summaries=1)
+        with mock.patch.object(pr.os, "write", side_effect=OSError(_e.ENOSPC, "disk full")):
+            got = pr.send_waiting(str(f), url=lock.url)
+        check(not str(got).startswith("EXC") and not (f / pr.PENDING / pr.LOCK).exists(),
+              "ENOSPC writing the lock body: no crash, no unreadable lock left behind (%s)" % got)
+        f = game_folder(tmp, "the retry after a full disk", summaries=1)
+        (f / pr.PENDING / pr.LOCK).write_text("999999999 %d\n" % (int(pr.time.time()) - 1))   # (a half-made lock its
+        got = pr.send_waiting(str(f), url=lock.url)                                           #  dead sender left)
+        check(got["sent"] == 1 and not (f / pr.PENDING / pr.LOCK).exists(),
+              "the send right after: no wedged lock, the dead sender's half-lock is taken and gone (%s)" % got)
+    finally:
+        lock.close()
+
+    # (a redirect is the relay pointing elsewhere, not taking the summary: urllib must NOT follow it into a GET whose
+    #  200 would read as accepted (issue #1265, review). The proxied path is what a player's system proxy hits.)
+    import http.server as _hs
+    seen = []
+    class Redirector(_hs.BaseHTTPRequestHandler):
+        def do_POST(self):
+            seen.append("POST"); self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(302); self.send_header("Location", "/elsewhere"); self.send_header("Content-Length", "0")
+            self.end_headers()
+        def do_GET(self):
+            seen.append("GET"); self.send_response(200); self.send_header("Content-Length", "0"); self.end_headers()
+        def log_message(self, *a):
+            pass
+    srv = _hs.ThreadingHTTPServer(("127.0.0.1", 0), Redirector)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        url = "http://127.0.0.1:%d/perf" % srv.server_address[1]
+        f = game_folder(tmp, "a proxy that redirects", summaries=1)
+        with Env(http_proxy=url, HTTP_PROXY=url, no_proxy="", NO_PROXY=""):
+            got = pr.send_waiting(str(f), url=url)
+        check(got["left"] == 1 and got["sent"] == 0 and seen == ["POST"],
+              "a 302 (through the system's proxy) is the answer: the summary is kept, nothing follows to a GET (%s %s)" % (got, seen))
+    finally:
+        srv.shutdown(); srv.server_close()
+
+    # (source pins for the review round-two shape: the loop notices an untick mid-send, the takeover installs by
+    #  link (atomic), the release checks the body's owner, and the proxy answer never follows a redirect)
+    import inspect as _inspect
+    _send_these = _inspect.getsource(pr.send_these)
+    assert "if not sending(folder):" in _send_these, \
+        "send_these notices set_sending(False) mid-loop and re-sweeps (issue #1265, review)"
+    _take = _inspect.getsource(pr.take_send_lock)
+    assert "os.link(" not in _take and "O_CREAT | os.O_EXCL" in _take and "os.remove(path)" not in _take.split("claim it")[0].split("for _ in")[1], \
+        "a takeover claims by rename and installs by O_EXCL create (atomic everywhere: link() has no hard links on " \
+        "vfat/exfat, a Deck's microSD game folder), never remove-then-rename (issue #1265, review round three)"
+    assert "_lock_holds(mine)" in _take, \
+        "a taker inspects what its claim moved before discarding it: a lock renamed away that names a LIVE sender " \
+        "goes back to its name (the round-three pre-claim TOCTOU; issue #1265)"
+    _holds = _inspect.getsource(pr._lock_holds)
+    assert "_pid_gone(pid)" in _holds and "return True" in _holds, \
+        "the wall: a lock whose body names a running pid never goes stale (closes the claim/release windows " \
+        "a round-three review reproduced on 81926bf5; issue #1265)"
+    _swait = _inspect.getsource(pr.send_waiting)
+    assert _swait.index("beat.join(") < _swait.index("release_send_lock"), \
+        "the heartbeat thread is joined BEFORE the lock is released: a beat cannot land after hand-off " \
+        "(issue #1265, review round three)"
+    _rel = _inspect.getsource(pr.release_send_lock)
+    assert "_lock_read(path)[0] != os.getpid()" in _rel, \
+        "release removes only the lock whose body names the releaser (issue #1265, review)"
+    _post = _inspect.getsource(pr.post)
+    assert "build_opener(_NoRedirect)" in _post and "urllib.request.urlopen" not in _post, \
+        "post() judges the 3xx itself; urllib never follows it into a GET that reads as accepted (issue #1265, review)"
 
     relay = Relay()
     try:
@@ -504,7 +805,9 @@ def sizes(tmp, written):
         (folder / pr.PENDING / ("17100000%02d-%d.json" % (i, i))).write_bytes(f.read_bytes())
     relay = Relay()
     try:
-        got = pr.send_waiting(str(folder), url=relay.url)
+        # (the start's share has its own pin above: raise it here so this checks body sizes, not the cap)
+        with Env(LONGSHOT_PERF_MAX_SENDS="48"):
+            got = pr.send_waiting(str(folder), url=relay.url)
     finally:
         relay.close()
     check(got == {"sent": len(cases), "refused": 0, "left": 0}, "the sender sends every size case, none refused and deleted (%s)" % got)

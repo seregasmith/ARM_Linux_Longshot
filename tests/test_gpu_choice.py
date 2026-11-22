@@ -5,15 +5,20 @@ python -I -B tests/test_gpu_choice.py [--cxx g++]
 """
 import argparse
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests"))
+from menu_model_fixture import menu_text  # noqa: E402
 
 
 def preset_exempt(menu, value):
     """the menu's row for opts.<value> leaves the quality preset alone (Row::preset_exempt, which set_row checks)"""
-    start = menu.index("&opts.%s," % value, menu.index("Row rows[] = {"))
+    # (the row in vk_menu.cpp's table, or a module's rendered as a table line: menu_text, #1633)
+    table = "Row module_rows[] = {" if "Row module_rows[] = {" in menu else "Row rows[] = {"
+    start = menu.index("&opts.%s," % value, menu.index(table))
     row = menu[start:menu.index("},", start)]
     return row.rstrip().endswith(", true") and "if (!r.preset_exempt)" in menu
 
@@ -38,7 +43,7 @@ def main():
     if pick.index('getenv("RX_VK_DEVICE")') > pick.index("gpu_choice::menu_device"):
         raise SystemExit("pick_device takes the GPU row before RX_VK_DEVICE")
     menu = (vk / "vk_menu.cpp").read_text(encoding="utf-8")
-    if not preset_exempt(menu, "gpu_device"):
+    if not preset_exempt(menu_text(ROOT) if (vk / "menu" / "gpu.cpp").exists() else menu, "gpu_device"):
         raise SystemExit("vk_menu.cpp: changing the GPU row resets the quality preset to Custom")
     # (the row saved as the card itself, gpu_device_id=, and found where it is in this run's list: gpu_choice.h)
     if "gpu_device_cards.push_back({p.vendorID, p.deviceID})" not in pick or \

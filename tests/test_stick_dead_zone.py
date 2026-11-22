@@ -14,6 +14,7 @@ import tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
 from srccut import block   # noqa: E402
+from menu_model_fixture import menu_model_prelude  , menu_text# noqa: E402
 
 # (env_on, the switches' rule, before the code cut out of the sources: gpu/vk/compat/longshot_env.h)
 ENV_ON_H = str(Path(__file__).resolve().parents[1] / "gpu" / "vk" / "compat" / "longshot_env.h")
@@ -48,12 +49,12 @@ def main():
     sdl = (ROOT / "host" / "pad_sdl.c").read_text(encoding="utf-8")
     api = (ROOT / "gpu" / "vk" / "vk_api.h").read_text(encoding="utf-8")
     replay = (ROOT / "gpu" / "vk" / "vk_replay.cpp").read_text(encoding="utf-8")
-    menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
+    menu = menu_text()   # (vk_menu.cpp and its modules' rows, #1633)
     header = (ROOT / "gpu" / "vk" / "vk_menu.h").read_text(encoding="utf-8")
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    settings = (ROOT / "docs" / "user" / "graphics-and-controls.md").read_text(encoding="utf-8")
 
     check(not re.search(r"HOS_OPT_\w+ = 11\b", api), "a HOS_OPT_ enum also takes option 11")
-    pads = block(hid, "static void pads_read(")
+    pads = block(hid, "static void xinput_poll(")   # (XInput's pads, read off the game's thread)
     check("rx_option(11, 0)" in pads and "hos_filter_stick(thumb[0], thumb[1], zone, v)" in pads and
           "hos_filter_stick(thumb[2], thumb[3], zone, v + 2)" in pads,
           "XInput must filter both sticks with the menu's dead zone")
@@ -71,8 +72,8 @@ def main():
     check(row is not None, "the Insert menu has no Stick dead zone row (0 to 5)")
     check(row.group(0).rstrip().endswith("nullptr, false, true},"),
           "the row is not preset_exempt: changing the dead zone would set the quality preset to Custom")
-    check("| | Stick dead zone | Default (24%), 5%, 10%, 15%, 20%, 30% | Default (24%) |" in readme,
-          "README.md's option table has no Stick dead zone row")
+    check("| | Stick dead zone | Default (24%), 5%, 10%, 15%, 20%, 30% | Default (24%) |" in settings,
+          "docs/user/graphics-and-controls.md's settings table has no Stick dead zone row")
 
     c = r'''#include <stdint.h>
 #include <stdio.h>
@@ -124,14 +125,14 @@ int main(void) {
     init = block(menu, "void menu_init(")
     loop = block(init, "for (Row& r : rows) {")
     check("ini_key(r)" in loop, "menu_init's options loop no longer reads rows by ini_key")
-    cxx = r'''#include <algorithm>
+    cxx = menu_model_prelude() + r'''#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); exit(1); } } while (0)
 enum MenuTab { TAB_CONTROLS };
-struct Options { int output_res = 0, vsync = 0, resolution = 0, fps_cap = 0, upscale = 0, dlss = 0, dlss_pre_bloom = 0, handheld = 0, ultrawide = 0, stick_dead_zone = 0, game_lang = 0, audio_output = 0; } opts;   // (renamed rows retain their keys by value)
+struct Options { int output_res = 0, vsync = 0, resolution = 0, fps_cap = 0, upscale = 0, dlss = 0, dlss_pre_bloom = 0, handheld = 0, ultrawide = 0, stick_dead_zone = 0, game_lang = 0, audio_output = 0, vibration = 0, rumble = 0; } opts;   // (renamed rows and the Vibration rows retain their keys by value)
 int monitor_pick; // Only needed by the extracted ini_key(); this fixture exercises stick thresholds.
 static int parse_output(const char* text) { return atoi(text); }   // (the Output row's own parse: not what this checks)
 ''' + block(menu, "struct Row {") + ";\n" + block(menu, "const char* tx_stick_dead_zone(") + "\n" + \

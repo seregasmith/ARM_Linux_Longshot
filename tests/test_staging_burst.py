@@ -1,11 +1,12 @@
 """The staging arenas a load used a moment ago are kept, so frames that stage in a row do not make one each time.
 
 A staging arena is free for reuse once the GPU finished the submission that read it, which is after the next frame
-staged. So frames that stage in a row need two arenas taking turns. A card of 6.5 GB or less keeps 64 MB of idle
-arenas between loads (texture_frame), one arena: the idle one of the two went at every second present, and the next
-frame made a 64 MB arena again (9 to 41 ms of the replay thread on a Steam Deck, where it is system memory the driver
-clears). Arenas staged into in the last 2 s now stay, up to 256 MB of them, unless VRAM is near what the driver allows
-(pool_pressed). RX_VK_STAGING_BURST_S=0: as before.
+staged. So frames that stage in a row need two arenas taking turns. Where what is kept between loads (texture_frame's
+keep) is one arena, the idle one of the two went at every second present, and the next frame made an arena again (9 to
+41 ms of the replay thread on a Steam Deck, where it is system memory the driver clears). Arenas staged into in the last
+2 s now stay, up to 256 MB of them, unless VRAM is near what the driver allows (pool_pressure). RX_VK_STAGING_BURST_S=0:
+as before. Arenas are 16 MB (#637); one nothing staged into for 30 s (5 s under Linux memory pressure) goes, but two
+stay warm.
 
 Cuts staging() and texture_frame's give-back loop out of gpu/vk/vk_texture.cpp into tests/staging_burst_test.cpp and
 runs frames against them on a clock of the fixture's.
@@ -33,13 +34,14 @@ def main():
     p.add_argument("--cxx", default="g++")
     a = p.parse_args()
     tex = (ROOT / "gpu/vk/vk_texture.cpp").read_text(encoding="utf-8")
-    arena = "constexpr uint64_t kArena = 64ull << 20;"
+    arena = "constexpr uint64_t kArena = 16ull << 20;"
     if tex.count(arena) != 1:
-        raise SystemExit("vk_texture.cpp's arenas are no longer 64 MB: update this test")
+        raise SystemExit("vk_texture.cpp's arenas are no longer 16 MB: update this test")
     frame = block(tex, "void texture_frame(")
     loop = block(frame, "for (auto it = arenas.begin(); it != arenas.end();) {")
     for needle in ("const bool idle = it->value <= completed && it->value != rec_value;", "destroy_buffer(it->buffer, it->allocation);",
-                   "kept += it->size;", "const bool recent = burst_s && !pool_pressed && "):
+                   "kept += it->size;", "const bool recent = burst_s && !pool_pressure && ",
+                   "(stale && kept + it->size > kArena * 2)"):
         if needle not in loop:
             raise SystemExit("texture_frame's give-back loop no longer has: " + needle)
     if "st_arena_makes.load()" not in frame:

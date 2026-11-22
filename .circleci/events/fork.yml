@@ -1,4 +1,4 @@
-# Fork PR pipeline (fork_pr / fork_sha from mb/fork-doorbell). Docs: docs/ci.md.
+# Fork PR pipeline (fork_pr / fork_sha from mb/fork-doorbell). Docs: docs/dev/reference/ci.md.
 workflows:
   fork-pr:
     when: pipeline.parameters.fork_pr > 0

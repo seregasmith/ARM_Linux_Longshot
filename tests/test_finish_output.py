@@ -57,6 +57,15 @@ class FinishOutputTests(unittest.TestCase):
         self.image = self.work / "sa" / "image" / "image.bin"
         self.image.write_bytes(b"new synthetic image")
         (self.out / "image.bin").write_bytes(b"existing synthetic image")
+        # (the vendored code's licences, put in the game folder's licenses/ with the build: authored stand-ins here)
+        self.licences = []
+        for vendor, licence in (("reshade_fx", "LICENSE.md"), ("stb_image", "LICENSE")):
+            (self.root / "tools" / "third_party" / vendor).mkdir(parents=True)
+            for name in (licence, "PROVENANCE.md"):
+                path = self.root / "tools" / "third_party" / vendor / name
+                path.write_bytes(b"synthetic " + (vendor + " " + name).encode("ascii"))
+                self.licences.append(path)
+        self.all_staged = [self.source, *self.licences, self.image]
 
     def clear_fixture_readonly_modes(self):
         # Test-owned temporary files only: production must never unlock destinations or pre-existing .new files.
@@ -81,7 +90,10 @@ class FinishOutputTests(unittest.TestCase):
 
     def assert_no_staging_files(self):
         self.assertEqual(sorted(path.name for path in self.out.iterdir() if path.name != make_game.INSTALLED_NOTE),
-                         ["image.bin", "longshot.exe"])
+                         ["image.bin", "licenses", "longshot.exe"])
+        self.assertEqual(list(self.out.rglob("*.new")), [])
+        for path in self.licences:
+            self.assertEqual((self.out / "licenses" / path.parent.name / path.name).read_bytes(), path.read_bytes())
 
     def stopped_output(self):
         output = io.StringIO()
@@ -113,7 +125,7 @@ class FinishOutputTests(unittest.TestCase):
 
         with mock.patch.object(make_game.shutil, "copy2", side_effect=observe_copy):
             self.finish()
-        self.assertEqual(copied, [self.source, self.image])
+        self.assertEqual(copied, self.all_staged)
         self.assertEqual(self.destination.read_bytes(), self.source.read_bytes())
         self.assertEqual((self.out / "image.bin").read_bytes(), self.image.read_bytes())
         self.assert_no_staging_files()
@@ -144,7 +156,7 @@ class FinishOutputTests(unittest.TestCase):
 
         with mock.patch.object(make_game.shutil, "copy2", side_effect=observe_copy):
             self.finish(launcher=True)
-        self.assertEqual(copied, [self.source, self.image, self.root / "LongshotBuilder-Setup.exe"])
+        self.assertEqual(copied, self.all_staged + [self.root / "LongshotBuilder-Setup.exe"])
         self.assertEqual(binary.read_bytes(), self.source.read_bytes())
         self.assertEqual(self.destination.read_bytes(), b"new synthetic launcher")
         self.assertEqual((self.out / "image.bin").read_bytes(), self.image.read_bytes())
@@ -223,7 +235,7 @@ class FinishOutputTests(unittest.TestCase):
     def test_a_file_the_last_finish_put_there_is_neither_copied_nor_swapped(self):
         """An update that links the same exe again: the installed one stays (the same file), a leftover .new of it goes;
         the image, which changed, is staged and swapped as before"""
-        self.assertEqual(self.copied_by_finish(), [self.source, self.image])
+        self.assertEqual(self.copied_by_finish(), self.all_staged)
         self.image.write_bytes(b"newer synthetic image")
         (self.out / "longshot.exe.new").write_bytes(b"left by a stopped build")
         before = self.destination.stat()
@@ -240,9 +252,9 @@ class FinishOutputTests(unittest.TestCase):
         self.destination.write_bytes(self.source.read_bytes())
         self.destination.chmod(stat.S_IMODE(self.source.stat().st_mode))
         with mock.patch.object(make_game.filecmp, "cmp", side_effect=AssertionError("the installed file was read")):
-            self.assertEqual(self.copied_by_finish(), [self.source, self.image])
+            self.assertEqual(self.copied_by_finish(), self.all_staged)
         (self.out / make_game.INSTALLED_NOTE).write_text("{", encoding="utf-8")
-        self.assertEqual(self.copied_by_finish(), [self.source, self.image])
+        self.assertEqual(self.copied_by_finish(), self.all_staged)
 
     def test_a_changed_build_of_the_same_size_is_copied(self):
         self.copied_by_finish()

@@ -13,6 +13,20 @@
    and hands it to the focus manager (*(screen+32)+96, its vtable +48), when the manager takes the player's input.
    HOS_MENU_TRACE=1: the focus changes, the screens and what the mouse does logged. */
 #include "hos.h"
+
+/* Screen updates are the game's menu signal. Consume it at Link's update so the first update after the screens stop
+   releases the sprint even when Link remains stationary. The panel frame runs on all three panel pages and in pause. */
+static volatile int sprint_menu_seen;
+int hos_oot_menu_sprint_active(void) {
+    return __atomic_exchange_n(&sprint_menu_seen, 0, __ATOMIC_RELAXED);
+}
+static void sprint_menu_tick(uint64_t screen) {
+    if (!screen || !hos_mem_region(screen, 8)) return;
+    const uint64_t vt = G64(screen);
+    if (vt == g_module_base + 0x84c0baa8ULL || vt == g_module_base + 0x84c08aa0ULL ||
+        vt == g_module_base + 0x84c07798ULL || vt == g_module_base + 0x84c04a18ULL)
+        __atomic_store_n(&sprint_menu_seen, 1, __ATOMIC_RELAXED);
+}
 #ifndef LONGSHOT_ENV_H   /* (env_on: the switches' one rule) */
 #include "../gpu/vk/compat/longshot_env.h"
 #endif
@@ -23,6 +37,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../gpu/vk/vk_api.h"   /* (HOS_MOUSE_*) */
+#include "input_movie.h"         /* (MovieMenu: an input recording's menu choices, host/input_movie.c) */
+void hos_input_movie_menu(int kind, uint64_t screen, uint64_t button, const char *key);
+int hos_input_movie_menu_take(uint64_t screen, MovieMenu *out);
+void hos_input_movie_menu_done(int met);
+int hos_input_movie_playing(void);
 
 /* A guest read, of the pointers the game's objects hold: inside the guest's space (below 1 MB: a null pointer's), it is
    read as the lifted code reads it; a page there not committed yet is committed on the touch (mkw_glue.c
@@ -84,6 +103,7 @@ static int set_focus(Ctx *c, uint64_t screen, uint64_t button) {
     fn(c);
     const int r = (int)(c->x[0] & 1);
     *c = saved;
+    hos_input_movie_menu(1, screen, button, NULL);   /* (HOS_INPUT_RECORD: the mouse's focus change, given again in a replay) */
     return r;
 }
 
@@ -152,6 +172,7 @@ static int set_item_key(Ctx *c, uint64_t screen, const char *key) {
     c->x[0] = screen, c->x[1] = screen + 760, c->x[30] = 0;
     fn(c);
     *c = saved;
+    hos_input_movie_menu(2, screen, 0, key);   /* (HOS_INPUT_RECORD: the mouse's item choice) */
     return 1;
 }
 
@@ -257,6 +278,23 @@ static void item_found(const char *key, float x, float y, void *arg) {
         if (!strncmp(key, item_keys[i], n) && !isalnum((unsigned char)after) && after != '_')
             *a->found |= 1 << i, a->x[i] = x, a->y[i] = y;
     }
+}
+/* (a replay's checks of what its file names, before the game is called with it: hos_oot_menu_tick) */
+typedef struct { uint64_t button; int found; } ButtonFind;
+static void button_found(int i, uint64_t entry, uint64_t button, void *arg) {
+    (void)i, (void)entry;
+    ButtonFind *b = arg;
+    b->found |= button && button == b->button;
+}
+static int screen_has_button(uint64_t screen, uint64_t button) {   /* (one of the screen's list's buttons now) */
+    ButtonFind b = {button, 0};
+    each_entry(screen, 400, button_found, &b);
+    return b.found;
+}
+static int item_key_known(const char *key) {   /* (one of Key Items' items) */
+    for (int i = 0; i < 9; i++)
+        if (!strcmp(key, item_keys[i])) return 1;
+    return 0;
 }
 /* a button's rectangle in the layout's units (0 when it has none or is hidden) */
 static int button_rect(uint64_t button, Rect *r);
@@ -766,6 +804,7 @@ static Seen *screen_seen(uint64_t screen, int64_t now) {
 
 void hos_oot_menu_tick(Ctx *c, uint64_t screen) {
     if (!screen) return;
+    sprint_menu_tick(screen);
     if (trace < 0) trace = env_on("HOS_MENU_TRACE");
     const int64_t now = hos_now_ns();
     AcquireSRWLockExclusive(&seen_lock);
@@ -817,7 +856,22 @@ void hos_oot_menu_tick(Ctx *c, uint64_t screen) {
     none_since = front ? 0 : none_since ? none_since : now;
     ReleaseSRWLockExclusive(&seen_lock);
     if (gone) hos_mouse_game_menu_gone();
-    if (mine) mouse_tick(c, screen);
+    /* (HOS_INPUT_PLAY: the mouse is the recording's here, not the player's: its focus changes and item choices given at
+       the frame they were made at, on their screen; its clicks and scrolls are the recording's pad. The file's button is
+       a guest address: the game's setter gets it only when it is one of this screen's buttons now (a screen's buttons can
+       be made again while it lives, and a recording of another build names others), and an item key only when it is one
+       of the page's items; any other, or one the setter is not there for or refuses, is counted as not met) */
+    if (hos_input_movie_playing()) {
+        MovieMenu m;
+        while (hos_input_movie_menu_take(screen, &m)) {
+            int met;
+            if (m.kind == 1) met = screen_has_button(screen, m.button) && set_focus(c, screen, m.button) >= 0;   /* (-1: no setter) */
+            else met = item_key_known(m.key) && set_item_key(c, screen, m.key);
+            hos_input_movie_menu_done(met);
+        }
+    } else if (mine) {
+        mouse_tick(c, screen);
+    }
     if (screen == pause_screen_now()) InterlockedIncrement(&ticks);
 }
 #else
@@ -827,5 +881,5 @@ void hos_oot_menu_focus(Ctx *c, uint64_t screen, uint64_t pane, uint64_t lr) {
     (void)c, (void)screen, (void)pane, (void)lr;
     hos_input_clear_toggles();
 }
-void hos_oot_menu_tick(Ctx *c, uint64_t screen) { (void)c, (void)screen; }
+void hos_oot_menu_tick(Ctx *c, uint64_t screen) { (void)c; sprint_menu_tick(screen); }
 #endif

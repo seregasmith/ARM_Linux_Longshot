@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "colour_vision.glsl"
 // (longshot) HDR10 out (the Insert menu's HDR): the game's picture to PQ in Rec. 2020 for an HDR10 swapchain, graded by the HDR
 // contrast row on the way. Scaled from its crop as the blit was.
 //  mode 0 (Expanded): the game's finished picture, SDR and sRGB-encoded. White in it is shown at the paper white (nits); its
@@ -27,7 +29,7 @@ layout(push_constant) uniform P {
     float mode;       // 0 the SDR picture expanded, 1 the game's PQ picture
     float contrast;   // around mid grey: 1 none
     float exposure;   // a factor on the light: 1 none
-    float pad0, pad1;
+    float colour_vision, pad1;
 } pc;
 const float m1 = 0.1593017578125, m2 = 78.84375, c1 = 0.8359375, c2 = 18.8515625, c3 = 18.6875;
 const vec3 Y2020 = vec3(0.2627, 0.6780, 0.0593);
@@ -62,7 +64,8 @@ void main() {
     if (at.x >= size.x || at.y >= size.y) return;
     const vec2 t = (vec2(at) + 0.5) / vec2(size);
     const vec3 c = textureLod(src, mix(pc.uv.xy, pc.uv.zw, t), 0.0).rgb;
-    if (pc.mode >= 0.5 && pc.contrast == 1.0 && pc.exposure == 1.0) {   // (Native, ungraded: the game's codes as they are)
+    // Native, ungraded and correction off: preserve the game's PQ codes.
+    if (pc.mode >= 0.5 && pc.contrast == 1.0 && pc.exposure == 1.0 && !cv_enabled(int(pc.colour_vision))) {
         imageStore(dst, at, vec4(c, 1.0));
         return;
     }
@@ -91,5 +94,6 @@ void main() {
     // light the game puts above the peak is left as at 100%)
     const float yn = dot(nits, Y2020);
     if (pc.mode < 0.5 && yn > pc.peak) nits *= pc.peak / yn;
+    if (cv_enabled(int(pc.colour_vision))) nits = cv_correct(max(nits, vec3(0.0)), int(pc.colour_vision), true, 10000.0);
     imageStore(dst, at, vec4(pq(max(nits, vec3(0.0))), 1.0));
 }

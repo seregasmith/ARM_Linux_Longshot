@@ -2,14 +2,13 @@
 
 The keys are on players' disks: the pipeline state list, the predicted keys and the pipeline notes name pipelines by them,
 and a key that comes out one bit different is a pipeline nothing asks for, built again at every player's next start. So the
-arithmetic is restated here in Python, from the code as it was before the key moved to draw_key.h, and three things are
+arithmetic is restated here in Python, from the code as it was before the key moved to draw_key.h, and two things are
 held to it:
 
 - draw_key.h's pipeline_key(KeyInputs) and mix, compiled from the header alone (which also shows the header needs nothing
   but Vulkan's headers, NVN's constants and the standard library);
 - vk_draw.cpp's key_inputs and pipeline_key(program, state, targets, topology), cut out and run on made-up programs and
-  states: what it reads out of them, and with which casts, is half of the key;
-- nx2/bake.py's mix and pipeline_key_skeleton, the same chain for the bake.
+  states: what it reads out of them, and with which casts, is half of the key.
 
 PINNED holds keys worked out once from that arithmetic: a change made to the header and to the restatement together still
 fails on them. A key that has to change is a change every player pays for; say so in the pull request and pin the new ones.
@@ -339,25 +338,14 @@ def main():
     key_h = (ROOT / "gpu" / "vk" / "draw_key.h").read_text(encoding="utf-8")
     nvn = (ROOT / "gpu" / "render" / "rx_nvn.h").read_text(encoding="utf-8")
 
-    # 1. the restatement against the pinned keys, and against the bake's
+    # 1. the restatement against the pinned keys
     for (h, v), want in MIX_PINNED:
         if mix(h, v) != want:
             raise SystemExit("mix(%#x, %#x) is restated here as %#018x, and was %#018x" % (h, v, mix(h, v), want))
     for i, (c, want) in enumerate(PINNED):
         if pipeline_key(c) != want:
             raise SystemExit("pinned key %d is restated here as %#018x, and was %#018x" % (i, pipeline_key(c), want))
-    sys.path.insert(0, str(ROOT / "nx2"))
-    import bake   # noqa: E402  (nx2/bake.py: standard library only)
     cases = [c for c, _ in PINNED] + made_up_cases()
-    for c in cases:
-        if bake.mix(c["key"], c["variant"]) != mix(c["key"], c["variant"]):
-            raise SystemExit("nx2/bake.py's mix is not the renderer's")
-        # (the bake's chain is the key of a program without vertex input on a device with every dynamic state)
-        b = dict(c, mesh=True, eds3_blend=True, eds3_polygon=True, eds3_clamp=True, eds3_a2c=True)
-        skeleton = bake.pipeline_key_skeleton(b["key"], b["variant"], topology_class(b["topo"]), b["samples"],
-                                              b["formats"][:b["n"]], b["depth"])
-        if skeleton != pipeline_key(b):
-            raise SystemExit("nx2/bake.py's pipeline_key_skeleton is not the renderer's key")
 
     # 2. the sources: one definition of the arithmetic, and vk_draw.cpp's key goes through it
     if '#include "draw_key.h"' not in draw:

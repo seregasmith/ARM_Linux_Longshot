@@ -1,4 +1,4 @@
-"""Game-free checks that Longshot's Windows files are made on the Linux runner (docs/forgejo-runners.md: there is no Windows
+"""Game-free checks that Longshot's Windows files are made on the Linux runner (docs/dev/reference/ci.md: there is no Windows
 one): no workflow asks for a Windows runner, which would queue forever and hold a release; the Linux llvm-mingw that compiles
 them is tools.lock's release; the Windows builder's job publishes for win-x64 and checks what it made, and tools.lock's
 dav1d (no dav1d is built in CI); and a tag whose commit CI released already skips only the checks that ship no file.
@@ -71,7 +71,7 @@ class WindowsOnLinuxTests(unittest.TestCase):
         # (release.yml's checked: a tag's commit CI released already skips the build checks that ship no file; the files,
         # which carry the version, are always built)
         release = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
-        self.assertIn('scripts/release.py released-as "$ref" --not "$tag"', release)
+        self.assertIn('"$RELEASE_PY" released-as "$ref" --not "$tag"', release)
         self.assertEqual(release.count("checked: ${{ needs.version.outputs.checked }}"), 2)
         windows = (WORKFLOWS / "build-windows.yml").read_text(encoding="utf-8")
         package = windows[windows.index("\n  package:"):windows.index("\n  vulkan:")]

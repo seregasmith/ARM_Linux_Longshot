@@ -56,7 +56,6 @@ bool candidate(std::vector<uint8_t>& packets, size_t limit) {
     uint32_t avail = h.size - sizeof h;
     int cmd = 0;
     State s;
-    bool worker = false, dry = false;
     int* cleared = nullptr;
     float clear_value = 0;
     recorded = false;

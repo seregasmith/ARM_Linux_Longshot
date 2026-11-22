@@ -62,6 +62,7 @@ LIFTED = '#include "a64.h"\n' + PLAYED + OTHER + UNRELATED
 RUNTIME = r'''#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "oot_high_fps.h"
 typedef struct { uint64_t x[32]; } Ctx;
@@ -81,7 +82,14 @@ typedef long long LONG64;
 static LONG64 InterlockedIncrement64(volatile LONG64 *p) { return ++*p; }
 static void hos_log(const char *f, ...) { (void)f; }
 static int env_on(const char *name) { (void)name; return 1; }
+static int env_value_off(const char *v) { (void)v; return 0; }
+/* (host/hos.h's, for the file's other fixes, which the song's playback does not reach: the guest window is the array) */
+#define HOS_HEAP_BASE 0x1000000000ULL
+static void *hos_guest_range(uint64_t a, uint64_t n) { return a < sizeof mem && n <= sizeof mem - a ? GP(a) : NULL; }
+static void hos_guest_copy(uint64_t a, const void *src, uint64_t n) { memcpy(GP(a), src, (size_t)n); }
+static int64_t hos_now_ns(void) { return 0; }
 volatile uint32_t hos_frame_seconds_bits;
+volatile uint64_t hos_step_probe;   /* (host/nn_vi.c's, for the cloth's clock: none here) */
 static int unrelated;
 static void next_note(int playback);
 static uint32_t flag;   /* (the note flag: the sound engine's word) */

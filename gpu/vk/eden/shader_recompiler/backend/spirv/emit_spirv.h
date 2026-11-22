@@ -62,7 +62,13 @@ constexpr u32 MESH_FALLBACK_ALLOC_WORD = 4;       // (records taken, past the en
 // a count from the GPU (DrawMeshTasksIndirect, the floor grass) the host knew none, and dispatched no mesh workgroup)
 constexpr u32 MESH_FALLBACK_DISPATCH_WORD = 5;
 constexpr u32 MESH_FALLBACK_HEADER_WORDS = 8;
-constexpr u32 MESH_FALLBACK_RECORD_WORDS = 16u << 20;   // (64 MB: ~47k grass primitives of 31 words are 17 MB)
+// (128 MB. Every program takes records from it, so a program with longer records fits fewer: MeshFallbackFit. At 16M words
+// the floor grass at the Grass distance's 4x (#1877) lost its blades: their program's records are 22 words and fit 762600,
+// its partner's 7 words, and each drew ~1.02M records a frame, so the blades past the fit were left out and drawn white.
+// 32M words fit 1.52M of 22 words)
+constexpr u32 MESH_FALLBACK_RECORD_WORDS = 32u << 20;
+// (emit_spirv_mesh.cpp BufferWordAt makes a word's byte offset in 32 bits)
+static_assert((u64{MESH_FALLBACK_HEADER_WORDS} + MESH_FALLBACK_RECORD_WORDS) * 4 < (u64{1} << 32));
 // (longshot, mma_layout.h mesh_fallback_global_attributes) the mesh workgroups' attribute regions out of workgroup memory: a pool
 // after the records, in the same buffer. Its header is a ticket counter and a word a slot, the ticket generation that may take
 // that slot next (both zeroed before each draw, with the records' header); then the slots, each one workgroup's region
@@ -92,6 +98,10 @@ constexpr u32 WARP_COUNTER_WAITS = 0;
 constexpr u32 WARP_COUNTER_COMPARED = 4;
 constexpr u32 WARP_COUNTER_DIFFERENT = 8;
 constexpr u32 WARP_COUNTER_POOL_WAITS = 12;
+// (the largest records buffer vk_draw.cpp fallback_buffers_of makes, a recording thread's: past it, every program is left
+// without the fallback. The largest layout, the records with the attribute pool and the counters, ~160 MB, fits)
+constexpr u64 MESH_FALLBACK_RECORDS_LIMIT = 192ull << 20;
+static_assert(MESH_FALLBACK_POOL_OFFSET + MESH_FALLBACK_POOL_BYTES + WARP_COUNTER_BYTES <= MESH_FALLBACK_RECORDS_LIMIT);
 /// Whether the records buffer carries those counters past its regular end: the shared warp's and the pool's waits count there
 [[nodiscard]] inline bool MeshFallbackCounters() {
     return mesh_fallback_shared_warp || mesh_fallback_global_attributes;
@@ -119,5 +129,8 @@ enum class MeshFallbackLayout : u32 { Aos = 0, Soa = 1 };
     Bindings binding;
     return EmitSPIRV(profile, {}, program, binding);
 }
+// (longshot, AMD RDNA 3/4) whether HMMA_nx2 in the program runs on the WMMA 16x16x16 tiles (mma_layout.h mma_wmma16):
+// every subgroup full and the tiles fit the shared memory of the device. Otherwise EmitSPIRV gives it the software multiply
+[[nodiscard]] bool Wmma16Fits(const Profile& profile, const IR::Program& program);
 
 } // namespace Shader::Backend::SPIRV

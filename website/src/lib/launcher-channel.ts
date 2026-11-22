@@ -3,7 +3,7 @@
 
 /** A launcher download link moved to a channel ('' for the best there is); any other link as it was */
 export function launcherHref(href: string, channel: string) {
-  return href.replace(/^(\/download\/launcher\/)(?:(?:stable|rc|nightly)\/)?(windows|windows-portable|linux)$/,
+  return href.replace(/^(\/download\/launcher\/)(?:(?:stable|nightly)\/)?(windows|windows-portable|linux)$/,
     (_, base, os) => base + (channel ? channel + '/' : '') + os);
 }
 
@@ -12,7 +12,7 @@ interface LauncherVersions { bestChannel: string | null; channels: Record<string
 
 /** Reject malformed metadata instead of showing a version beside unrelated download links. */
 export function validateLauncherVersions(value: any): LauncherVersions {
-  const channels = ['stable', 'rc', 'nightly'];
+  const channels = ['stable', 'nightly'];
   if (!value || (value.bestChannel !== null && !channels.includes(value.bestChannel)) || !value.channels) throw new Error('Invalid launcher versions');
   for (const channel of channels) {
     const release = value.channels[channel];
@@ -127,7 +127,7 @@ export async function installLauncherStatus(document: Document, fetcher = fetch)
     const channel = versions.bestChannel;
     const release = channel && versions.channels[channel];
     const text = release
-      ? `Longshot Launcher ${release.tag} · ${channel === 'stable' ? 'stable' : channel === 'rc' ? 'release candidate' : 'nightly'}`
+      ? `Longshot Launcher ${release.tag} · ${channel === 'stable' ? 'stable' : 'nightly'}`
       : 'No launcher release is available yet.';
     for (const status of statuses) status.textContent = text;
   } catch { /* Keep the working download-page link when metadata cannot be reached. */ }

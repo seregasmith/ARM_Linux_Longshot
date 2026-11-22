@@ -1,5 +1,5 @@
-"""scripts/longshot_ctl.py, the control bridge's client, against a tiny fake game: a Python stand-in for the executable
-that serves the bridge's protocol on $HOS_CONTROL (docs/control.md) and writes down each request. The commands' requests
+"""scripts/longshot_ctl.py, the control bridge's command line, and scripts/longshot_bridge.py, its client library, against a tiny fake game: a Python stand-in for the executable
+that serves the bridge's protocol on $HOS_CONTROL (docs/dev/reference/control-bridge.md) and writes down each request. The commands' requests
 and plain output, --json, exit codes (an error reply, a timeout, no game), watch, launch (which starts the stand-in as a
 game folder's longshot and waits for its socket), the mem commands, and complete OoT status/watch snapshots.
 Linux uses a Unix socket; Windows uses the named pipe.
@@ -23,11 +23,20 @@ ROOT = Path(__file__).resolve().parents[1]
 CTL = Path(os.environ.get("LONGSHOT_CTL_SOURCE", ROOT / "scripts" / "longshot_ctl.py"))
 
 
-def client_module():
-    spec = importlib.util.spec_from_file_location("longshot_ctl", CTL)
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
     return m
+
+
+def client_module():
+    """The client library beside the command line under test"""
+    return load("longshot_bridge", CTL.with_name("longshot_bridge.py"))
+
+
+def cli_module():
+    return load("longshot_ctl", CTL)
 
 FAKE = r'''
 import json, os, socket, struct, sys, threading, time, zlib
@@ -281,10 +290,10 @@ class SourceSelection(unittest.TestCase):
     def test_environment_source_and_explicit_root(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            selected = root / "selected.py"
-            selected.write_text("raise RuntimeError('selected environment client')\n", encoding="utf-8")
+            selected = root / "longshot_ctl.py"
+            (root / "longshot_bridge.py").write_text("raise RuntimeError('selected environment client')\n", encoding="utf-8")
             (root / "scripts").mkdir()
-            (root / "scripts" / "longshot_ctl.py").write_text(
+            (root / "scripts" / "longshot_bridge.py").write_text(
                 "raise RuntimeError('selected checkout client')\n", encoding="utf-8")
             for args, marker in (([], "selected environment client"),
                                  (["--source-root", str(root)], "selected checkout client")):
@@ -1159,11 +1168,7 @@ class LongshotCtl(unittest.TestCase):
     def test_relaunch_through_a_dropped_connection(self):
         # (seen on Windows with the PC busy: the client met the old game's pipe as it closed, its write failed with EINVAL, and
         # relaunch ended in a traceback instead of trying again)
-        sys.path.insert(0, str(CTL.parent))
-        try:
-            import longshot_ctl
-        finally:
-            sys.path.pop(0)
+        longshot_bridge = client_module()
         tries = []
 
         class Old:
@@ -1185,12 +1190,8 @@ class LongshotCtl(unittest.TestCase):
                     raise OSError(22, "Invalid argument")
                 return {"ok": True, "uptime": 0.0}
 
-        real = longshot_ctl.Bridge
-        longshot_ctl.Bridge = Again
-        try:
-            st = longshot_ctl.relaunch(Old(), 10)
-        finally:
-            longshot_ctl.Bridge = real
+        longshot_bridge.Bridge = Again
+        st = longshot_bridge.relaunch(Old(), 10)
         self.assertTrue(st["ok"])
         self.assertEqual(tries, ["status", "status"])
 
@@ -1449,9 +1450,10 @@ class LongshotCtl(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(self.dir, "d-link")))
         # (the thumbnails: what the game says is checked; a slot name that is a path is refused)
         bad = {"path": self.dir, "slots": [{"slot": "../../x", "caption": {"thumbnail": {"offset": 0, "size": 4}}}]}
-        with self.assertRaisesRegex(m.Failed, "does not look like a save listing"):
-            m.write_thumbs(bad, os.path.join(self.dir, "thumbs-bad"))
-        self.assertEqual(m.plain_text("a\x1b[2Jb\tc"), "a?[2Jb?c")
+        cli = cli_module()
+        with self.assertRaisesRegex(cli.Failed, "does not look like a save listing"):
+            cli.write_thumbs(bad, os.path.join(self.dir, "thumbs-bad"))
+        self.assertEqual(cli.plain_text("a\x1b[2Jb\tc"), "a?[2Jb?c")
         if not WINDOWS:   # (launch --save: the copy in the run folder's own data folder, which the game is given)
             run = os.path.join(self.dir, "run-save")
             r = ctl("--json", "launch", self.game, "--run", run, "--headless", "--save", src, "--slot", "03",

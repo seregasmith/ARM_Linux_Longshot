@@ -8,7 +8,8 @@ that record whether the thread holds its core in host_path and in CreateFileA, t
 - host_path and CreateFileA run without the core, and the core is held again when OpenFile returns: a file opened, an
   unknown mount, a write to a mount that is not writable, a movie left out (HOS_NO_MOVIES), a blanked icon, a file not
   found;
-- a thread that holds no core when it calls OpenFile takes none.
+- a thread that holds no core when it calls OpenFile takes none;
+- a RomFS open never touches save_lock; a staged open resolves before locking and checks its path under the lock.
 
 python -I -B tests/test_vcore_fs_open.py [--cxx clang++]
 """
@@ -57,6 +58,8 @@ typedef struct { uint64_t x[32]; } Ctx;
 #define G64(a) (*(uint64_t *)GP(a))
 #define HOS_FS_PATH 1024
 #define R_PATH_NOT_FOUND 0x202
+#define R_OUT_OF_MEMORY 0xCA01
+static int CloseHandle(HANDLE h) { (void)h; return 1; }
 static int hos_trace;
 static int fs_trace(void) { return 0; }
 static void hos_log(const char *f, ...) { (void)f; }
@@ -69,21 +72,35 @@ void hos_vcore_back(void) { if (!held) held = 1, takes++; }
 
 /* host_path: the mount's path (here, the build of a prompt file would run in it); -1 = not called */
 static int path_ok, path_writable, held_in_path, held_in_create, create_ok, blank;
+static int lock_touches, locked, locked_in_path, locked_in_create, checked_locked, held_at_lock;
 static int host_path(const char *g, char *out, size_t cap, int *writable) {
-    held_in_path = held;
+    held_in_path = held, locked_in_path = locked;
     snprintf(out, cap, "%s", g);
     if (writable) *writable = path_writable;
     return path_ok;
 }
 int hos_ultrawide_redirect(const char *guest, char *out, size_t cap) { (void)guest, (void)out, (void)cap; return 0; }
+int hos_stand_in_damaged(const char *guest, char *path, size_t cap) { (void)guest, (void)path, (void)cap; return 0; }
+static void fs_overlay_path(const char *guest, char *path, size_t cap) { (void)guest, (void)path, (void)cap; }
 static int hos_blank_cached_icon(const char *guest, const char *host) { (void)guest, (void)host; return blank; }
 static DWORD GetFileAttributesA(const char *p) { (void)p; return INVALID_FILE_ATTRIBUTES; }
 static HANDLE CreateFileA(const char *p, DWORD a, DWORD s, void *sa, DWORD d, DWORD f, HANDLE t) {
     (void)p, (void)a, (void)s, (void)sa, (void)d, (void)f, (void)t;
-    held_in_create = held;
+    held_in_create = held, locked_in_create = locked;
     return create_ok ? (HANDLE)(intptr_t)0x1234 : INVALID_HANDLE_VALUE;
 }
-typedef struct { HANDLE h; int writable; char path[HOS_FS_PATH]; } Handle;
+typedef struct { int writers; } SaveNote;
+typedef struct { int handles, writers; char work[HOS_FS_PATH]; } Save;
+static Save staged;
+static Save *save_for_path(const char *p, char *r) { (void)p; strcpy(r, "option.sav"); return &staged; }
+static int save_relative(const char *p) { (void)p; return 1; }
+static int save_path(char *o, const char *r, const char *p) { (void)o; (void)r; (void)p; checked_locked = locked; return 1; }
+static SaveNote *save_note(Save *s, const char *p, char k) { (void)s; (void)p; (void)k; return NULL; }
+typedef int SRWLOCK;
+static SRWLOCK save_lock;
+static void AcquireSRWLockExclusive(SRWLOCK *l) { (void)l; lock_touches++; locked++; held_at_lock = held; }
+static void ReleaseSRWLockExclusive(SRWLOCK *l) { (void)l; lock_touches++; locked--; }
+typedef struct { HANDLE h; int writable; char path[HOS_FS_PATH]; Save *save; char relative[HOS_FS_PATH]; } Handle;
 static uint64_t new_handle(Handle *h) { free(h); return 7; }
 static int writes_open;
 
@@ -98,6 +115,7 @@ static uint64_t open_file(const char *path, int mode, int core) {
     memset(&c, 0, sizeof c);
     c.x[0] = (uint64_t)(uintptr_t)&handle, c.x[1] = (uint64_t)(uintptr_t)path, c.x[2] = (uint64_t)mode;
     held = core, takes = 0, held_in_path = held_in_create = -1;
+    lock_touches = locked = checked_locked = 0, locked_in_path = locked_in_create = -1;
     imp__ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci(&c);
     return c.x[0];
 }
@@ -114,6 +132,7 @@ int main(void) {
     path_ok = 1, path_writable = 0, create_ok = 1, blank = 0;
     uint64_t r = open_file("rom:/UI/LayoutArchive/Common.bntx.zs", 1, 1);
     check(r == 0, "a file of the game opens");
+    check(lock_touches == 0, "an open on a RomFS mount does not touch save_lock");
     check(held_in_path == 0, "host_path (where a prompt file is built at its first open) runs without the core");
     check(held_in_create == 0, "CreateFileA runs without the core");
     check(held == 1 && takes == 1, "the core is held again after OpenFile, taken once");
@@ -143,6 +162,14 @@ int main(void) {
 
     r = open_file("rom:/a.bin", 1, 0);
     check(r == 0 && held == 0 && takes == 0, "a thread that held no core takes none");
+    check(lock_touches == 0, "a RomFS open without a core does not touch save_lock");
+
+    path_ok = 2, path_writable = 1;
+    r = open_file("save:/option.sav", 1, 1);
+    check(r == 0 && locked_in_path == 0, "a staged read-only open resolves before taking save_lock");
+    check(lock_touches == 2 && checked_locked == 1 && locked_in_create == 1 && locked == 0,
+          "a staged read-only open checks and opens under save_lock, then releases it");
+    check(held_at_lock == 0 && held == 1 && takes == 1, "a staged open waits without a core and returns with it");
     if (!bad) puts("ok");
     return bad;
 }
@@ -155,7 +182,10 @@ def main():
     parser.add_argument("--source", type=Path, default=ROOT / "host/nn_fs.c")
     args = parser.parse_args()
     src = args.source.read_text(encoding="utf-8")
-    fixture = HARNESS.replace("@OPEN@", block(src, "HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {"))
+    actual = block(src, "HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {")
+    if "fs_open_file(c)" in actual:
+        actual = block(src, "static void fs_open_file(Ctx *c) {") + "\n" + actual
+    fixture = HARNESS.replace("@OPEN@", actual)
     compiler = shutil.which(args.cxx)
     if not compiler:
         raise SystemExit("C++ compiler not found: " + args.cxx)

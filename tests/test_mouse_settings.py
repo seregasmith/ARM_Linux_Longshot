@@ -5,13 +5,19 @@ both options where the mouse is used (host/nn_hid.c's stick, host/mouse_native.c
 python -I -B tests/test_mouse_settings.py
 """
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
+from menu_model_fixture import menu_text  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def preset_exempt(menu, value):
     """the menu's row for opts.<value> leaves the quality preset alone (Row::preset_exempt, which set_row checks)"""
-    start = menu.index("&opts.%s," % value, menu.index("Row rows[] = {"))
+    # (#1633: a row a module describes is among the modules' table lines, menu_model_fixture.menu_text)
+    table = "Row module_rows[] = {" if "&opts.%s," % value in menu[menu.index("Row module_rows[] = {"):] else "Row rows[] = {"
+    start = menu.index("&opts.%s," % value, menu.index(table))
     row = menu[start:menu.index("},", start)]
     return row.rstrip().endswith(", true") and "if (!r.preset_exempt)" in menu
 
@@ -21,7 +27,8 @@ def read(*parts):
 
 
 def main():
-    menu, replay, api = read("gpu", "vk", "vk_menu.cpp"), read("gpu", "vk", "vk_replay.cpp"), read("gpu", "vk", "vk_api.h")
+    # (the menu: vk_menu.cpp and its modules' rows, #1633)
+    menu, replay, api = menu_text(), read("gpu", "vk", "vk_replay.cpp"), read("gpu", "vk", "vk_api.h")
     hid, native, backend = read("host", "nn_hid.c"), read("host", "mouse_native.c"), read("host", "rx_backend.c")
     for row in ('"Mouse sensitivity", &opts.mouse_sens, 10, 500,', '"Invert mouse vertical", &opts.mouse_invert, 0, 1,',
                 '"Invert mouse horizontal", &opts.mouse_invert_x, 0, 1,'):

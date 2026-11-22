@@ -88,11 +88,13 @@ def check_source():
     up = block(tex, "bool upload(Texture& tex, const Ranges* dirty)")
     if "ahead_learn(tex);" not in up or "!ahead_running" not in up:
         fail.append("upload() does not remember a draw's first upload (ahead_learn, outside the preparing)")
-    # the switch is documented beside the others
-    doc = (ROOT / "docs/development.md").read_text(encoding="utf-8")
-    for needle in ("`RX_VK_TEX_AHEAD=1`", "`RX_VK_TEX_AHEAD_MS=<n>`", "longshot_textures_drawn.bin"):
-        if needle not in doc:
-            fail.append("docs/development.md does not document: " + needle)
+    # the switches are documented by their rows in gpu/vk/switches.def
+    rows = {name: next((l for l in (ROOT / "gpu/vk/switches.def").read_text(encoding="utf-8").splitlines()
+                        if l.startswith("SW(%s," % name)), "") for name in ("RX_VK_TEX_AHEAD", "RX_VK_TEX_AHEAD_MS")}
+    for name, needle in (("RX_VK_TEX_AHEAD", "=1 makes and uploads"), ("RX_VK_TEX_AHEAD", "longshot_textures_drawn.bin"),
+                         ("RX_VK_TEX_AHEAD_MS", "<n>")):
+        if needle not in rows[name]:
+            fail.append("gpu/vk/switches.def: %s's row does not document: %s" % (name, needle))
     if fail:
         raise SystemExit("\n".join(fail))
 

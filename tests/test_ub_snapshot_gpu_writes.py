@@ -12,18 +12,14 @@ split_part cuts a submission into parts and runs memory_begin_submission at each
 necessarily run when the next part is recorded, so a submission keeps its own for all its parts; at a submission's start
 (run_submit's new recording, the present, bench_replay) the last one's take its timeline value, and a write is let go
 once the GPU has done its submission (memory_recording_value, at each part's start). With the snapshot off nothing is
-noted (nothing asks). A parallel replay (RX_VK_PARALLEL) records a command buffer's segments on several threads at once,
-where a segment could not know the GPU writes before it: with the snapshot on, each command buffer is recorded on the
-replay thread instead (par_snapshot_serial in vk_replay.cpp).
+noted (nothing asks).
 
 Checked here: the guard's functions, compiled alone with memory_recording_value, against a plain list (a copy then a read
-in the same part, a storage write then a read after a split, ranges that meet or only touch, a parallel replay's
-segments, nothing noted with the snapshot off; the last submission's writes while the GPU has not done it and once it
-has, a write over one of them, a submission whose value the GPU has passed already; and submissions one after another
+in the same part, a storage write then a read after a split, ranges that meet or only touch, nothing noted with the
+snapshot off; the last submission's writes while the GPU has not done it and once it has, a write over one of them, a submission whose value the GPU has passed already; and submissions one after another
 with the GPU some behind, where no write it has not done may be let go); and in the sources, that each GPU write is
 noted, that only a submission's start begins the notes again and only it lets them go, that each recording's start gives
-the guard the GPU's progress, that uniform_range binds a range the guard knows in place, and that a parallel replay
-records on the replay thread with the snapshot on. Not modelled: the GPU itself, the timeline's semaphore, the
+the guard the GPU's progress, and that uniform_range binds a range the guard knows in place. Not modelled: the GPU itself, the timeline's semaphore, the
 write-backs' copies (what reaching guest memory at the submission's end rests on), and a range memory_note_gpu_write
 noted where the GPU writes past what is copied back, which guest memory does not get even then.
 
@@ -66,7 +62,6 @@ FIXTURE = r"""
 #include <random>
 #include <utility>
 #include <vector>
-std::atomic<bool> par_active{false};
 bool uniform_snapshot_on() { return SNAPSHOT_ON; }
 uint64_t mem_rec_value = 0, mem_completed = 0;
 @@GUARD@@
@@ -81,7 +76,7 @@ struct Ref { uint64_t lo, hi, value; };
 static std::vector<Ref> ref;
 static void note(uint64_t at, uint64_t n) {   // (what memory_stamp_gpu and memory_note_gpu_write do first)
     memory_gpu_writes_note(at, n);
-    if (at && n && !par_active.load()) ref.push_back({at, at + n, sub_value});
+    if (at && n) ref.push_back({at, at + n, sub_value});
 }
 static bool ref_written(uint64_t at, uint64_t n) {   // (by this submission, or by one the GPU has not done)
     if (!at || !n) return false;
@@ -124,12 +119,6 @@ int main() {
     note(0x300000, 0x100), note(0x300100, 0x100), note(0x300400, 0x100), note(0x3000c0, 0x400);
     expect(memory_gpu_written(0x3004f0, 0x10), 1, "ranges joined by a write over both");
     expect(memory_gpu_written(0x300500, 0x100), 0, "past ranges joined");
-    // (a parallel replay's segments, were one made with the snapshot on: their writes are on their own threads, and the
-    // guard is not asked while they record)
-    par_active = true;
-    note(0x400000, 0x100);
-    par_active = false;
-    expect(memory_gpu_written(0x400000, 0x100), 0, "a write while a parallel replay records (not noted)");
     // (many ranges apart in one submission, against the list: no limit that turns every range written)
     std::mt19937_64 rng(12345);
     for (int i = 0; i < 3000; i++) {
@@ -236,7 +225,7 @@ def main():
         raise SystemExit("FAIL: a buffer copy on the GPU is not stamped (memory_stamp_gpu)")
     if "if (guest && !in_stream) memory_stamp_gpu(guest, k);" not in code_only(replay):
         raise SystemExit("FAIL: a buffer fill on the GPU is not stamped (memory_stamp_gpu)")
-    if "if (guest) { ParLock lk; memory_stamp_gpu(guest, n); }" not in code_only(draw):
+    if "if (guest) memory_stamp_gpu(guest, n);" not in code_only(draw):
         raise SystemExit("FAIL: a storage buffer a draw or dispatch writes is not stamped (memory_stamp_gpu)")
     if "if (b && d.is_written && (bare || wide_n)) memory_note_gpu_write(base, n);" not in code_only(draw):
         raise SystemExit("FAIL: a bare or wide storage range a program writes is not noted (memory_note_gpu_write)")
@@ -279,22 +268,9 @@ def main():
     note_f = code_only(block(memory, "void memory_gpu_writes_note(uint64_t guest, uint64_t size) {"))
     if "static const bool on = uniform_snapshot_on();" not in note_f or "if (!on ||" not in note_f:
         raise SystemExit("FAIL: memory_gpu_writes_note notes GPU writes with the uniform snapshot off")
-    # (a parallel replay with the snapshot on: each command buffer on the replay thread, where the guard sees every write in
-    # order; a segment is recorded at the same time as those before it)
-    serial = code_only(block(replay, "static bool par_snapshot_serial(int threads) {"))
-    if "if (threads < 2 || !uniform_snapshot_on()) return false;" not in serial or "return true;" not in serial:
-        raise SystemExit("FAIL: par_snapshot_serial does not keep a parallel replay's segments from recording with the "
-                         "uniform snapshot on")
-    handle = code_only(block(replay, "const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_stop = false) {"))
-    serial_branch = handle[:handle.index("{", handle.index("if (threads < 2 ||"))]
-    serial_branch = serial_branch[serial_branch.index("if (threads < 2 ||"):]
-    if "par_snapshot_serial(threads)" not in serial_branch:
-        raise SystemExit("FAIL: replay_handle makes a parallel replay's segments with the uniform snapshot on")
-    if handle.index("if (threads < 2 ||") > handle.index("par_active = true;"):
-        raise SystemExit("FAIL: replay_handle's replay-thread branch no longer comes before the segments: update this check")
     if "static const bool on = ub_snapshot_wanted();" not in code_only(block(draw, "bool uniform_snapshot_on() {")):
         raise SystemExit("FAIL: uniform_snapshot_on does not give ub_snapshot_wanted's answer")
-    print("source: the notes only with the snapshot on; a parallel replay records on the replay thread with the snapshot on")
+    print("source: the notes only with the snapshot on")
 
     guard = "\n".join([
         line_with(memory, "struct GpuWrite {"),
@@ -323,7 +299,7 @@ def main():
                 print(r.stdout + r.stderr)
                 raise SystemExit("FAIL: the guard answers wrongly (the snapshot %s)" % ("on" if on else "off"))
     print("guard: a copy then a uniform read in a part, a storage write then a read after a split, joined and touching "
-          "ranges, a parallel replay's writes, 3000 random ranges against a plain list; the last submission's writes while "
+          "ranges, 3000 random ranges against a plain list; the last submission's writes while "
           "the GPU has not done it and once it has, a write over one of them, a submission the GPU has passed; 60 "
           "submissions with the GPU some behind, no write it has not done let go; nothing noted with the snapshot off")
     print("PASS")

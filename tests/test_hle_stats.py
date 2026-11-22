@@ -1,8 +1,8 @@
 """HOS_HLE_STATS=1 counts every HLE function's calls (host/hos.h's HLE macro), every host call and every call of the sdk's
 NVN exports (host/nvn_native.c nvn2_dispatch), and logs every 5 s how often each ran (host/hos_hostcall.c), in the lines
-scripts/cpu_report.py --calls reads. Off (the default) nothing is counted and host calls keep their direct path. The real
+scripts/perf.py cpu --calls reads. Off (the default) nothing is counted and host calls keep their direct path. The real
 macro and the real host-call and dispatch code are compiled with stubs for the rest of the runtime; the report is read
-with cpu_report.py's own parser, with another thread's line logged in between. Long overloads keep distinct counts.
+with the cpu report's own parser (scripts/profiling/cpu.py), with another thread's line logged in between. Long overloads keep distinct counts.
 Nine C++ broken variants and the old cross-window report formula must fail.
 
 python -I -B tests/test_hle_stats.py [--cxx clang++]
@@ -214,14 +214,19 @@ int main(int argc, char **argv) {
 
 def load_parser():
     sys.path.insert(0, str(ROOT / "scripts"))
-    spec = importlib.util.spec_from_file_location("cpu_report", ROOT / "scripts" / "cpu_report.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return importlib.import_module("profiling.cpu")
+
+
+def cpu_args(argv):
+    """the cpu subcommand's arguments, as scripts/perf.py parses them"""
+    spec = importlib.util.spec_from_file_location("profile_cli", ROOT / "scripts" / "perf.py")
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    return cli.parser().parse_args(["cpu"] + argv)
 
 
 def parse(hle_calls, folder, block):
-    """the report as cpu_report.py reads it: (head numbers, {name: calls in the 5 s}, names in printed order)"""
+    """the report as the cpu report reads it: (head numbers, {name: calls in the 5 s}, names in printed order)"""
     head = re.search(r"hle: (\d+) calls of (\d+) functions in ([0-9.]+) s", block)
     (folder / "game.log").write_text(block, encoding="utf-8")
     rates, secs = hle_calls(str(folder), blocks=1)
@@ -390,15 +395,9 @@ def check_windows(report, folder):
         "Preferred load address is 0000000140000000\n"
         " 0001:00001000 imp_%s 0000000140002000 f nn_os_sync.o\n"
         " 0001:00001100 imp_%s 0000000140002100 f nn_os_sync.o\n" % (name, OVERLOAD_B))
-    args = sys.argv
-    try:
-        sys.argv = ["cpu_report.py", str(folder), "--maps", str(folder), "--calls", str(folder),
-                    "--out", str(folder / "report.md")]
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            report.main()
-    finally:
-        sys.argv = args
+    args = cpu_args([str(folder), "--maps", str(folder), "--calls", str(folder), "--out", str(folder / "report.md")])
+    with contextlib.redirect_stdout(io.StringIO()):
+        report.run(args)
     text = (folder / "report.md").read_text()
     assert "estimated occupancy us/call" in text and "30 | 16666.67 |" in text, "CLI used another window's ms/frame"
 
@@ -426,7 +425,7 @@ def main():
                         encoding="utf-8")
         names = [n for n, _ in report.load_map(str(path))[1]]
     if names != ["imp__ZN2nn2os9LockMutexEPNS0_9MutexTypeE"] * 2:
-        raise SystemExit("FAIL: cpu_report.py names an HLE body not inlined %r, not as its imp_ entry" % names)
+        raise SystemExit("FAIL: profiling/cpu.py names an HLE body not inlined %r, not as its imp_ entry" % names)
     header = (ROOT / "host" / "hos.h").read_text(encoding="utf-8")
     hostcall = cut((ROOT / "host" / "hos_hostcall.c").read_text(encoding="utf-8"), "#define HOS_HOSTCALL_BASE",
                    "/* Call guest code from inside a host function", "host/hos_hostcall.c")
@@ -485,7 +484,7 @@ def main():
         else:
             raise SystemExit("FAIL: the CLI check accepted the old cross-window per-call formula")
     print("PASS: HOS_HLE_STATS off counts nothing and keeps host calls direct; on, every HLE function, host call and NVN "
-          "export call is counted, and each timed report, read by cpu_report.py with another line in between, has every "
+          "export call is counted, and each timed report, read by perf.py cpu with another line in between, has every "
           "function's calls since the last (across the 32-bit wrap), most called first, full names kept distinct; "
           "creation failure keeps counting off; concurrent callers/report, complete blocks, matched native/sample "
           "windows and the CLI pass; %d broken variants caught" % len(edits))

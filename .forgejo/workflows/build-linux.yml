@@ -1,4 +1,4 @@
-# The Linux Longshot Builder (docs/releases.md): Longshot-<version>-x86_64.AppImage, the builder with its Python and Longshot's
+# The Linux Longshot Builder (docs/dev/reference/releases.md): Longshot-<version>-x86_64.AppImage, the builder with its Python and Longshot's
 # sources (scripts/linux/deps.sh's pinned downloads, scripts/linux/appimage.sh), and recomplauncher.json inside. No Vulkan back
 # end is built into it: every player's build compiles it from those sources. Its build tools (the compiler, the sysroot, FFmpeg,
 # SDL2, the Vulkan headers) are not in it either: they are tools.lock's linux-x64 lines, installed here to check that the back
@@ -17,7 +17,7 @@ on:
   workflow_call:
     inputs:
       tag:
-        description: the version's name (v3.1.0, v3.1.0-rc.1, nightly-<count>-<commit>); its files are uploaded
+        description: the version's name (v3.1.0, nightly-<count>-<commit>); its files are uploaded
         type: string
         required: true
       ref:
@@ -43,7 +43,7 @@ concurrency:
 
 jobs:
   appimage:
-    runs-on: release  # (a release's build: only the runners kept for them take it, docs/forgejo-runners.md)
+    runs-on: release  # (a release's build: only the runners kept for them take it, docs/dev/reference/ci.md)
     container: ubuntu:22.04
     # (about 4 minutes with the dependencies cached; building them all, as a release does, takes longer)
     timeout-minutes: 60
@@ -170,10 +170,22 @@ jobs:
           key: ${{ steps.objkey.outputs.key }}
           restore-keys: ${{ steps.objkey.outputs.prefix }}
 
+      # (RenHDrum (host/rumble_renhdrum.c): renhdrum.so from third_party/renhdrum, with scripts/renhdrum.py's pinned Rust,
+      # linked here, against the C library the AppImage is for. The AppImage carries it and a player's build puts it beside
+      # the game. The pinned Rust's parts are kept between runs and checked by their SHA-256 each time)
+      - uses: https://github.com/actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/renhdrum-rust
+          key: renhdrum-rust-linux-${{ hashFiles('scripts/renhdrum.py') }}
+      - name: renhdrum.so
+        run: >-
+          python3 -I scripts/renhdrum.py build --target linux --linker gcc --cache "$RUNNER_TEMP/renhdrum-rust"
+          --out "$RUNNER_TEMP/renhdrum/renhdrum.so"
       # (the AppImage, named by the release's version: a release's tag or the nightly's name)
       - name: AppImage
         env:
           LONGSHOT_VERSION: ${{ env.RELEASE_TAG }}
+          RENHDRUM_SO: ${{ runner.temp }}/renhdrum/renhdrum.so
         run: scripts/linux/appimage.sh
 
       # (the Vulkan back end, compiled as a player's build compiles it from the AppImage's sources (nx2/build.py), with the

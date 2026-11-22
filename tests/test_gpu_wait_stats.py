@@ -46,7 +46,8 @@ def main():
         subprocess.run(command + ["-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
     reflex = (a.source / "gpu/vk/vk_reflex.cpp").read_text(encoding="utf-8")
-    if not re.search(r"const gpu_wait_stats::Exclude pacing;[^\n]*\n\s*vkWaitSemaphores\(dev.device, &w,", reflex):
+    # (the wait in the Exclude's own scope: other guards may stand between them, no closing brace)
+    if not re.search(r"const gpu_wait_stats::Exclude pacing;[^{}]*?\n\s*vkWaitSemaphores\(dev.device, &w,", reflex):
         raise SystemExit("FAIL: Reflex's latency wait is not excluded as pacing")
     replay = (a.source / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
     if "GPU-bound wait %.1f ms (recording slots only)" not in replay or "host time in GPU resource waits:" not in replay:

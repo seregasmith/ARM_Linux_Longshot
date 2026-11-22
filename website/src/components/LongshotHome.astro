@@ -7,7 +7,7 @@ import { buildFeed } from '../lib/progress-feed.ts';
 const feed = await buildFeed();
 const stable = feed?.stableRelease;
 const date = (value: string) => new Date(value).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
-// The game's newest version for the release section: the stable one, else the newest published v-tag (an rc).
+// The game's newest version for the release section: the stable one, else the newest published v-tag.
 // Kept apart from the launcher's, which has version numbers of its own (MagicBeanDev/LongshotLauncher#135).
 const tagOf = (url: string) => decodeURIComponent(url.split('/').at(-1) || '');
 const preview = (feed?.items || []).filter(i => i.kind === 'release' && /^v\d/.test(tagOf(i.url)))
@@ -16,7 +16,7 @@ const game = stable ? { ...stable, stable: true } : preview ? { tag: tagOf(previ
 const activity = (feed?.items || []).filter(i => i.kind === 'pull' && i.status === 'merged' && i.mergedAt)
   .sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt)).slice(0, 4);
 
-// What Longshot does, from the README (Project status, In-game menu, Mods).
+// What Longshot does, from the README's project status and the player guide (settings, mods).
 const features = [
   { title: 'Native on your PC', text: 'Your own copy, built for Windows or Linux. The launcher handles building, starting and updating it.' },
   { title: 'Your screen, your settings', text: 'High resolutions, ultrawide layouts, HDR and upscaling, with quality presets for your graphics card.' },
@@ -68,7 +68,7 @@ const steps = [
       <h2 id="development-title">Built in the open.</h2>
       <p>Longshot is free software under the GPL, developed on Team MagicBean’s Forgejo. It continues Hookshot, the recompilation NotRexed made.</p>
       <ol class="steps">{steps.map(([name, text]) => <li><strong>{name}</strong> {text}</li>)}</ol>
-      <p class="links"><a class="text-link" href={repository}>Longshot on Forgejo <span aria-hidden="true">↗</span></a><a class="text-link" href={sourceUrl('docs/development.md')}>Development guide <span aria-hidden="true">↗</span></a></p>
+      <p class="links"><a class="text-link" href={repository}>Longshot on Forgejo <span aria-hidden="true">↗</span></a><a class="text-link" href={sourceUrl('docs/dev/README.md')}>Development guide <span aria-hidden="true">↗</span></a></p>
     </div>
     <div class="feed">
       <h3>Recently merged</h3>

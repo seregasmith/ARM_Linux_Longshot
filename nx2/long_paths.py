@@ -1,4 +1,4 @@
-"""The build's own Python takes paths past 260 characters on Windows (#1115).
+"""The build's own Python takes paths past 260 characters on Windows.
 
 Windows' long-paths setting is off on most PCs, and then a plain path of MAX_PATH (260) characters or more can't be opened,
 listed or written: FileNotFoundError, or False from os.path.exists and the like. A Builder unpacked in a deep folder (a

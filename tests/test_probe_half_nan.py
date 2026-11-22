@@ -1,4 +1,4 @@
-"""Exercise flash detection and capture errors with authored probe samples."""
+"""scripts/flash.py probe: flash detection and capture errors with authored probe samples."""
 from pathlib import Path
 import subprocess
 import sys
@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "probe.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "flash.py"
 
 
 class ProbeTests(unittest.TestCase):
@@ -14,7 +14,7 @@ class ProbeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="longshot-probe-") as folder:
             trace = Path(folder) / "probe_1.txt"
             trace.write_text("".join(rows), encoding="utf-8")
-            return subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), str(trace)],
+            return subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), "probe", str(trace)],
                                   capture_output=True, text=True)
 
     def test_nan_is_not_a_brightness_jump(self):

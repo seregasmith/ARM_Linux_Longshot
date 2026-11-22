@@ -68,7 +68,6 @@ struct { bool on = false; void skipped() {} void pipeline(bool, bool) {} void pi
 struct { long long pipes_new = 0; } use_counters;
 struct Targets { bool persistent = true; };
 struct NvnState {};
-struct ParLock {};
 struct DrawArgs { bool indirect = true; int groups[3]{1, 1, 1}; int first_task = 0; void* occ_pool = nullptr; };
 #define VK_NULL_HANDLE nullptr
 enum OccNotBegun { kOccTaskBatches };   // (vk_draw.cpp's occlusion query guard: the task batches leave it unbegun)

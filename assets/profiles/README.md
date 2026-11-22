@@ -9,8 +9,8 @@ data.
 
 The lifted game functions the game spends its time in, one a line, `f_<guest address>`, hottest first (the lift's
 `A64_HOT_FUNCS`). The lift puts them in `code_hot.c`, their float helpers inline, and the build compiles them as the eight
-hot pieces at `-O2` with their hot callees inlined, where every other lifted file is built at `-O1` (docs/development.md,
-"The hot list"). `nx2/make_game.py` (`hot_list_for`) builds with it unless the checkout's own `work/hot_funcs.txt`, a list
+hot pieces at `-O2` with their hot callees inlined, where every other lifted file is built at `-O1` (docs/dev/reference/build.md,
+"What the build compiles"). `nx2/make_game.py` (`hot_list_for`) builds with it unless the checkout's own `work/hot_funcs.txt`, a list
 `A64_HOT_FUNCS` names in the shell, or `LONGSHOT_HOT_LIST=0` (no list) says otherwise: copied into the build's work
 folder, or read where it is when that folder is the checkout's own `work/`. The AppImage and the Windows builder's tools
 folder carry it, so a player's build uses it too. No play profile of the hot pieces (`work/longshot_pieces.prof`,
@@ -34,13 +34,13 @@ game thread's stack, a sweep about every 4 ms):
    leans away from them, not towards them): child Link standing in the Market from its save, and child Link standing in
    Hyrule Field by day, two sessions each (92,652 and 68,111 samples).
 
-The rule is `scripts/hotlist.py`'s, applied by a script outside this repository, because the four areas come from three
+The rule is `scripts/perf.py hotlist`'s, applied by a script outside this repository, because the four areas come from three
 builds and two of them from one recording: a sample charges the innermost lifted function (a sample in a piece of a split
-giant function, `s_<addr>_<n>`, charges the giant, `f_<addr>`, which `scripts/hotlist.py` reaches through the giant's own
+giant function, `s_<addr>_<n>`, charges the giant, `f_<addr>`, which `scripts/perf.py hotlist` reaches through the giant's own
 frame); the four areas are weighted equally (each area's samples count as much as another's, however long it was
 recorded); the hottest first until 85 % of that weight, which came to 680 functions. It covers 85.0 % of Kakariko's
 samples of lifted code, 86.7 % of the trail's, 84.6 % of the Market's and 83.8 % of the field's; a list made without one
-of the areas still covers 79 to 84 % of that area. The game's Zstd decoder, which `scripts/hotlist.py` adds whatever the
+of the areas still covers 79 to 84 % of that area. The game's Zstd decoder, which `scripts/perf.py hotlist` adds whatever the
 samples say, is not added: 4 of its 22 functions are in the list by their samples.
 
 - Measured (the same PC and route, one run a build, frames in play): against no list, Death Mountain Trail 45.3 -> 56.4 fps
@@ -55,7 +55,7 @@ samples say, is not added: 4 of its 22 functions are in the list by their sample
 
 ## longshot_vk.profdata.xz: the renderer's
 
-The Vulkan back end's play profile (nx2/build.py `RX_VK_PGO`; docs/development.md, "The renderer's play profile"),
+The Vulkan back end's play profile (nx2/build.py `RX_VK_PGO`; docs/dev/developing.md, "Record the renderer's play profile"),
 compressed with xz. `nx2/make_game.py` unpacks it into the work folder and builds the renderer with it, unless the
 checkout's `work/longshot_vk.profdata` or `RX_VK_PGO` says otherwise; the Linux AppImage carries it for the player's
 build, which compiles the renderer (the AppImage has no built one). A compiler that can't read it builds the renderer

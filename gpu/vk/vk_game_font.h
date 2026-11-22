@@ -77,7 +77,7 @@ inline bool sarc_file(const std::vector<unsigned char>& a, const char* want, std
     return false;
 }
 /// Whether a font draws the menu's letters: a glyph for 'A' and for 'a' (a font of another script draws every letter of the
-/// menu as its empty box; issue 1279)
+/// menu as its empty box)
 inline bool has_latin(const std::vector<unsigned char>& font) {
     if (font.size() < 12) return false;
     stbtt_fontinfo info;

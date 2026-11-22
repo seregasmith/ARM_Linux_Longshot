@@ -179,6 +179,21 @@ struct StorageBufferDescriptor {
     auto operator<=>(const StorageBufferDescriptor&) const = default;
 };
 
+/// (longshot) A simulated-turf private storage buffer (ir_opt/sim_turf_pool_pass.h): a buffer of the back end's own, found by the guest address
+/// at c0+(cbuf_offset & 0xffff), standing in for that address's records (bit 31; c0 holds 64 KiB, so no real offset has it).
+/// Bit 30: the 48-byte pool (else the 8-byte list); bit 29: the program that makes it (else one that reads it, from the game's
+/// own buffer when nothing made one)
+inline constexpr u32 kSimTurfStorageBit = 0x80000000u, kSimTurfStoragePool = 0x40000000u, kSimTurfStorageCreator = 0x20000000u;
+[[nodiscard]] constexpr u32 SimTurfStorageOffset(u32 orig, bool pool, bool creator) noexcept {
+    return kSimTurfStorageBit | (pool ? kSimTurfStoragePool : 0u) | (creator ? kSimTurfStorageCreator : 0u) | (orig & 0xffffu);
+}
+[[nodiscard]] constexpr bool IsSimTurfStorage(const StorageBufferDescriptor& d) noexcept {
+    return d.cbuf_index == 0 && d.count == 1 && (d.cbuf_offset & kSimTurfStorageBit) != 0;
+}
+[[nodiscard]] constexpr u32 SimTurfStorageOrig(const StorageBufferDescriptor& d) noexcept {
+    return IsSimTurfStorage(d) ? d.cbuf_offset & 0xffffu : d.cbuf_offset;
+}
+
 struct TextureBufferDescriptor {
     bool has_secondary;
     u32 cbuf_index;

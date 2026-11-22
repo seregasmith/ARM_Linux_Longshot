@@ -30,6 +30,7 @@ def main():
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <array>
 using namespace mkwvk;
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); std::exit(1); } } while (0)
 using VkImage = uint64_t;
@@ -39,7 +40,18 @@ constexpr int VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL = 1;
 constexpr int VK_IMAGE_ASPECT_COLOR_BIT = 1;
 struct VkClearColorValue { float r, g, b, a; };
 struct VkImageSubresourceRange { int aspect, mip, levels, layer, layers; };
-struct { struct { uint32_t width, height; } swap_extent; bool hdr = false; } dev;
+struct {
+    struct { uint32_t width, height; } swap_extent;
+    bool hdr = false;
+    std::array<VkImageView, 1> swap_views{17};
+} dev;
+namespace colour_vision { bool enabled(int mode) { return mode != 0; } }
+int menu_colour_vision_mode() { return 0; }
+bool colour_vision_sdr(int, VkImageView, uint32_t, uint32_t, const int*, VkImage, VkImageView,
+                       PresentRect, int, bool) {
+    CHECK(false);  // The aspect fixture exercises the default, uncorrected blit.
+    return false;
+}
 std::atomic<bool> present_native_pq{false};
 struct { int hdr_contrast = 100; } opts;
 struct Host { float (*aspect_ratio)(); };
@@ -64,7 +76,8 @@ void vkCmdClearColorImage(int, VkImage, int, const VkClearColorValue* color, int
 void image_barrier(int, VkImage, int, int) { ++barriers; }
 void full_barrier(int) { ++hdr_barriers; }
 VkImageView framegen_scaled_view() { return 117; }
-VkImage framegen_hdr(int, VkImageView view, uint32_t, uint32_t, const int* crop, uint32_t w, uint32_t h, bool pq) {
+VkImage framegen_hdr(int, VkImageView view, uint32_t, uint32_t, const int* crop, uint32_t w, uint32_t h, bool pq, int mode = 0) {
+    CHECK(mode == 0);
     CHECK(view == (filtered ? 117u : 7u) && pq == present_native_pq.load());
     if (filtered) CHECK(crop == nullptr);
     ++hdr_calls; hdr_w = w; hdr_h = h;
@@ -81,6 +94,8 @@ void blit_crop_to_rect(int, VkImage src, uint32_t, uint32_t, const int* crop, Vk
 void actual_present(VkImage src, uint32_t sw, uint32_t sh, const int* crop, VkImageView view) {
     struct { int cmd; } f{1};
     VkImage dst = 2;
+    [[maybe_unused]] const bool allow_scale = true, source_srgb = false;
+    [[maybe_unused]] const unsigned index = 0;
 ''' + block + r'''
 }
 void expect(VkImage src, uint32_t sw, uint32_t sh, const int* crop, uint32_t dw, uint32_t dh,

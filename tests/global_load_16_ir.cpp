@@ -839,6 +839,74 @@ static void check_table_loop() {
     std::printf("PASS: storage buffer table searched in a loop\n");
 }
 
+// (mma_layout.h graphics_table_loads, RX_VK_GP_TABLE) a stage's global loads through the guest page table: 0 searches the bound
+// storage buffer, 1 reads the table alone (no search left in the load helpers), 2 keeps the search and records a load the two read
+// otherwise in the miss buffer (c0+0xff0). In every stage that takes it, each OpSelectionMerge right before its branch: the check's
+// condition once came between them and RADV crashed compiling those modules. CI validates every module written
+static void check_table_loads(Stage stage, int mode, const char* name) {
+    ObjectPool<IR::Inst> inst_pool;
+    IR::Block block{inst_pool};
+    IR::Program program;
+    program.stage = stage;
+    program.workgroup_size = {1, 1, 1};
+    program.blocks.push_back(&block);
+    program.post_order_blocks.push_back(&block);
+    IR::AbstractSyntaxNode node{};
+    node.type = IR::AbstractSyntaxNode::Type::Block;
+    node.data.block = &block;
+    program.syntax_list.push_back(node);
+    program.syntax_list.push_back({.type = IR::AbstractSyntaxNode::Type::Return});
+    IR::IREmitter ir{block};
+    (void)ir.LoadGlobal32(ir.Imm64(u64{0x0000001000001000}));
+    (void)ir.LoadGlobal128(ir.Imm64(u64{0x0000001000001010}));
+    ir.Epilogue();
+    TestEnvironment env{stage};
+    Optimization::CollectShaderInfoPass(env, program);
+    program.info.constant_buffer_descriptors.push_back({0, 1});
+    program.info.storage_buffers_descriptors.push_back({0, 0x40, 1, false});
+    if (mode == 2) program.info.storage_buffers_descriptors.push_back({0, 0xff0, 1, true});   // (translate_program.cpp's)
+    program.info.used_constant_buffer_types |= IR::Type::U32 | IR::Type::U32x2;
+    Profile profile{};
+    profile.supported_spirv = 0x00010600;
+    profile.support_int64 = true;
+    profile.unified_descriptor_binding = true;
+    profile.support_descriptor_aliasing = true;
+    profile.min_ssbo_alignment = 16;
+    RuntimeInfo runtime_info{};
+    Backend::Bindings bindings{};
+    Shader::Backend::SPIRV::graphics_table_loads = mode;
+    const auto module = inspect(save_module(name, EmitSPIRV(profile, runtime_info, program, bindings)));
+    Shader::Backend::SPIRV::graphics_table_loads = 0;
+
+    // (the load helpers: the functions the entry point calls, by what each holds)
+    std::map<u32, std::pair<bool, bool>> holds;   // (function: a buffer search (OpArrayLength), a table read (OpConvertUToPtr))
+    std::vector<u32> called;
+    bool record = false;
+    u32 current = 0;
+    for (size_t i = 0; i < module.instructions.size(); i++) {
+        const auto& inst = module.instructions[i];
+        if (inst.op == spv::Op::OpFunction) current = inst.words[1];
+        if (inst.op == spv::Op::OpFunctionEnd) current = 0;
+        if (inst.op == spv::Op::OpArrayLength && current) holds[current].first = true;
+        if (inst.op == spv::Op::OpConvertUToPtr && current) holds[current].second = true;
+        if (inst.op == spv::Op::OpAtomicIAdd && current) record = true;
+        if (inst.op == spv::Op::OpFunctionCall) called.push_back(inst.words[2]);
+        if (inst.op == spv::Op::OpSelectionMerge &&
+            (i + 1 >= module.instructions.size() || (module.instructions[i + 1].op != spv::Op::OpBranchConditional &&
+                                                     module.instructions[i + 1].op != spv::Op::OpSwitch)))
+            fail("an OpSelectionMerge is not right before its branch");
+    }
+    if (called.size() != 2) fail("the two global loads are not two helper calls");
+    for (const u32 f : called) {
+        const auto [search, table] = holds[f];
+        if (mode == 1 && (search || !table)) fail("RX_VK_GP_TABLE=1: a load helper still searches, or does not read the table");
+        if (mode != 1 && !search) fail("a load helper no longer searches the bound storage buffer");
+        if (mode == 2 && !table) fail("RX_VK_GP_TABLE=2: a load helper does not read the table to compare");
+    }
+    if (mode == 2 && !record) fail("RX_VK_GP_TABLE=2: no load that differs is recorded");
+    std::printf("PASS: %s\n", name);
+}
+
 int main(int argc, char** argv) {
     if (argc == 3 && std::string(argv[1]) == "--cas-loops") {
         output_dir = argv[2];
@@ -881,4 +949,8 @@ int main(int argc, char** argv) {
     check_vertex_load_controls(false, "vertex-global-load-default");
     check_vertex_load_controls(true, "vertex-global-load-inline128");
     check_table_loop();
+    for (const auto& [stage, label] : {std::pair{Stage::VertexB, "vertex"}, std::pair{Stage::Fragment, "fragment"},
+                                       std::pair{Stage::Compute, "compute"}})
+        for (int mode = 0; mode <= 2; mode++)
+            check_table_loads(stage, mode, (std::string("table-loads-") + label + "-" + std::to_string(mode)).c_str());
 }

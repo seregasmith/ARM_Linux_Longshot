@@ -40,6 +40,10 @@ std::string state_list_path(const char* name) { return dir + name; }
 std::vector<uint64_t> computes_read() { return {}; }
 struct PipeNote { uint64_t key; uint8_t rest[200]; };   // (a stand-in of the same kind: a key first, a fixed size)
 static uint64_t program_cache_stamp() { return 0x1234; }
+static bool pipelines_stamp_ok(uint64_t stamp) { return stamp == 0x1234; }
+static uint64_t notes_stamp() { return 0x1234; }
+static bool notes_stamp_ok(uint64_t stamp) { return stamp == 0x1234; }
+static void notes_restamp(const std::string&, uint64_t) {}
 static std::string pipe_notes_path() { return dir + "notes.bin"; }
 std::unordered_set<uint64_t> noted;
 FILE* note_file = nullptr;

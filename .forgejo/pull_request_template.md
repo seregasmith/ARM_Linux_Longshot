@@ -1,188 +1,75 @@
-**Type:** <fix / feat / perf / refactor / docs / test / build / ci / chore / revert> · **Risk:** <low / medium / high> · **Tested on:** <OS, GPU> · **Needs:** <OS, GPU, or none>
+## Summary
 
-<!-- The status line above is what a reviewer reads first: the title's type, how much could break, where you ran it and
-     where it still has to run. E.g. "**Type:** fix · **Risk:** low · **Tested on:** Linux, RX 6700 XT ·
-     **Needs:** Windows, any GPU".
-     Open as work in progress (forge.py pr create adds "WIP: ") and mark it ready (forge.py pr ready) once it is
-     ready for review: done, tested on your own PC, the checks passing, measured, this description complete and every
-     Everyone box true (CONTRIBUTING.md, "Ready for review: out of WIP"). Keep this description current, and post a
-     comment for each new commit, measurement or test run: CONTRIBUTING.md, "Commits and pull requests". -->
+<!-- In plain words a player could follow: what was wrong or missing, what this changes, and the result. For a fix,
+     how to see the bug on main (where, the steps, what happens). Then the files or functions a reviewer should read
+     first. "Fixes #N" closes an issue on merge, "See #N" links one. -->
 
-## TL;DR
+<what was wrong or missing, what this changes, the result>
 
-<!-- The whole PR in two to four plain sentences a player could follow, at most 120 words, for someone who reads
-     nothing else: what was wrong or missing, what this PR changes, the headline result and how it was checked. No file
-     or function names here: they go in What changed.
-     E.g. "At 4K the pause menu's text ran off the right edge, so the last option of each row couldn't be read. This PR
-     makes the menu's text grow with the screen's height. At 4K the widest row is now 302 px narrower and fits, and the
-     menu's frame time is the same; a new test fails on main and passes here, and I read every row in the game." -->
+## Testing
 
-<two to four plain sentences: what was wrong or missing, what this changes, the headline result and how it was checked>
+<!-- Tested: where you ran it (OS, GPU, driver), what you did and what you saw. A change the game runs ran in the
+     game on your own PC; for a fix, the bug's steps no longer show it. Then the checks.
+     Still to test: what this could affect that hasn't run, one item each: where (OS, GPU, or a Test Farm tag), what
+     to do, what to expect, and who runs it: the Test Farm ("@Beanstalk <what to test>" as a comment) or a person,
+     "by hand". "None" when Tested covers it. -->
 
-## Breakdown
+**Tested:** <where, what you did, what you saw>
 
-<!-- The same story as short bullets, one line each, for a reader who wants more than the TL;DR but not yet the
-     sections below: one bullet for each of these seven, in this order. "Nothing" is a fine answer to "What does not
-     change" or "What is still open"; an empty bullet is not.
-     E.g. "- **Who it helps:** anyone who plays at 4K or on any screen taller than 1080p.
-           - **What was wrong:** the menu's font kept its 1080p size, so wide rows ran past the screen's edge." -->
-
-- **Who it helps:** <who gains, in a player's words>
-- **What was wrong:** <the cause, in one plain sentence>
-- **What changes:** <what the game does differently now, in one sentence>
-- **What does not change:** <what stays as it was: defaults, other paths, saves, or "nothing">
-- **How it was checked:** <the tests and runs, with the headline result>
-- **What is still open:** <what was not tested or still has to be, or "nothing">
-- **Risk:** <low, medium or high, and what could go wrong, in one line>
-
-## Why
-
-<!-- The reason for this PR, in plain words a player could follow: what goes wrong or what is missing, and for
-     whom. Not the implementation. Search the issue tracker (forge.py issue list, or the web page) and link every
-     issue that fits: "Fixes #N" closes it on merge, "See #N" links it.
-     E.g. "At 4K the pause menu's text runs off the right edge, so the last option of each row can't be read.
-     Fixes #42." -->
-
-<the reason, in plain words>
-
-## How to reproduce
-
-<!-- For a fix (a bug, a regression, a crash): how to see the problem on main. Delete this section for anything else
-     (a feature, a refactor, docs). -->
-
-**Seen on:** <OS, GPU, driver>
-**Settings and switches:** <the menu settings and any switch that matters, or "defaults">
-**Steps:** <where in the game, and what to do there>
-**Expected:** <what should happen>
-**Actual:** <what happens on main>
-
-## What changed
-
-<!-- First a short plain summary, two or three sentences: what the PR does about the Why. Then the details by area,
-     naming the files and functions a reviewer should read first.
-     E.g. "- menu: `menu_font_scale()` in `gpu/vk/vk_menu.cpp` scales the font with the output height". -->
-
-<a short summary>
-
-- <area>: <what changed, with its files and functions>
+**Still to test:**
+- <where>: <what to do>, expecting <the result> (<@Beanstalk ..., or by hand>)
 
 ## Measurements
 
-<!-- Start with the verdict: did it help, by how much, did it pass. When there is nothing to measure, or no reason
-     to (docs only, a script with its tests), that one line is the whole section, saying why.
-     Otherwise the table: the columns name what was run with its commit, "Before: main @ <hash>" and "After: this PR @
-     <hash>". More columns when they're needed: "After, RX_VK_X=0: this PR @ <hash>". A Δ column is optional. A
-     before column other than main needs a "Baseline:" line saying what it is and why main wasn't the comparison.
-     Same PC, save, scene and settings; at least 2 interleaved runs each after a warm-up; the median. What counts for
-     each kind of change: CONTRIBUTING.md, "Measurements". Paste the log lines the numbers come from. -->
+<!-- main against this PR on the same PC, scene and settings, at least two interleaved runs each, the median
+     (docs/dev/standards.md, "Measurements"). A perf change must show its gain. A switch this adds or changes: the
+     default it ships at, and the numbers that chose it. Nothing to measure (docs, a test): replace the whole section
+     with one line saying why. -->
 
-**Verdict:** <did it help, by how much, did it pass>
+**Verdict:** <did it help, by how much>
 
-Hardware: <OS, GPU, driver, CPU, RAM>
-Scene: <the area, time of day; resolution, upscaler, frame generation, frame rate cap>
-Method: <what exactly was measured, from where (FPS counter's Dev level, longshot_log.txt, RX_VK_DRAW_STATS, a test), how long, how many runs, the median>
-How to reproduce: <the save or spot, the settings and switches, the commands>
+Setup: <OS, GPU, driver; the scene and settings; what was measured, how>
 
 | | Before: main @ <commit> | After: this PR @ <commit> |
 |---|---|---|
 | <what was measured> | | |
 
-```
-<the log lines or test output the numbers come from>
-```
-
-### Flags and settings
-
-<!-- One line first: does this PR add or change a switch (RX_*, HOS_*, LONGSHOT_*), a menu row, an ini key or a build
-     flag? If not, "None" is the whole subsection. Otherwise a row for each: its value before this PR and after it
-     (the default as it ships), what it does to the game, where it helps, doesn't, or wasn't tried, and what you
-     recommend ("on for everyone", "off: only for testing"). A switch ships at its recommended value:
-     CONTRIBUTING.md, "Code and data conventions". Document each one: docs/development.md, "Switches for testing and
-     debugging" or "The options file"; the README's option table for a menu row. -->
-
-<None, or a one-line summary>
-
-| Flag | What it is | Before this PR | After this PR | Effect | Helps / doesn't help / untested | Recommendation |
-|---|---|---|---|---|---|---|
-| <flag> | | | | | | |
-
-## Testing
-
-<!-- Unmistakable: what has been tested, what hasn't, and what must be before merge.
-     Tested: what you ran and checked, where (OS, GPU, driver) and how. First your own run, on your PC: a change the
-     game runs ran in the game (the area and the steps, and for a fix, that How to reproduce no longer shows the bug);
-     then the game-free checks and any tester's result.
-     Not testable by hand: only when the fix's own case can't be run by hand (hardware you don't have, a race or crash
-     you can't trigger): what can't be run, why, and what stands in for it (a game-free test, a log line, a Test Farm
-     run). Delete the line when everything could be run.
-     Not tested: what this PR could affect that nobody has run, and why.
-     Must be tested: one item per thing that has to be checked before merge and that you can't check yourself: exactly
-     where (OS, GPU, driver, or a Test Farm tag such as linux, amd, radv, windows, steamdeck), the steps for someone
-     else, the result to expect, and who runs it: the Test Farm (a "@Beanstalk <what to test, in words>" comment on
-     the PR) or by hand (a person, and what to look at). "None" when Tested covers everything.
-     E.g. "- Windows, any GPU (I'm on Linux; this is a Windows fix): start a new file, open the pause menu at 4K,
-     expecting every row to end inside the screen (Test Farm: @Beanstalk windows, the pause menu at 4K)". -->
-
-**Tested:** <what, where and how: your own run first>
-
-**Not testable by hand:** <what can't be run by hand, why, and what stands in for it; or delete this line>
-
-**Not tested:** <what, and why>
-
-**Must be tested:**
-- <where: OS, GPU, driver, or a Test Farm tag>: <the steps>, expecting <the result> (<Test Farm: @Beanstalk ..., or by hand: what to look at>)
-
 ## Risks
 
-<!-- What could break, and where; how to turn it off (a switch) or that reverting is enough.
-     Compatibility: what a player notices after updating: saves, longshot_options.ini, the shader and pipeline caches
-     (translated again, rebuilt?), the vk ABI (MKWVK_API_VERSION), the builder's tools; or "Nothing changes". -->
+<!-- What could break, and where; how to turn it off (a switch) or that a revert is enough; what a player notices
+     after updating (saves, longshot_options.ini, the caches), or "nothing". Any cost (speed, memory, a setup that
+     worked before) is measured above and named here. -->
 
-**What could break:** <what, and where>
-
-**Turning it off:** <a switch, or "revert the commit">
-
-**Compatibility:** <what changes for a player after updating, or "Nothing changes">
-
-## Issues
-
-<!-- One line per issue: "Fixes #123" closes it when this merges, "See #123" links it. Delete the section when there
-     is none. -->
-
-Fixes #
+<what could break, how to turn it off, what changes after updating>
 
 ## Checklist
 
-<!-- Keep the whole Everyone list, every box ticked. From When it applies keep only the boxes that apply, ticked;
-     delete the rest. -->
+<!-- Ready for review: every box ticked before it leaves WIP (forge.py pr ready checks them). When it applies: delete
+     the boxes that don't, tick the rest. Ready to merge: ticked by you or the maintainer who merges. -->
 
-### Everyone
+### Ready for review
 
-- [ ] One topic.
-- [ ] The title is a Conventional Commit (`type(scope): description`) of the status line's type.
-- [ ] Why gives the reason plainly and links the issues that fit (the tracker searched).
-- [ ] Tested on my own PC where it runs (in the game, for a change the game runs), as Testing's Tested says; what
-  can't be run by hand is in Testing's Not testable by hand, with why.
-- [ ] Measurements has a verdict, or one line saying why there is nothing to measure.
-- [ ] Nothing gets worse that I know of: any cost (speed, latency, memory, a setup that worked before) is measured and
-  in Risks.
-- [ ] Testing names what was tested, what wasn't, and what must still be tested, where and how.
-- [ ] Rebased on current `main`.
-- [ ] `python -I -B tests/run_all.py` passes (any failure that also fails on `main` is named).
-- [ ] No game files, dumps, build output or generated files.
-- [ ] `third_party/` untouched (a new folder with a `PROVENANCE.md` instead).
-- [ ] The license is OK: GPL-3.0-or-later, nothing incompatible and nothing decompiled.
+- [ ] One topic, on current `main`; the title is a Conventional Commit.
+- [ ] Tested on my own PC, in the game for a change the game runs, as Testing says.
+- [ ] `mise run test` passes (any failure that also fails on `main` is named).
+- [ ] Measured against `main`, or Measurements says why there is nothing to measure.
+- [ ] No game files, build output or hand-edited generated files; `third_party/` untouched; nothing GPL-incompatible.
 
 ### When it applies
 
-- [ ] AI assistance recorded with `Assisted-by:` / `Co-Authored-By:` trailers.
-- [ ] Numbers from the same PC, scene and settings, at least 2 interleaved runs each, the median reported.
-- [ ] Switches documented (docs/development.md; the README for a menu row) and shipped at their recommended value.
-- [ ] Screenshots of the same spot, captioned like the Measurements columns, for a change that shows on screen.
-- [ ] A file in `docs/tested/` for each new measured run (format in `docs/tested-configurations.md`).
-- [ ] `MKWVK_API_VERSION` bumped (`gpu/vk/vk_api.h`'s `MkwVkHost` or `MkwVkRenderer` changed).
-- [ ] The SPIR-V headers regenerated with glslang (a shader changed).
-- [ ] A game-free test added for the fix, failing on `main` and passing here.
-- [ ] A check under `tests/` that reads changed source updated in this PR, not weakened.
-- [ ] Host code builds on both Windows (llvm-mingw) and Linux, with UTF-8 paths.
+- [ ] A fix: a game-free test that fails on `main` and passes here.
+- [ ] A switch added or changed: it ships at the default the measurements chose, with its row in `gpu/vk/switches.def`.
+- [ ] A check under `tests/` that reads changed source is updated, not weakened.
+- [ ] `MKWVK_API_VERSION` bumped (`MkwVkHost` or `MkwVkRenderer` in `gpu/vk/vk_api.h` changed).
+- [ ] The SPIR-V headers regenerated (a shader changed).
+- [ ] Host code builds on Windows (llvm-mingw) and Linux, with UTF-8 paths.
+- [ ] Screenshots of the same spot on `main` and here, for a change that shows on screen.
 - [ ] Docs updated.
+- [ ] AI assistance recorded with `Assisted-by:` / `Co-Authored-By:` trailers.
+
+### Ready to merge
+
+- [ ] Everything in Still to test has run, its results in Tested.
+- [ ] Tier 1 hardware it can affect is tested (docs/dev/standards.md, "Hardware tiers").
+- [ ] Approved in review, every comment answered.
+- [ ] CI passes on the head; on current `main`, measured again or a comment says why the numbers still hold.

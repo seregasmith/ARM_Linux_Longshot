@@ -10,8 +10,8 @@ namespace drawn_writeback {
 
 // On the console a texture the GPU drew is in its memory as soon as the drawing is done, and Ocarina of Time relies on
 // it: its terrain bakes each chunk's normal tile on the GPU (260 x 260 RG8, nine levels), and later moves the chunk's
-// tiles into another block with a CPU copy of their memory. Here the drawn texels were only in the Vulkan image, so
-// the copy of a drawn tile was all zero, and the ground under it came out garbled until a restart (issue 1717).
+// tiles into another block with a CPU copy of their memory. Here the drawn texels are only in the Vulkan image, so
+// without a write-back the copy of a drawn tile is all zero, and the ground under it comes out garbled until a restart.
 constexpr uint64_t kMaxBytes = 1ull << 20;   // (the tiles are 209 KB; a frame's render targets are far larger)
 constexpr uint64_t kFrames = 2;              // (frames after the drawing: the game's work that wrote it is done)
 

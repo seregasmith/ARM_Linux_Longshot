@@ -1,7 +1,7 @@
 """The pipeline cache's files are dropped when they were made for another translator (gpu/vk/pcache_stamp.h; no game/GPU
 required): the header compiled and run against a temporary folder, and a check that vk_draw.cpp's pcache_init asks it with
-program_cache_stamp before the cache file is read, drops them whether or not this start reads the file (RX_VK_PCACHE_LOAD=0,
-or pcache_load.h's rule, issue 388).
+program_cache_stamp before the cache file is read (keeping those of the same translator under an earlier program cache format:
+pipelines_stamp_ok), drops them whether or not this start reads the file (RX_VK_PCACHE_LOAD=0, or pcache_load.h's rule, issue 388).
 
 python -I -B tests/test_pcache_stamp.py [--cxx g++]
 """
@@ -30,7 +30,7 @@ def check_source():
     if '#include "pcache_stamp.h"' not in draw:
         raise SystemExit("vk_draw.cpp does not include pcache_stamp.h")
     drop = block(draw, "bool pcache_drop_stale()")
-    for needle in ("pcache_stamp::check(dir, program_cache_stamp())", "return gone.files > 0;"):
+    for needle in ("pcache_stamp::check(dir, program_cache_stamp(), pipelines_stamp_ok)", "return gone.files > 0;"):
         if needle not in drop:
             raise SystemExit("vk_draw.cpp: pcache_drop_stale() no longer has: " + needle)
     # (issue 388: the files of another translator go whether or not this start reads the file: kept unread, they were 1.2 GB of

@@ -55,7 +55,7 @@ int main() {
     CHECK("the slider's value", slider_value(m.drag(720, 7), 0, 100, 10) == 30 && slider_value(1000, 0, 100, 10) == 100);
     CHECK("the knob's place", slider_permille(60, 0, 100) == 600 && slider_permille(500, 10, 300) == 1000);
 
-    // ---- the Controls page: a name, two gamepad cells, a keyboard cell and a toggle per row, then Reset to defaults ----
+    // ---- the Controls page: a name, two gamepad cells, keyboard, toggle and reset, then Reset to defaults ----
     m.clear(0, 0, 1920, 1080);
     for (int i = 0; i < 3; i++) {
         const float y = 120 + i * 42;
@@ -64,6 +64,7 @@ int main() {
         m.add(553, y, 697, y + 36, kCtlCell, i, 0, 0, 0, 0, kCtlAlternate);
         m.add(703, y, 897, y + 36, kCtlCell, i, 0, 0, 0, 0, kCtlKeyboard);
         m.add(903, y, 1000, y + 36, kCtlCell, i, 0, 0, 0, 0, kCtlToggle);
+        m.add(1006, y, 1100, y + 36, kCtlCell, i, 0, 0, 0, 0, kCtlReset);
     }
     m.add(100, 120 + 3 * 42, 390, 120 + 3 * 42 + 36, kCtlRow, 3);
     h = m.at(200, 130 + 42);
@@ -78,6 +79,8 @@ int main() {
     h = m.at(950, 130);
     CHECK("its toggle cell", h.part == kCtlCell && h.index == 0 && h.side == kCtlToggle);
     CHECK("the gap before toggle", m.at(900, 130).part == kNone);
+    h = m.at(1050, 130 + 42);
+    CHECK("its reset cell", h.part == kCtlCell && h.index == 1 && h.side == kCtlReset);
     h = m.at(200, 130 + 126);
     CHECK("Reset to defaults", h.part == kCtlRow && h.index == 3);
     m.add(100, 60, 1000, 96, kCtlOption, 1, 600, 1000);   // (a row of the page's own, above the grid: Button prompts)

@@ -19,8 +19,10 @@ NEW = ["late_wait_ms", "readback_wait_ms", "tex_frame_ms",
        # (the present on the host's clock: HOS_PROFILE=1's samples, presents.csv and events.txt share it)
        "shown_ms", "shown_at_ns",
        "at_ns",
-       # (longshot: the frame's side in an A/B within the run, HOS_AB, host/hos_ab.c; scripts/ab_summary.py)
-       "ab_side"]
+       # (longshot: the frame's side in an A/B within the run, HOS_AB, host/hos_ab.c; scripts/perf.py ab)
+       "ab_side", "create_ms", "reuse_ms", "astc_stage_ms", "astc_record_ms", "astc_view_ms", "astc_flush_ms",
+       "astc_flushes", "create_n", "pool_reused", "pool_new", "pool_put", "pool_idle", "pool_destroyed", "pool_holds",
+       "dead_waiting", "compact_pass", "pool_resized"]
 
 
 def block(text, marker):

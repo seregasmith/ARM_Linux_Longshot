@@ -14,8 +14,8 @@ present_queue=1 in longshot_options.ini (read at the start, as robust_buffers=) 
 graphics, =0 none; RX_VK_PRESENT_QUEUE over the row either way (1 or any on value: chosen; 0, false, off, no: none; empty:
 the row); with no such family none. The row: on the Debug tab, On or Off, applied after a restart, its key present_queue.
 The text checks: the device-lost message names the switch while the queue is in use, DLSS Frame Gen's exit wait bounds
-the queues' own locks too (a present on the presents' queue lets dev.present_mu go), and docs/development.md and
-gpu/vk/switches.def have the switch's row with its default.
+the queues' own locks too (a present on the presents' queue lets dev.present_mu go), docs/dev/reference/architecture.md's frame generation
+rule 5 names the switch and its default, and gpu/vk/switches.def has the switch's row with its default.
 
     python -I -B tests/test_present_queue_default.py --cxx clang++ --headers <Vulkan-Headers include>
 """
@@ -129,7 +129,7 @@ def main():
     p.add_argument("--headers", type=Path, required=True)
     a = p.parse_args()
     main_cpp = (ROOT / "gpu" / "vk" / "vk_main.cpp").read_text(encoding="utf-8")
-    choice = between(main_cpp, "uint32_t compute_family = UINT32_MAX;", "// (longshot) The presenter thread's own queue",
+    choice = between(main_cpp, "uint32_t compute_family = UINT32_MAX;", "    static const float priorities[2] = {1.0f, 1.0f};",
                      where="gpu/vk/vk_main.cpp create_device")
     # (the Windows branch, where there is one, on any host: the default it sets is what is checked)
     fixture = FIXTURE.replace("/* CHOICE */", choice.replace("#ifdef _WIN32", "#if 1"))
@@ -143,14 +143,24 @@ def main():
         sys.stdout.write(run.stdout)
         assert run.returncode == 0, "create_device's queue choice: the presents' own queue only when the Present queue row or RX_VK_PRESENT_QUEUE asks"
     menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
-    row = between(menu, '{TAB_DEBUG, "Present queue", &opts.present_queue, 0, 1, 1, tx_onoff,', "},", where="gpu/vk/vk_menu.cpp")
-    assert row.rstrip().endswith("true, true"),         "the Debug tab's Present queue row: Off or On, applied after a restart (restart), the Quality preset left alone"
+    # (the row is the threads module's, #1633: on the Debug tab, under its key)
+    module = (ROOT / "gpu" / "vk" / "menu" / "threads.cpp").read_text(encoding="utf-8")
+    assert 'MENU_MODULE(threads) {\n    menu::tab("debug")' in module, "gpu/vk/menu/threads.cpp: its rows on the Debug tab"
+    row = between(module, '.row({.key = "present_queue",', "}, menu::", where="gpu/vk/menu/threads.cpp")
+    assert all(f in row for f in ('.label = "Present queue"', ".kind = menu::Kind::Toggle", ".value = &opts.present_queue",
+                                  ".lo = 0, .hi = 1", ".restart = true", ".preset_exempt = true")), \
+        "the Debug tab's Present queue row: Off or On, applied after a restart (restart), the Quality preset left alone"
     assert "int present_queue = 0;" in (ROOT / "gpu" / "vk" / "vk_menu.h").read_text(encoding="utf-8"),         "vk_menu.h: Options::present_queue, 0 Off by default"
-    assert 'if (const char* e = getenv("RX_VK_PRESENT_QUEUE"); e && *e) env_override(&opts.present_queue, !env_value_off(e));'         in menu and '(value == &opts.present_queue && getenv("RX_VK_PRESENT_QUEUE") && *getenv("RX_VK_PRESENT_QUEUE"))' in menu,         "vk_menu.cpp: with RX_VK_PRESENT_QUEUE set the row shows the switch's value and is fixed (as ASTC as RGBA8's)"
-    dev = (ROOT / "docs" / "development.md").read_text(encoding="utf-8")
-    row = [l for l in dev.splitlines() if l.startswith("| `RX_VK_PRESENT_QUEUE=1` |")]
-    assert len(row) == 1 and "off by default on every PC" in row[0], \
-        "docs/development.md: the RX_VK_PRESENT_QUEUE row and its default"
+    locked = between(module, "const char* hn_present_queue(int, int variant) {", "\n}\n", where="gpu/vk/menu/threads.cpp")
+    assert 'if (const char* e = getenv("RX_VK_PRESENT_QUEUE"); e && *e) env_override(&opts.present_queue, !env_value_off(e));' \
+        in menu and '.locked = []() -> const char* { return hn_present_queue(0, -1); }' in row and \
+        'getenv("RX_VK_PRESENT_QUEUE")' in locked and "e && *e ?" in locked, \
+        "with RX_VK_PRESENT_QUEUE set the row shows the switch's value and is fixed (as ASTC as RGBA8's)"
+    arch = (ROOT / "docs" / "dev" / "reference" / "architecture.md").read_text(encoding="utf-8")
+    rule = arch[arch.find("5. **A present waits on the queue it is made on.**"):]
+    rule = " ".join(rule[:rule.find("\n6. ")].split())
+    assert rule.startswith("5. ") and "`RX_VK_PRESENT_QUEUE`" in rule and "off by default on every PC" in rule, \
+        "docs/dev/reference/architecture.md: frame generation's rule 5 names RX_VK_PRESENT_QUEUE and its default"
     sw = (ROOT / "gpu" / "vk" / "switches.def").read_text(encoding="utf-8")
     assert "SW(RX_VK_PRESENT_QUEUE, player, bool, \"follows present_queue= in longshot_options.ini" in sw, \
         "gpu/vk/switches.def: a player's switch over the Present queue row, off on every PC"

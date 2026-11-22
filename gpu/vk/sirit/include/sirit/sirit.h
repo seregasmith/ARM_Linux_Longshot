@@ -718,6 +718,10 @@ public:
     Id OpCooperativeMatrixMulAddKHR(Id result_type, Id a, Id b, Id c);
     /// (longshot) SPV_KHR_cooperative_matrix: load from memory (layout and stride are ids).
     Id OpCooperativeMatrixLoadKHR(Id result_type, Id pointer, Id layout, Id stride);
+    /// (longshot) SPV_KHR_cooperative_matrix: load with a memory operand (e.g. NonPrivatePointer).
+    Id OpCooperativeMatrixLoadKHR(Id result_type, Id pointer, Id layout, Id stride, spv::MemoryAccessMask memory_operand);
+    /// (longshot) SPV_KHR_cooperative_matrix: store to memory (layout and stride are ids).
+    Id OpCooperativeMatrixStoreKHR(Id pointer, Id object, Id layout, Id stride, spv::MemoryAccessMask memory_operand = spv::MemoryAccessMask::MaskNone);
 
     /// Full signed interger multiplication of Operand 1 and Operand 2.
     Id OpSMulExtended(Id result_type, Id operand_1, Id operand_2);
@@ -1299,6 +1303,9 @@ public:
     // to represent all bits of the scope restricted tangle. If none of the considered bits is set to 1,
     // the resulting value is undefined.
     Id OpGroupNonUniformBallotFindLSB(Id result_type, Id scope, Id value);
+
+    // True for one active invocation in the subgroup.
+    Id OpGroupNonUniformElect(Id result_type, Id scope);
 
     // Result is the Value of the invocation identified by the id Id to all active invocations in
     // the group.

@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// (longshot, #1001, #1971) How the game's task and mesh programs run: 0 Automatic (the GPU's own mesh shaders where it has
+// (longshot) How the game's task and mesh programs run: 0 Automatic (the GPU's own mesh shaders where it has
 // them, the compute fallback where not, and for the task + mesh draws of the GPUs task_mesh_fallback_default names on
 // Windows), 1 Native (no fallback where there are mesh shaders), 2 Compute (the fallback on every GPU). A launch switch,
-// RX_VK_MESH_SHADERS: the Graphics tab's Mesh shaders row is gone, as changing it translated every shader again and
-// dropped the pipeline caches for no gain a player could see. Its old line in longshot_options.ini, mesh_shaders=, no
-// longer chooses. Nothing of Vulkan here: tests/test_mesh_mode_switch.py, tests/test_task_mesh_fallback_devices.py.
+// RX_VK_MESH_SHADERS, not a menu row: changing it translates every shader again and drops the pipeline caches for no gain
+// a player could see. A mesh_shaders= line in longshot_options.ini does not choose. Nothing of Vulkan here: tests/test_mesh_mode_switch.py, tests/test_task_mesh_fallback_devices.py.
 #pragma once
 #include <cctype>
 #include <cstdint>
@@ -32,6 +31,20 @@ inline Choice choose(const char* env, const char* force_fallback) {
     if (env && same_word(env, "compute")) return {2, "RX_VK_MESH_SHADERS"};
     if (env && *env) return {0, "the default (RX_VK_MESH_SHADERS is neither native nor compute)"};
     return {0, "the default"};
+}
+
+/// The device line's mesh shaders field (vk_main.cpp): what the driver offers and what this run does, apart. A Steam Deck's
+/// RADV offers VK_EXT_mesh_shader, and Automatic runs RADV on the compute path all the same (its own can hang the GPU):
+/// "mesh shaders no" there was read as a driver without them. offered: the driver has task and mesh shaders
+/// (dev.mesh_capable); used: this run draws with them (dev.mesh_shader); mode: choose()'s; radv: Automatic took the
+/// compute path for RADV.
+/// No ';' in it: the line's readers take the device from the text before "; mesh shaders"
+inline const char* device_note(bool offered, bool used, int mode, bool radv) {
+    if (!offered) return "not offered by the driver";
+    if (used) return "used";
+    if (radv) return "offered by the driver but not used (Automatic runs RADV on the compute path: RX_VK_MESH_SHADERS=native to try)";
+    if (mode == 2) return "offered by the driver but not used (Compute chosen)";
+    return "offered by the driver but not used";
 }
 
 /// A line of longshot_options.ini: the old row's mesh_shaders= with Native (1) or Compute (2), which is no longer

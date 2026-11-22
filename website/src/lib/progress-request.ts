@@ -4,6 +4,10 @@ const retryStatuses = new Set([408, 429, 500, 502, 503, 504]);
 const retryCodes = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN',
   'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET']);
 
+// A request's time, its JSON body included. A busy forge can take more than 30 s to list 100 open pull requests
+// (23 to 70 s on 2026-11-21), and an empty feed stops the deploy.
+const REQUEST_TIMEOUT_MS = 120000;
+
 // Build-time GETs only. Read the body inside the timeout/retry boundary too: receiving headers is not success.
 export async function progressRequest(url, { fetcher = fetch, headers = {}, allowNotFound = false,
   wait = delay } = {}) {
@@ -13,7 +17,7 @@ export async function progressRequest(url, { fetcher = fetch, headers = {}, allo
     let failure;
     let retry = false;
     try {
-      response = await fetcher(url, { headers, signal: AbortSignal.timeout(30000), redirect: 'error' });
+      response = await fetcher(url, { headers, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS), redirect: 'error' });
       if (allowNotFound && response.status === 404) {
         await response.body?.cancel();
         return { data: null, headers: response.headers };

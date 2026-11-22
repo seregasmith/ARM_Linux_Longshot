@@ -14,6 +14,9 @@ python -I -B tests/test_intel_compiler_gate.py
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+import sys  # noqa: E402
+sys.path.insert(0, str(ROOT / "tests"))
+from menu_model_fixture import menu_text  # noqa: E402
 
 
 def block(text, marker, start_at=0):
@@ -51,7 +54,8 @@ def main():
     need("if (!intel_gate_on()) return;" in gate, "the lock is taken where it is off")
     # (an ask that compiles nothing never waits behind a worker's compile: it is answered cold, HumanBean's review of #252)
     need("std::try_to_lock" in gate and "busy = !hold.owns_lock();" in gate, "an ask waits for the lock")
-    menu = (ROOT / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8")
+    # (vk_menu.cpp and its modules, their rows as table lines: menu_text, #1633)
+    menu = menu_text(ROOT)
     side = block(menu, "bool intel_compiles_side_by_side() {")
     need("return intel_side_by_side_chosen(opts.intel_compiles, dev.props.deviceID, dev.props.driverVersion);" in side,
          "the lock does not read the Intel shader compiles row (its Auto with the GPU and the driver: intel_compiles.h)")
@@ -61,9 +65,14 @@ def main():
          "no Intel shader compiles row")
     shown = block(menu, "bool intel_compiler_row() {")
     need("#ifdef _WIN32" in shown and "dev.props.vendorID == 0x8086" in shown, "the row shows where the lock never holds")
-    need("(v != &opts.intel_compiles || intel_compiler_row())" in block(menu, "bool row_shown(int i) {"),
+    # (the row's own visibility and lock, gpu/vk/menu/intel.cpp: row_shown and row_fixed ask a module's row its shown and
+    # locked)
+    intel = (ROOT / "gpu/vk/menu/intel.cpp").read_text(encoding="utf-8")
+    row = intel[intel.index('.key = "intel_shader_compiles"'):intel.index('.key = "intel_quick_compute_builds"')]
+    need(".shown = MENU_HOOK(intel_compiler_row)" in row and "rows[i].setting->shown()" in block(menu, "bool row_shown(int i) {"),
          "the row is not limited to Intel graphics on Windows")
-    need('(value == &opts.intel_compiles && getenv("RX_VK_NO_INTEL_SERIAL"))' in block(menu, "bool row_fixed(const int* value) {"),
+    need('getenv("RX_VK_NO_INTEL_SERIAL")' in row[row.index(".locked"):row.index(".text")] and
+         "module_locked(value)" in block(menu, "bool row_fixed(const int* value) {"),
          "the row can be changed while RX_VK_NO_INTEL_SERIAL holds it")
     need("std::unique_lock<std::mutex>(mu)" in gate, "the compiler is not entered by one thread")
     draw = (ROOT / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
@@ -74,11 +83,12 @@ def main():
     linux = block(draw, "VkResult guarded_shader_module(", linux_at)
     need("sigsetjmp(fault_jmp, 1)" in linux and "vkCreateShaderModule" in linux,
          "Linux does not guard vkCreateShaderModule")
-    for fn in ("VkResult cached_graphics(", "VkResult cached_compute("):
+    # (a graphics build passes the gate on a preparation thread where intel_prepare_open, #1706; a compute one never)
+    for fn, gate_line in (("VkResult cached_graphics(", "IntelDriverGate gate(compiles_nothing(ci->flags), true);"),
+                          ("VkResult cached_compute(", "IntelDriverGate gate(compiles_nothing(ci->flags));")):
         body = block(draw, fn)
         need(body.index("IntelDriverGate") < body.index("create_cached"), fn + " compiles before it takes the lock")
-        need("IntelDriverGate gate(compiles_nothing(ci->flags));" in body and
-             "if (gate.busy) return intel_gate_busy();" in body, fn + " makes an ask wait for a compile")
+        need(gate_line in body and "if (gate.busy) return intel_gate_busy();" in body, fn + " makes an ask wait for a compile")
     graphics = block(draw, "VkResult graphics_with(")
     need("return cached_graphics" in graphics, "the play-cache path takes the lock twice")
     need("if (gate.busy) return intel_gate_busy();" in graphics, "graphics_with makes an ask wait for a compile")
@@ -129,7 +139,7 @@ def main():
     module = block((ROOT / "gpu/vk/vk_shader.cpp").read_text(encoding="utf-8"),
                    "VkShaderModule make_module(")
     need("IntelDriverGate" in module and "guarded_shader_module" in module, "translation still creates a module unguarded")
-    need("IntelDriverGate gate(busy != nullptr);" in module and "*busy = true;" in module,
+    need("IntelDriverGate gate(busy != nullptr, true);" in module and "*busy = true;" in module,
          "make_module waits for the gate where the dispatch only tries it")
     need(module.index("driver_faulted_program(program)") < module.index("IntelDriverGate"),
          "a program the driver faulted on is handed to it again")

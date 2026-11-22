@@ -43,6 +43,7 @@ static ComputePlan plan_now;
 const ComputePlan& compute_warm_plan() { return plan_now; }
 static bool preparing = false;
 static uint64_t program_cache_stamp() { return 42; }
+static bool pipelines_stamp_ok(uint64_t stamp) { return stamp == 42; }
 static std::string precompile_built_path() { return "notes.built"; }
 static bool env_on(const char*) { return preparing; }
 @WRITE@

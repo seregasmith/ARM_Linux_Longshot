@@ -13,6 +13,9 @@ from pathlib import Path
 RUN_ALL_ARGS = ["--cxx", "g++"]
 
 ROOT = Path(__file__).resolve().parents[1]
+import sys  # noqa: E402
+sys.path.insert(0, str(ROOT / "tests"))
+from menu_model_fixture import menu_text  # noqa: E402
 
 
 def need(where, text, needles):
@@ -32,7 +35,7 @@ def body(text, marker):
 
 
 def check_source():
-    menu = (ROOT / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8")
+    menu = menu_text(ROOT)   # (vk_menu.cpp and its modules, their rows as table lines, #1633)
     need("vk_menu.cpp", menu, ['{TAB_GRAPHICS, "Quality preset", &opts.preset, 0, 6, 1, tx_preset,', '"Auto (this PC)"',
                                "if (first) opts.preset = kAutoPreset;",
                                "::auto_settings::choose(hw)", "if (fp == auto_for)", 'fprintf(f, "auto_for=%016llx\\n"',

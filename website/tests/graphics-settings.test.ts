@@ -1,90 +1,105 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { createMarkdownProcessor } from '@astrojs/markdown-remark';
-import { readGraphicsSettings, formatGraphicsSettings, readMenuRows, SHORT_CHOICES } from '../src/repo-docs/graphics-settings.ts';
+import { readGraphicsSettings, formatGraphicsSettings, readMenuRows, MODULES_MARKER, SHORT_CHOICES } from '../src/repo-docs/graphics-settings.ts';
 import { matchesSetting, installGraphicsSettings } from '../src/lib/graphics-settings.ts';
 
-const readme = await readFile(new URL('../../README.md', import.meta.url), 'utf8');
-const menu = await readFile(new URL('../../gpu/vk/vk_menu.cpp', import.meta.url), 'utf8');
-const guide = await readFile(new URL('../../docs/graphics-and-controls.md', import.meta.url), 'utf8');
+// The settings page holds the table of every menu row's choices and defaults; the menu's source holds the rest.
+const page = await readFile(new URL('../../docs/user/graphics-and-controls.md', import.meta.url), 'utf8');
+// (vk_menu.cpp, then its feature modules, gpu/vk/menu/*.cpp, as pages.ts gives them)
+const moduleDir = new URL('../../gpu/vk/menu/', import.meta.url);
+const modules = await Promise.all((await readdir(moduleDir)).filter(name => name.endsWith('.cpp')).sort()
+  .map(name => readFile(new URL(name, moduleDir), 'utf8')));
+const menu = await readFile(new URL('../../gpu/vk/vk_menu.cpp', import.meta.url), 'utf8') + MODULES_MARKER + modules.join('\n');
 const processor = await createMarkdownProcessor();
 
 test('frame-generation visibility has a badge and still requires its documented condition', () => {
-  const setting = readGraphicsSettings(readme, menu).flatMap(group => group.settings)
+  const setting = readGraphicsSettings(page, menu).flatMap(group => group.settings)
     .find(setting => setting.name === 'Frame generation by');
   assert(setting.badges.includes('While Frame generation is on'));
-  const undocumented = readme.replace('Shown while Frame generation is on.', 'Choose the interpolation provider.');
-  assert.notEqual(undocumented, readme);
+  const undocumented = page.replace('Shown while Frame generation is on.', 'Choose the interpolation provider.');
+  assert.notEqual(undocumented, page);
   assert.throws(() => readGraphicsSettings(undocumented, menu), /no condition for Frame generation by/);
 });
 
 test('CRT-line visibility has a badge and still requires its documented condition', () => {
-  const setting = readGraphicsSettings(readme, menu).flatMap(group => group.settings)
+  const setting = readGraphicsSettings(page, menu).flatMap(group => group.settings)
     .find(setting => setting.name === 'CRT lines');
   assert(setting.badges.includes('With a CRT filter on'));
-  const undocumented = readme.replace('shown with a CRT filter on; ', '');
-  assert.notEqual(undocumented, readme);
+  const undocumented = page.replace('shown with a CRT filter on; ', '');
+  assert.notEqual(undocumented, page);
   assert.throws(() => readGraphicsSettings(undocumented, menu), /no condition for CRT lines/);
 });
 
+test('Custom HUD rows require their visibility condition and the registered reset action', () => {
+  const settings = readGraphicsSettings(page, menu).flatMap(group => group.settings);
+  for (const name of ['Hearts and magic horizontal', 'Reset HUD placement']) {
+    assert(settings.find(setting => setting.name === name).badges.includes('Custom HUD layout without a HOS_WIDE_UI override'));
+  }
+  assert.throws(() => readGraphicsSettings(page.replaceAll('shown with HUD layout set to Custom and no `HOS_WIDE_UI` override', 'Custom'), menu),
+    /no condition for Hearts and magic horizontal/);
+  assert.throws(() => readGraphicsSettings(page, menu.replace('MENU_HOOK(reset_hud_placement)', 'MENU_HOOK(other_action)')),
+    /coverage mismatch at Reset HUD placement/);
+});
+
 test('the registered fullscreen monitor selector retains its identity-backed choices; unsupported rows fail', () => {
-  const setting = readGraphicsSettings(readme, menu).flatMap(group => group.settings)
+  const setting = readGraphicsSettings(page, menu).flatMap(group => group.settings)
     .find(setting => setting.name === 'Fullscreen monitor');
   assert.equal(setting.defaultValue, 'Auto (current monitor)');
   assert.equal(setting.restart, false);
   assert.match(setting.choices, /named connected screen/);
   assert.match(setting.summary, /F11 and Alt\+Enter/);
   assert.equal(setting.id, 'setting-fullscreen-monitor');
-  const registration = '{TAB_GRAPHICS, "Fullscreen monitor", &monitor_pick, 0, 0, 1, tx_fullscreen_monitor,';
-  assert(menu.includes(registration));
-  for (const changed of [registration.replace('&monitor_pick', '&unknown_pick'),
-    registration.replace('tx_fullscreen_monitor', 'tx_unknown')]) {
-    assert.throws(() => readGraphicsSettings(readme, menu.replace(registration, changed)), /coverage mismatch at Fullscreen monitor/);
+  // (gpu/vk/menu/display.cpp registers it: its own pointer, its text and its hint)
+  for (const [from, to] of [['.value = &monitor_pick,', '.value = &unknown_pick,'],
+    ['std::string(tx_fullscreen_monitor(v))', 'std::string(tx_unknown(v))'],
+    ['.hint = MENU_HOOK(hn_fullscreen_monitor)', '.hint = MENU_HOOK(hn_unknown)']]) {
+    assert(menu.includes(from), from);
+    assert.throws(() => readGraphicsSettings(page, menu.replace(from, to)), /coverage mismatch at Fullscreen monitor/);
   }
-  assert.throws(() => readGraphicsSettings(readme, menu.replace('hn_fullscreen_monitor, false, true}', 'nullptr, false, true}')),
-    /coverage mismatch at Fullscreen monitor/);
   // A different Graphics row cannot borrow this selector's pointer or formatter registration.
-  assert.throws(() => readGraphicsSettings(readme, menu.replace('"Fullscreen", &opts.fullscreen', '"Fullscreen", &monitor_pick')),
+  assert(menu.includes('.value = &opts.fullscreen,'));
+  assert.throws(() => readGraphicsSettings(page, menu.replace('.value = &opts.fullscreen,', '.value = &monitor_pick,')),
     /coverage mismatch at Fullscreen/);
 });
 
 test('HDR Native condition accepts current prose but remains required', () => {
   for (const wording of ['with HDR set to Native', 'shown only with HDR set to Native']) {
-    const text = readme.replaceAll('with HDR set to Native.', `${wording}.`);
+    const text = page.replaceAll('with HDR set to Native)', `${wording})`);
     const setting = readGraphicsSettings(text, menu).flatMap(group => group.settings)
       .find(setting => setting.name === 'HDR tone mapper');
     assert(setting.badges.includes('With HDR on Native'));
   }
-  assert.throws(() => readGraphicsSettings(readme.replaceAll('with HDR set to Native.', 'alternative curve.'), menu),
+  assert.throws(() => readGraphicsSettings(page.replaceAll('with HDR set to Native)', 'alternative curve)'), menu),
     /no condition for HDR tone mapper/);
 });
 
-test('the Audio, Gameplay and Controls tabs follow the README, and Debug stays out', () => {
-  const groups = readGraphicsSettings(readme, menu);
-  assert.deepEqual(groups.filter(group => group.tab !== 'Graphics').map(group => group.name), ['Audio', 'Gameplay', 'Controls']);
-  assert(groups.find(group => group.name === 'Controls').settings.some(setting => setting.name === 'Rumble strength'));
+test('the Audio, Gameplay, Controls and NFC tabs follow the table, and Debug stays out', () => {
+  const groups = readGraphicsSettings(page, menu);
+  assert.deepEqual(groups.filter(group => group.tab !== 'Graphics').map(group => group.name), ['Audio', 'Gameplay', 'Controls', 'NFC']);
+  assert(groups.find(group => group.name === 'Controls').settings.some(setting => setting.name === 'Vibration strength'));
   assert.equal(new Set(groups.flatMap(group => group.settings).map(setting => setting.id)).size, groups.flatMap(group => group.settings).length);
 });
 
 test('registered text fields retain their choices and restart requirements; unknown actions still fail', () => {
-  const setting = readGraphicsSettings(readme, menu).flatMap(group => group.settings)
+  const setting = readGraphicsSettings(page, menu).flatMap(group => group.settings)
     .find(setting => setting.name === 'Custom output size');
   assert.equal(setting.defaultValue, 'None');
   assert.equal(setting.restart, true);
   assert.match(setting.choices, /<width>x<height>/);
   const unregistered = menu.replace(/const FieldRow field_rows\[\][\s\S]*?;/, 'const FieldRow field_rows[] = {};');
   assert.notEqual(unregistered, menu);
-  assert.throws(() => readGraphicsSettings(readme, unregistered), /coverage mismatch at Custom output size/);
-  const wrongRestart = readme.replace(/(\| \| Custom output size \|[^\n]*)\(after a restart\)/, '$1');
-  assert.notEqual(wrongRestart, readme);
+  assert.throws(() => readGraphicsSettings(page, unregistered), /coverage mismatch at Custom output size/);
+  const wrongRestart = page.replace(/(\| \| Custom output size \|[^\n]*)\(most changes apply after a restart\)/, '$1');
+  assert.notEqual(wrongRestart, page);
   assert.throws(() => readGraphicsSettings(wrongRestart, menu), /restart mismatch at Custom output size/);
 });
 
-test('all Graphics rows follow the source sections and preserve README choices/defaults', () => {
-  const groups = readGraphicsSettings(readme, menu).filter(group => group.tab === 'Graphics');
+test('all Graphics rows follow the source sections and preserve the table\'s choices/defaults', () => {
+  const groups = readGraphicsSettings(page, menu).filter(group => group.tab === 'Graphics');
   const settings = groups.flatMap(group => group.settings);
-  const lines = readme.slice(readme.indexOf('| Graphics |'), readme.indexOf('| Audio |')).trim().split('\n');
+  const lines = page.slice(page.indexOf('| Graphics |'), page.indexOf('| Audio |')).trim().split('\n');
   assert.equal(settings.length, lines.length);
   settings.forEach((setting, i) => {
     const [, , name, choices, value] = lines[i].split('|').map(value => value.trim());
@@ -97,18 +112,26 @@ test('all Graphics rows follow the source sections and preserve README choices/d
 });
 
 test('upstream value and section-name edits flow through without another settings list', () => {
-  const groups = readGraphicsSettings(readme.replace('| Docked; a quality preset sets it |', '| Handheld |'), menu.replace('"Resolution and upscaling", nullptr', '"Picture size", nullptr'));
+  const groups = readGraphicsSettings(page.replace('| Docked; a quality preset sets it |', '| Handheld |'), menu.replace('"Resolution and upscaling", nullptr', '"Picture size", nullptr'));
   assert.equal(groups.find(group => group.name === 'Picture size').settings.find(setting => setting.name === 'Profile').defaultValue, 'Handheld');
 });
 
 test('missing tables, incomplete cells, added/removed/reordered rows stop publication', () => {
-  assert.throws(() => readGraphicsSettings('', menu), /Missing README/);
-  assert.throws(() => readGraphicsSettings(readme, ''), /Missing menu/);
-  assert.throws(() => readGraphicsSettings(readme.replace('| | Sharpness |', '| | Gone |'), menu), /mismatch/);
-  assert.throws(() => readGraphicsSettings(readme.replace(/^\| \| Sharpness .*\n/m, ''), menu), /mismatch/);
-  assert.throws(() => readGraphicsSettings(readme.replace('| 0%; a quality preset sets it |', '| |'), menu), /Incomplete/);
-  assert.throws(() => readGraphicsSettings(readme.replace('| | Sharpness |', '| | New cell | Sharpness |'), menu), /structure/);
-  assert.throws(() => readGraphicsSettings(readme, menu.replace('"Resolution and upscaling", nullptr', '"Resolution and upscaling", NULL')), /coverage mismatch/);
+  assert.throws(() => readGraphicsSettings('', menu), /Missing the settings table/);
+  assert.throws(() => readGraphicsSettings(page, ''), /Missing menu/);
+  assert.throws(() => readGraphicsSettings(page.replace('| | Sharpness |', '| | Gone |'), menu), /mismatch/);
+  assert.throws(() => readGraphicsSettings(page.replace(/^\| \| Sharpness .*\n/m, ''), menu), /mismatch/);
+  assert.throws(() => readGraphicsSettings(page.replace('| 0%; a quality preset sets it |', '| |'), menu), /Incomplete/);
+  assert.throws(() => readGraphicsSettings(page.replace('| | Sharpness |', '| | New cell | Sharpness |'), menu), /structure/);
+  assert.throws(() => readGraphicsSettings(page, menu.replace('"Resolution and upscaling", nullptr', '"Resolution and upscaling", NULL')), /coverage mismatch/);
+});
+
+test('ReShade actions and user selector are accounted for', () => {
+  const settings = readGraphicsSettings(page, menu).flatMap(group => group.settings);
+  for (const name of ['Compare ReShade Preset', 'User preset file', 'Rescan ReShade presets'])
+    assert(settings.some(setting => setting.name === name));
+  assert.throws(() => readGraphicsSettings(page, menu.replace('MENU_HOOK(scan_presets)', 'MENU_HOOK(other_action)')), /coverage mismatch at Rescan ReShade presets/);
+  assert.throws(() => readGraphicsSettings(page.replaceAll('with User selected', 'when selected'), menu), /no condition for User preset file/);
 });
 
 test('the menu table reader joins C strings, reads escapes and skips comments', () => {
@@ -126,14 +149,14 @@ bool row_shown(int i) {
   assert.throws(() => readMenuRows(menu.replace(/bool row_shown\(int i\) \{/, 'bool shown(int i) {')), /row_shown/);
 });
 
-test('cards take the menu\'s help, the source restart flag and README conditions', () => {
-  const settings = readGraphicsSettings(readme, menu).flatMap(group => group.settings);
+test('cards take the menu\'s help, the source restart flag and the table\'s conditions', () => {
+  const settings = readGraphicsSettings(page, menu).flatMap(group => group.settings);
   const find = name => settings.find(setting => setting.name === name);
   assert.equal(find('Profile').summary, 'Runs the game as the console docked or handheld.');
   assert(settings.every(setting => setting.summary), 'every card has the menu\'s description');
   assert(!settings.some(setting => /Applies after/.test(setting.summary)));
   assert.deepEqual(settings.filter(setting => setting.restart).map(setting => setting.name),
-    ['Aspect ratio', 'Output resolution', 'Custom output size', 'Profile', 'GPU device', 'Threaded rendering', 'Speaker layout', 'Skip title screen', 'Game language', 'Button prompts']);
+    ['Aspect ratio', 'Output resolution', 'Custom output size', 'Profile', 'GPU device', 'Speaker layout', 'Skip title screen', 'Game language', 'Button prompts']);
   assert.deepEqual(find('NVIDIA Reflex').badges, ['NVIDIA GPUs only']);
   assert.deepEqual(find('HDR tone mapper').badges, ['With HDR on Native']);
   assert(find('HDR contrast').badges.includes('While HDR is on'));
@@ -141,45 +164,49 @@ test('cards take the menu\'s help, the source restart flag and README conditions
   assert(!settings.some(setting => setting.name === 'Restart' || setting.name === 'Descriptor reuse'));
 });
 
-test('restart, coverage and condition drift between README and the menu stop publication', () => {
-  // (README says after a restart where the menu applies at once, or not where it takes one)
-  assert.throws(() => readGraphicsSettings(readme.replace('| | Fullscreen | Off, On', '| | Fullscreen | Off, On (after a restart)'), menu), /restart mismatch at Fullscreen/);
-  const noSpeakerRestart = readme.replace(/^(\| \| Speaker layout \|[^\n]*)after a restart/m, '$1without restarting');
-  assert.notEqual(noSpeakerRestart, readme, 'Speaker layout fixture must remove its restart annotation');
+test('restart, coverage and condition drift between the table and the menu stop publication', () => {
+  // (the table says after a restart where the menu applies at once, or not where it takes one)
+  assert.throws(() => readGraphicsSettings(page.replace('| | Fullscreen | Off, On', '| | Fullscreen | Off, On (after a restart)'), menu), /restart mismatch at Fullscreen/);
+  const noSpeakerRestart = page.replace(/^(\| \| Speaker layout \|[^\n]*)after a restart/m, '$1without restarting');
+  assert.notEqual(noSpeakerRestart, page, 'Speaker layout fixture must remove its restart annotation');
   assert.throws(() => readGraphicsSettings(noSpeakerRestart, menu), /restart mismatch at Speaker layout/);
-  // (a row of another tab added to the menu, or one README lists that the menu lacks)
-  assert.throws(() => readGraphicsSettings(readme, menu.replace('{TAB_AUDIO, "Volume"', '{TAB_AUDIO, "Balance", &opts.volume, 0, 1, 1, tx_onoff, "x"},\n    {TAB_AUDIO, "Volume"')), /Audio coverage mismatch/);
-  assert.throws(() => readGraphicsSettings(readme.replace(/^\| \| Mute in background .*\n/m, ''), menu), /Audio coverage mismatch/);
-  assert.throws(() => readGraphicsSettings(readme.replace('| | Text size |', '| | Text sizes |'), menu), /Gameplay coverage mismatch/);
-  // (a row the menu hides on some PCs, with no condition in README)
-  assert.throws(() => readGraphicsSettings(readme.replace(' (shown only on AMD GPUs with `VK_AMD_anti_lag`)', ''), menu), /no condition for AMD Anti-Lag 2/);
-  assert.throws(() => readGraphicsSettings(readme, menu.replace('(v != &opts.antilag || antilag_available())', '(v != &opts.fov || antilag_available())')), /no condition for Field of view/);
+  // (a row of another tab added to the menu, or one the table lists that the menu lacks)
+  assert.throws(() => readGraphicsSettings(page, menu + '\nMENU_MODULE(balance) {\n    menu::tab("audio")\n        .row({.key = "balance", .label = "Balance", .help = "x", .value = &opts.volume});\n}\n'), /Audio coverage mismatch/);
+  assert.throws(() => readGraphicsSettings(page.replace(/^\| \| Mute in background .*\n/m, ''), menu), /Audio coverage mismatch/);
+  assert.throws(() => readGraphicsSettings(page.replace('| | Text size |', '| | Text sizes |'), menu), /Gameplay coverage mismatch/);
+  // (a row the menu hides on some PCs, with no condition in the table)
+  assert.throws(() => readGraphicsSettings(page.replace(' (shown only on AMD GPUs with `VK_AMD_anti_lag`)', ''), menu), /no condition for AMD Anti-Lag 2/);
+  assert.throws(() => readGraphicsSettings(page, menu.replace('.label = "Field of view",', '.label = "Field of view",\n              .shown = [] { return false; },')), /no condition for Field of view/);
 });
 
 test('escaped pipes remain choices and do not become extra cells', () => {
-  const groups = readGraphicsSettings(readme.replace('0 to 100%, in steps of 10', 'Off \\| On'), menu);
+  const groups = readGraphicsSettings(page.replace('0 to 100%, in steps of 10', 'Off \\| On'), menu);
   assert.equal(groups.flatMap(group => group.settings).find(setting => setting.name === 'Sharpness').choices, 'Off | On');
 });
 
 test('cards retain markup, stable anchors, conditions and a readable no-JS fallback', async () => {
-  const result = await formatGraphicsSettings(guide, readme, menu, processor);
-  assert.equal((result.match(/class="graphics-row"/g) || []).length, readGraphicsSettings(readme, menu).flatMap(group => group.settings).length);
+  const result = await formatGraphicsSettings(page, menu, processor);
+  assert.equal((result.match(/class="graphics-row"/g) || []).length, readGraphicsSettings(page, menu).flatMap(group => group.settings).length);
   assert(result.includes('id="setting-output-resolution"'));
   assert(result.includes('<kbd>F11</kbd>'));
   assert(result.includes('VK_NV_low_latency2'));
   assert(result.includes('only in builds with'));
   assert(result.includes('data-settings-filters hidden'));
   assert(result.includes('<li class="graphics-badge-restart">After a restart</li>'));
+  assert(result.includes('<li>Custom HUD layout without a HOS_WIDE_UI override</li>'));
   assert(result.includes('<p class="graphics-summary">Runs the game as the console docked or handheld.</p>'));
   assert(result.includes('<a href="#settings-hdr">HDR</a>') && result.includes('<a href="#settings-controls">'));
-  const groups = readGraphicsSettings(readme, menu);
+  const groups = readGraphicsSettings(page, menu);
   for (const group of groups) assert(result.includes(`href="#${group.id}"`) && result.includes(`id="${group.id}"`));
   const long = groups.flatMap(group => group.settings).filter(setting => setting.choices.length > SHORT_CHOICES).length;
-  assert.equal((result.match(/<details>/g) || []).length, long);
+  assert.equal((result.match(/<details><summary>Choices and requirements<\/summary>/g) || []).length, long);
   assert(long > 0 && long < groups.flatMap(group => group.settings).length / 2);
-  assert(!result.includes('<!-- graphics-settings -->'));
-  for (const heading of guide.match(/^## .+$/gm)) assert(result.includes(heading));
-  await assert.rejects(formatGraphicsSettings('no marker', readme, menu, processor), /insertion marker/);
+  assert(!result.includes('| Tab | Option | Choices | Default |'), 'the table is replaced by the cards');
+  assert(result.includes('Writing the controls in longshot_options.ini yourself'), 'the text after the table stays');
+  for (const heading of page.match(/^## .+$/gm)) assert(result.includes(heading));
+  await assert.rejects(formatGraphicsSettings('no table', menu, processor), /Missing the settings table/);
+  const table = page.match(/^\| Tab \| Option[\s\S]*?\n\n/m)[0];
+  await assert.rejects(formatGraphicsSettings(page + '\n' + table, menu, processor), /Expected one settings table/);
 });
 
 test('search accepts case, whitespace and terms in any order without regex interpretation', () => {

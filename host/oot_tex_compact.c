@@ -5,6 +5,7 @@
    it; off: never. */
 #include "hos.h"
 #include "oot_tex_compact.h"
+#include "input_movie.h"   /* (HosMovieTime: the game clock's time while an input recording is recorded or played) */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <stdlib.h>
@@ -19,9 +20,15 @@ static SRWLOCK compact_lock = SRWLOCK_INIT;   /* (the manager's step runs under 
 static int64_t compact_gap = INT64_MIN;       /* (read once, under compact_lock) */
 static long long compact_calls, compact_yes;  /* (under compact_lock: the log's counts) */
 
+/* (the gap's clock: the wall's, or the game clock's while an input recording is recorded or played, so a compaction falls on
+   the same frame of a replay as of its recording: host/input_movie.c; under compact_lock) */
+int64_t hos_input_movie_time(HosMovieTime *t, int64_t wall_ns);
+static HosMovieTime compact_time;
+
 int hos_oot_tex_compact_due(void) {
-    const int64_t now = hos_now_ns();
+    const int64_t wall = hos_now_ns();
     AcquireSRWLockExclusive(&compact_lock);
+    const int64_t now = hos_input_movie_time(&compact_time, wall);
     if (compact_gap == INT64_MIN) {
         compact_gap = oot_tex_compact_gap_ns(getenv("HOS_TEX_COMPACT_MS"), OOT_TEX_COMPACT_DEFAULT_MS);
         if (compact_gap < 0)

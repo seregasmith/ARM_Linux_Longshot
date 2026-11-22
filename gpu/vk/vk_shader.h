@@ -33,6 +33,8 @@ struct Stage {
     // file if play ever builds a new pipeline state variant for this program
     int64_t code_at = 0;
     uint64_t code_words = 0;
+    // (longshot) its SPIR-V's hash in the shader store (spirv_pack.h), when code_at is a place there: read only with it
+    uint64_t code_hash_a = 0, code_hash_b = 0;
     // (longshot) the record it was read from (its payload's position and stored size): its head is checked before code_at is read
     // again (program_cache_complete_graphics). Here and not in Program, whose size is part of the translator's stamp
     int64_t record_at = 0;
@@ -122,6 +124,7 @@ std::string program_code_keys(const NvnState& s);   // (longshot) " stage:key" f
 const Program* program_pick(const NvnState& s, ProgramKind kind, const uint8_t color_types[8]);   // (program_for without its cache)
 void program_wait(const Program* p);
 uint64_t program_cache_stamp();   // (what the kept programs and pipelines are good for)
+bool pipelines_stamp_ok(uint64_t stamp);   // (a pipeline-side file of this translator, any program cache format up to this one)
 /// (longshot) RX_VK_MESH_FB_LAYOUT, read once (mesh_mode.h mesh_rule::fb_layout): the compute fallback's record layout
 uint32_t mesh_fallback_layout();
 size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted, const std::function<void(Program&)>& fn,
@@ -163,6 +166,15 @@ bool program_cache_complete_graphics(const Program& p);
 /// (longshot) Lets go of the VkShaderModules of ready programs whose pipelines are built and whose stages can be remade from
 /// longshot_programs.bin (or are compute stages that need no another pipeline); returns how many modules were destroyed
 size_t program_cache_drop_modules();
+/// (longshot) A graphics program the load at create just read (vk_programs.cpp load_work), every noted pipeline of its variant built
+/// from the caches: its vertex and fragment modules let go now, as program_cache_drop_modules lets a precompiled one's go, where
+/// every stage can be remade from longshot_programs.bin (program_cache_complete_graphics, on the worker that builds a new state
+/// variant in play). Not a fallback program's, not one already let go under another program. Returns the modules destroyed
+size_t program_cache_drop_loaded(Program& p);
+/// (longshot) Whether the load at create lets its programs' modules go (RX_VK_DROP_LOADED_MODULES: 1 on, 0 off; on by default)
+bool drop_loaded_modules_on();
+/// (longshot) Modules made again for programs whose modules were let go (program_cache_complete_graphics), for the log
+int64_t program_cache_remade();
 /// (longshot) precompile_run built p's noted graphics pipelines before the title: program_cache_drop_modules may let its graphics
 /// modules go (an un-noted program or variant keeps them for its first draw in play)
 void program_cache_note_built(const Program& p);

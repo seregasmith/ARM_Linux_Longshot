@@ -66,7 +66,8 @@ class PlayerBuildFromTheAppImage(unittest.TestCase):
         for probe in ("vulkanheaders/v1/include/vulkan/vulkan.h", "spirv-headers/v1/include/spirv/unified1/spirv.h",
                       "vulkanmemoryallocator/v1/include/vk_mem_alloc.h"):
             (t / "usr/share/longshot/cpm" / probe).parent.mkdir(parents=True, exist_ok=True)
-            (t / "usr/share/longshot/cpm" / probe).write_text("")
+            # (VMA's names VMA 3.1's vmaGetAllocationInfo2: nx2/build.py takes no older VMA)
+            (t / "usr/share/longshot/cpm" / probe).write_text("vmaGetAllocationInfo2\n" if probe.endswith("vk_mem_alloc.h") else "")
         (self.root / "home").mkdir()
 
     def test_starts_from_the_packaged_tree(self):
@@ -154,7 +155,8 @@ class TheChecksAreWired(unittest.TestCase):
         self.assertRegex(script, r'\ncp -a nx2 host scripts LICENSE README.md assets tools.lock "\$T/"\n')
         build = (ROOT / "nx2/build.py").read_text(encoding="utf-8")
         self.assertNotIn("prebuilt_renderer", build)
-        self.assertIn("build_vk = a.standalone and vk_headers and spirv_headers and vma_headers", build)
+        # (RX_GAME_ONLY, a dev build of the game alone, is the one other thing that leaves the renderer out)
+        self.assertIn("build_vk = a.standalone and not game_only and vk_headers and spirv_headers and vma_headers", build)
 
     def test_the_test_sets_what_apprun_sets(self):
         # (AppRun's own variables, and the build tools' that linux_tools.py prints for it)

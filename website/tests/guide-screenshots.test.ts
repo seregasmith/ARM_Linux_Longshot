@@ -46,11 +46,12 @@ test('canonical guide images resolve to this site, with descriptive alt text', a
     const { markdown } = await renderPage(page);
     const { code } = await (await createMarkdownProcessor()).render(markdown);
     for (const file of files) {
-      assert.ok(markdown.includes(`/docs/images/guide/${file}`), `${page}: ${file}`);
+      const asset = `/docs/user/images/guide/${file}`;
       const image = markdown.split('\n').find(line => line.includes(file) && line.trimStart().startsWith('!['));
-      assert.match(image ?? '', /^\s*!\[[^\]]{20,}\]\(\/docs\/images\/guide\//);
-      assert.ok(!image?.includes('git.magicbean.dev'));
-      assert.ok(code.includes(`href="/docs/images/guide/${file}"`), `${file}: full-size link`);
+      assert.match(image ?? '', /^\s*!\[[^\]]{20,}\]\(/, `${file}: descriptive alt text`);
+      assert.ok(image?.trim().endsWith(`(${asset})`), `${file}: canonical image path`);
+      assert.ok(code.includes(`src="${asset}"`), `${file}: rendered image`);
+      assert.ok(code.includes(`href="${asset}"`), `${file}: full-size link`);
     }
   }
 });

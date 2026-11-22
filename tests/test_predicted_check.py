@@ -43,7 +43,7 @@ def main():
                        "the check asks under FAIL_ON_PIPELINE_COMPILE_REQUIRED on a device without pipelineCreationCacheControl"),
                       ('if (env_on("LONGSHOT_PREPARE_ONLY")) return;',
                        "a --prepare-shaders run starts the check on a thread that would race its exit"),
-                      ("head[0] == program_cache_stamp()", "a sample of another translator or cache format is asked"),
+                      ("pipelines_stamp_ok(head[0])", "a sample of another translator is asked"),
                       ("std::thread(", "the check holds up the start"),
                       ("THREAD_PRIORITY_IDLE", "the check competes with the game"),
                       ("vkCreatePipelineCache", "the check does not ask as play does (with a cache of its own)"),

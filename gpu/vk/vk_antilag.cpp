@@ -7,8 +7,8 @@
 // enabled whenever the device has it, so the row needs no restart: enabled alone it does nothing.
 //
 // With frame generation on, the frames are shown by its display thread (vk_framegen.cpp display_main), a set of made frames
-// and the game's for each game frame, later than the game thread's next input stage. As NVIDIA Reflex's markers there
-// (#2118), each set keeps the game frame it was made at (antilag_frame), and only the set's game frame gives that frame's
+// and the game's for each game frame, later than the game thread's next input stage. As NVIDIA Reflex's markers there,
+// each set keeps the game frame it was made at (antilag_frame), and only the set's game frame gives that frame's
 // present stage (antilag_present_frame); the made frames' presents give none.
 //
 // As with Reflex, the input stage stands for the game's simulation start only roughly: OoT simulates on its main thread and

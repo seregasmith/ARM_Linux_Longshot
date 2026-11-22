@@ -67,57 +67,24 @@ change puts you there at the next build.
 
 ## Content and source guards
 
-`content-sources.ts` lists the imported pages, each site path with the file it is made from. Edit their original files in `docs/`,
-`README.md` or `CONTRIBUTING.md`, not `src/content/docs/generated/`. Content preparation
-copies only the explicitly selected pages and artwork. Other relative references
-link to the team's Forgejo source tree; website instructions link to this fork branch. New internal documents are not automatically
-published.
-
-The System requirements page (`src/content/docs/requirements.mdx`) is a copy of the root README's "What you need":
-when one changes, change the other to match.
+`src/content-pages.ts` lists the pages made from the repository's own documents, each site path with the file it is
+made from (`docs/user/*.md` and `CONTRIBUTING.md`); `src/repo-docs/` renders them. Edit those files, not the site: only
+the listed pages are published, and their other relative links go to the Forgejo source tree.
 
 The progress board and the front page's release and activity panels are collected from Forgejo when the site is
 built; see `PROGRESS.md`.
 
-The reference manual, contributor guide and saves guide are generated directly from
-`README.md`, `CONTRIBUTING.md` and `docs/saves.md`. They have one maintained source;
-the generated copies are ignored by Git and rebuilt automatically. Historical
-acknowledgements and literal migration commands are preserved, not rebranded.
+Some pages get a presentation of their own, from their source text, keeping its anchors:
 
-The manual's presentation transform puts installation first, adds platform shortcuts
-and folds advanced reference sections into native disclosures. It preserves the
-source text and heading anchors; linked sections open automatically. Expand/collapse
-controls and print handling keep the full reference accessible. The getting-started
-guide uses cards while retaining its original source in `docs/`.
-
-The manual renders the README's minimum/recommended specs table; the System requirements page has its own copy
-(see above). Requirements without a published minimum or separate recommended tier are labelled explicitly; the table
-does not establish performance targets or replace GPU-status caveats.
-
-Save and update guides use Easy beans for everyday launcher steps and Advanced beans
-for optional reference details. Their canonical sources remain `docs/saves.md` and
-`docs/updates-and-saves.md`; generated cards and disclosures preserve existing anchors.
-
-The graphics guide imports choices and defaults from the README's in-game menu table
-at build time. Section names and order come from `gpu/vk/vk_menu.cpp`; mismatched,
-missing or malformed rows stop the build. No network request or running game is needed.
-Edit those original sources, not the generated cards. Restart badges reflect explicit
-README annotations; absence of a badge is not a promise about every build or mode.
-Search and section filters enhance native disclosures; without JavaScript every card
-remains available. Setting links clear filters and printing includes the whole catalogue.
-
-The tested-configurations catalogue (`/tested-configurations/`) is assembled by the same repository-doc loader from
-`docs/tested-configurations.md` and the new run files under `docs/tested/`. The earlier rows stay on the source page,
-in their original order; only new runs are fragments. Assembly reads local files and uses the existing Markdown
-pipeline, with no generated source page, extra package or network request. Development watches fragment additions,
-edits and removals. The site's existing neutral-prose policy changes displayed wording only, not links, inline code or
-the source records; the source page remains available on Forgejo.
-
-Common issues uses seven symptom cards with short checklists and a nested “Still stuck?”
-disclosure for reporting details, issue search and Discord. The steps and links remain
-in `docs/common-issues.md`; `format-common-issues.mjs` supplies presentation labels only.
-Existing topic anchors open their cards through the shared manual navigation. Native
-disclosures work without JavaScript, and the shared print handling expands every card.
+- **Install** (`docs/user/getting-started.md`): each section a card, with the launcher's channel picker.
+- **Settings** (`docs/user/graphics-and-controls.md`): its table of every menu row (choices and defaults) becomes a
+  card a setting, with the help, sections, order and restart flags from `gpu/vk/vk_menu.cpp`. A row missing, extra,
+  out of order or without the condition the menu shows it under stops the build. Search and section filters enhance
+  native disclosures; without JavaScript every card is there, and printing includes the whole catalogue.
+- **Help** (`docs/user/common-issues.md`): a `##` group for each moment a problem shows up, each `###` problem ending in
+  a line of report searches, then "Still stuck?". `format-common-issues.ts` adds presentation labels only; the old
+  topic anchors open their cards.
+- **Transfer a save** (`docs/user/saves.md`): wrapped for its screenshots.
 
 ## Validation and limits
 
@@ -146,15 +113,15 @@ notes and chat. Forgejo's `/releases/latest` covers stable only; these cover eac
 | Link | Goes to |
 |---|---|
 | `/download` | a page: the launcher for the visitor's system (by its User-Agent), from the best channel there is, and every channel |
-| `/download/launcher/<os>` | that file of the best channel there is: stable, else rc, else nightly |
-| `/download/launcher/<channel>` | the newest release page of `stable`, `rc` or `nightly` |
+| `/download/launcher/<os>` | that file of the best channel there is: stable, else nightly |
+| `/download/launcher/<channel>` | the newest release page of `stable` or `nightly` (`rc`, the channel there was, goes to stable) |
 | `/download/launcher/<channel>/<os>` | that file of the channel's newest release, such as `/download/launcher/stable/windows` |
 | `/download/launcher/versions.json` | the available launcher versions and their exact file links, using the same channel rules and cached release list |
 
 `<os>` is `windows` (`…-windows-x64-setup.exe`), `windows-portable` (`…-windows-x64-portable.zip`) or `linux`
 (`…-x86_64.AppImage`). A link is a `302` to the file on git.magicbean.dev; a channel or file that isn't there is a `404`
 page that says so and names the newest launcher there is. The channels follow the launcher's own rules
-(`Core/ReleaseManifest.cs`, `scripts/release.py newest`), and the release list is kept 60 seconds.
+(`Core/ReleaseManifest.cs`, `scripts/release.py newest` in MagicBeanDev/Tooling), and the release list is kept 60 seconds.
 `npx wrangler dev` (after `npm run build`) serves the site with the Worker; `tests/download.test.ts` checks the channel
 rules.
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 # dav1d for the Windows game, in the CPM cache layout nx2/build.py reads: <cpm>/dav1d/<version>/{include,lib/libdav1d.a}.
 # The CPM cache's FFmpeg has no AV1 decoder, so without it OoT's AV1 movies go to Media Foundation, the software decoder of
-# Microsoft's AV1 Video Extension (a Store download where it is missing), and stutter behind their sound (issue 2316). With
+# Microsoft's AV1 Video Extension (a Store download where it is missing), and stutter behind their sound. With
 # it, host/dav1d_av1.c decodes them, as dav1d does on Linux. Built with llvm-mingw (the builder's own compiler: LONGSHOT_MINGW),
 # static, from the same dav1d release and source tree as scripts/linux/deps.sh pins. Runs on Linux or in MSYS2.
 #
@@ -9,7 +9,7 @@
 #
 # CI does not run it: the Windows builder gets dav1d from tools.lock's CPM cache (the cpm package), and build-windows.yml
 # checks that package's dav1d under Wine. This is how a maintainer makes the package's dav1d, then adds it with
-# scripts/tools.py assemble cpm --add <cpm folder> (RELEASING.md, "Bump a tool").
+# scripts/tools.py assemble cpm --add <cpm folder> (docs/dev/reference/releases.md, "Bumping a tool").
 #
 # Needs meson, ninja and nasm 2.15 or newer (--reproducible: no time stamps in its objects). Prints the SHA-256 of the library
 # it made: the same pins, llvm-mingw and nasm give the same file.
@@ -17,7 +17,10 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 MINGW=${LONGSHOT_MINGW:?set LONGSHOT_MINGW to an llvm-mingw folder (the ucrt-x86_64 build)}
 CPM=${1:-${RX_CPM:-$PWD/build-windows/cpm}}
+# (deps.sh's pins and its tree_is, which pins a tag archive by what it unpacks to: one copy of each, tests/test_linux_deps_pins.py)
 eval "$(grep -E '^(DAV1D_VER|DAV1D_TREE)=' scripts/linux/deps.sh)"
+eval "$(sed -n '/^tree_is() {/,/^}$/p' scripts/linux/deps.sh)"
+declare -F tree_is >/dev/null || { echo "dav1d.sh: no tree_is in scripts/linux/deps.sh"; exit 1; }
 OUT=$CPM/dav1d/$DAV1D_VER
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
@@ -32,13 +35,8 @@ fetch_dav1d "https://code.videolan.org/videolan/dav1d/-/archive/$DAV1D_VER/dav1d
     { echo "dav1d.sh: code.videolan.org failed: trying the GitHub mirror"
       fetch_dav1d "https://github.com/videolan/dav1d/archive/refs/tags/$DAV1D_VER.tar.gz"; }
 mkdir -p "$WORK/src" && tar -xzf "$WORK/dav1d.tar.gz" -C "$WORK/src" --strip-components=1
-# (GitLab's tag archives are made on demand: pinned by what they unpack to, as scripts/linux/deps.sh's tree_is)
-other=$(find "$WORK/src" ! -type f ! -type d -print -quit)
-got=$(cd "$WORK/src" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
-if [ -n "$other" ] || [ "$got" != "$DAV1D_TREE" ]; then
-    echo "dav1d-$DAV1D_VER.tar.gz: not the expected files (${other:+$other is not a file; }SHA-256 $got, expected $DAV1D_TREE)"
-    exit 1
-fi
+# (GitLab's tag archives are made on demand: pinned by what they unpack to. tree_is removes $DL/<download> when it differs)
+DL=$WORK tree_is "$WORK/src" "$DAV1D_TREE" dav1d.tar.gz
 
 # (no time stamps in the objects, so the same pins make the same library: clang's with -mno-incremental-linker-compatible,
 # nasm's with --reproducible. nasm through a wrapper: dav1d's meson.build finds it with find_program, which keeps the

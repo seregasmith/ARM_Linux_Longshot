@@ -27,7 +27,7 @@ over packages (control section and code area) built here:
   each branch lands on its target, and the address map finds both;
 - 12.8 MB programs whose branches and call are more than 8 MiB of lowered code apart: JMP and JCAL, each holding its
   target's address, the predicate kept.
-Then the three other copies of the capture loop (the bake tools, shadertool) end before the word too, not at it.
+Then the capture loop's text is checked: it ends before the word (drops it and stops), not refusing the program at it.
 
 python -I -B tests/test_capture_past_end.py [--cxx clang++] [--source <checkout>]
 """
@@ -265,11 +265,11 @@ int main() {
 }
 """
 
-CALLERS = ("gpu/shaderbatch.cpp", "nx2/bake_ds/bake_ds.cpp", "gpu/shadertool.cpp", "gpu/vk/vk_shader.cpp")
+CALLERS = ("gpu/vk/vk_shader.cpp",)
 
 
 def callers(root):
-    """Every capture loop ends before the word (drops it and stops) instead of refusing the program at it"""
+    """The capture loop ends before the word (drops it and stops) instead of refusing the program at it"""
     bad = []
     for name in CALLERS:
         text = (root / name).read_text(encoding="utf-8")
@@ -314,7 +314,7 @@ def main():
         print("FAIL: " + b)
     if run.returncode or bad:
         raise SystemExit("FAIL: a word past the program's end that reads as a branch outside it")
-    print("PASS: every capture loop ends before such a word")
+    print("PASS: the capture loop ends before such a word")
 
 
 if __name__ == "__main__":

@@ -119,11 +119,11 @@ uint32_t compute_ssbo_table(const NvnState& s, uint32_t* count, uint32_t* layout
     return l.ssbo_at();
 }
 
-/// (longshot, #940) For the seed's compute programs (vk_shader.cpp seed_compute), whether c0+offset holds a buffer's address in play:
+/// (longshot) For the seed's compute programs (vk_shader.cpp seed_compute), whether c0+offset holds a buffer's address in play:
 /// the address word of an entry of the uniform or storage buffer table its control section lays out. Nothing is bound before the
 /// game, so the storage buffer pass's port (EDEN_NX2_GM_LEGACY=0), which binds an access to a pointer only when that pointer is
-/// mapped (Env::IsCbufStorageBufferPointer), found none and left every access to the run-time search, under the key play then used
-/// the program by. Answered from the layout, the prepared program comes out as play translates it
+/// mapped (Env::IsCbufStorageBufferPointer), would find none and leave every access to the run-time search, under the key play then
+/// uses the program by. Answered from the layout, the prepared program comes out as play translates it
 bool seed_cs_buffer_word(uint32_t offset) {
     if (!seed_cs_control || (offset & 15)) return false;
     const CsLayout l = cs_layout_of(seed_cs_control + 0x58);
@@ -137,8 +137,7 @@ const void* descriptor_ok(const void* p, size_t n) {
     if (q >= base && q + n <= base + host->guest_size()) return p;
     // (the host's own copies: registrations made before the renderer started, kept by host/rx_backend.c. A registration's
     // pointer is a host pointer, never a GPU address: asked as one (host->gpu_ptr), a heap address between 16 MB and 512 GB,
-    // as Windows gives them, named guest memory, and the registration was copied from there, all zero: the game's sampler
-    // 258 filtered nearest and texture slot 0x102 had no image, issue 1117's blocky halos)
+    // as Windows gives them, names guest memory, and the registration would be copied from there, all zero: blocky halos)
     MEMORY_BASIC_INFORMATION mi{};
     if (VirtualQuery(p, &mi, sizeof mi) == sizeof mi && mi.State == MEM_COMMIT &&
         (mi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY)) && !(mi.Protect & PAGE_GUARD) &&

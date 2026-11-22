@@ -1,10 +1,10 @@
-"""The profile readers (scripts/prof.py, crit.py, hotlist.py) name frames from both builds.
+"""The profile readers (scripts/perf.py; scripts/profiling/symbols.py names the frames) name frames from both builds.
 
 Windows samples name longshot.exe / longshot_vk.dll, read through the linker maps; Linux samples name longshot /
-longshot_vk.so, read through the binaries' own symbols (nm). Before, the Linux names were unknown: crit.py counted every
-Linux thread as never running (0.0%) and named nothing. A small position-independent executable called longshot prints
-its functions' offsets from its load address, as a sample has them; crit.py and hotlist.py must name and count them. A
-synthetic linker map checks the Windows path. The ELF part needs a C compiler and nm (skipped without them).
+longshot_vk.so, read through the binaries' own symbols (nm). Before, the Linux names were unknown: the threads reader
+counted every Linux thread as never running (0.0%) and named nothing. A small position-independent executable called
+longshot prints its functions' offsets from its load address, as a sample has them; perf.py threads and hotlist must
+name and count them. A synthetic linker map checks the Windows path. The ELF part needs a C compiler and nm (skipped without them).
 python -I -B tests/test_prof_symbols.py [--cc gcc]
 """
 import argparse
@@ -35,11 +35,12 @@ int main(void) {
 '''
 
 
-def run(script, args, maps):
+def run(command, args, maps):
     env = dict(os.environ, RX_MAPS=str(maps))
-    r = subprocess.run([sys.executable, "-I", str(SCRIPTS / script)] + args, capture_output=True, text=True, env=env)
+    r = subprocess.run([sys.executable, "-I", str(SCRIPTS / "perf.py"), command] + args, capture_output=True, text=True,
+                       env=env)
     if r.returncode:
-        raise SystemExit("FAIL: %s exited %d:\n%s%s" % (script, r.returncode, r.stdout, r.stderr))
+        raise SystemExit("FAIL: perf.py %s exited %d:\n%s%s" % (command, r.returncode, r.stdout, r.stderr))
     return r.stdout
 
 
@@ -58,11 +59,11 @@ def windows_map(tmp):
         " 0001:00000100       f_80002400                 0000000140001100 f   code.obj\n")
     samples = tmp / "win_all.txt"
     samples.write_text("".join("%d sead::MainThread|longshot.exe+1010;longshot.exe+1110\n" % (2 * i) for i in range(1, 6)))
-    out = run("crit.py", [str(samples)], maps)
-    check("100.0%  sead::MainThread" in out, "crit.py: the Windows main thread runs in every sample\n" + out)
+    out = run("threads", [str(samples)], maps)
+    check("100.0%  sead::MainThread" in out, "threads: the Windows main thread runs in every sample\n" + out)
     hot = tmp / "win_hot.txt"
-    run("hotlist.py", [str(samples), str(hot)], maps)
-    check(hot.read_text().split()[0] == "f_80002000", "hotlist.py: the innermost lifted function from the map, first")
+    run("hotlist", [str(samples), str(hot)], maps)
+    check(hot.read_text().split()[0] == "f_80002000", "hotlist: the innermost lifted function from the map, first")
 
 
 def linux_elf(tmp, cc):
@@ -85,24 +86,24 @@ def linux_elf(tmp, cc):
         lines.append("%d Presentation_Thread|libc.so.6+98d61;longshot+%x\n" % (2 * i, probe + 4))
     samples = tmp / "linux_all.txt"
     samples.write_text("".join(lines))
-    out = run("crit.py", [str(samples)], maps)
-    check("100.0%  sead::MainThread" in out, "crit.py: a Linux thread in longshot is running\n" + out)
-    check("0.0%  Presentation_Thread" in out, "crit.py: a Linux thread in libc is blocked\n" + out)
+    out = run("threads", [str(samples)], maps)
+    check("100.0%  sead::MainThread" in out, "threads: a Linux thread in longshot is running\n" + out)
+    check("0.0%  Presentation_Thread" in out, "threads: a Linux thread in libc is blocked\n" + out)
     hot = tmp / "linux_hot.txt"
-    run("hotlist.py", [str(samples), str(hot)], maps)
-    check(hot.read_text().split()[0] == "f_80001000", "hotlist.py: the lifted function named from the ELF symbols, first")
+    run("hotlist", [str(samples), str(hot)], maps)
+    check(hot.read_text().split()[0] == "f_80001000", "hotlist: the lifted function named from the ELF symbols, first")
     sys.path.insert(0, str(SCRIPTS))
-    import prof
-    addrs, names = prof.load_symbols(str(maps))["longshot"]
+    from profiling import symbols
+    addrs, names = symbols.load_symbols(str(maps))["longshot"]
     check("prof_symbol_probe" in names and addrs[names.index("prof_symbol_probe")] == probe,
-          "prof.load_symbols: the symbol's offset is the one a sample gives")
+          "symbols.load_symbols: the symbol's offset is the one a sample gives")
 
 
 def main():
     from unittest.mock import patch
     from types import SimpleNamespace
     sys.path.insert(0, str(SCRIPTS))
-    import prof
+    from profiling import symbols as profiling_symbols
     symbols = [
         "mkwvk::(anonymous namespace)::build_descriptors(int)",
         "mkwvk::(anonymous namespace)::texture_view_of(unsigned int)",
@@ -111,8 +112,8 @@ def main():
     ]
     output = "\n".join("%016x t %s" % (0x1000 + i * 16, name)
                        for i, name in enumerate(symbols))
-    with patch.object(prof.subprocess, "run", return_value=SimpleNamespace(stdout=output)):
-        addresses, names = prof.load_elf("synthetic.so")
+    with patch.object(profiling_symbols.subprocess, "run", return_value=SimpleNamespace(stdout=output)):
+        addresses, names = profiling_symbols.load_elf("synthetic.so")
     check(names == symbols and addresses == [0x1000, 0x1010, 0x1020, 0x1030],
           "anonymous namespace functions and overloaded operators keep distinct names")
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])

@@ -544,8 +544,8 @@ def wiring(root, tap, mutation):
     main_c = (root / "host" / "hos_main.c").read_text(encoding="utf-8")
     patches = (root / "nx2" / "oot_patches.py").read_text(encoding="utf-8")
     control = (root / "host" / "control.c").read_text(encoding="utf-8")
-    docs = (root / "docs" / "development.md").read_text(encoding="utf-8")
-    protocol = (root / "docs" / "control.md").read_text(encoding="utf-8")
+    docs = (root / "docs" / "dev" / "developing.md").read_text(encoding="utf-8")
+    protocol = (root / "docs" / "dev" / "reference" / "control-bridge.md").read_text(encoding="utf-8")
     lift = block(main_c, "void hos_oot_lift_player(Ctx *c, uint64_t actor) {")
     if mutation == "hook":
         lift = lift.replace("hos_oot_state_tap(actor);", "")
@@ -557,7 +557,7 @@ def wiring(root, tap, mutation):
     check("HOS_CONTROL_MEM" in protocol and "GameDataMgr" in protocol, "flag access boundary is not documented")
     for name in ("oot_sample_ask", "oot_sample_cancel", "oot_sample", "oot_watch", "oot_poll"):
         check(".%s = hos_%s" % (name, name) in control, "production control callback missing: " + name)
-    check("control.md" in docs, "development guide no longer points to the control protocol")
+    check("control-bridge.md" in docs, "docs/dev/developing.md no longer points to the control bridge's page")
     for name in ("oot", "flags", "changes", "every", "game", "frame"):
         check("`%s`" % name in protocol or '"%s"' % name in protocol, "control protocol does not describe " + name)
 
@@ -1211,7 +1211,7 @@ def main():
     body = body.replace("budget--;", "budget--; scan_visits++; scan_probe();")
     body = body.replace("static int state_scan(uint64_t mgr, StateChanges *out) {",
                         "static int state_scan(uint64_t mgr, StateChanges *out) { scan_calls++;")
-    spec = importlib.util.spec_from_file_location("state_tap_client", ROOT / "scripts" / "longshot_ctl.py")
+    spec = importlib.util.spec_from_file_location("state_tap_client", ROOT / "scripts" / "longshot_bridge.py")
     client_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(client_module)
     windows = os.name == "nt"

@@ -6,7 +6,7 @@ is left out of the list does nothing for the programs already cached (RX_VK_NO_I
 such a case once, and several of the storage buffer pass's switches until this check). Read every
 RX_VK_ name the translator (gpu/vk/eden/shader_recompiler) reads, and the translation's own switches in vk_shader.cpp,
 and check each against the stamp's list. A name that is no longer a switch (a GONE row of gpu/vk/switches.def) is passed
-over by the stamp, live and in nx2/bake_ds, so a run that still sets one keeps its cache. No game or GPU is needed.
+over by the stamp, so a run that still sets one keeps its cache. No game or GPU is needed.
 """
 import argparse
 import re
@@ -64,19 +64,11 @@ def main():
     if missing:
         raise SystemExit("switches that change the translation but not the program cache's stamp (vk_shader.cpp translator_stamp):\n" +
                          "\n".join("  %s (%s)" % m for m in missing))
-    # (nx2/bake_ds computes the same stamp offline: its copy of the list is the live one)
-    bake = (args.source / "nx2" / "bake_ds" / "bake_ds.cpp").read_text(encoding="utf-8")
-    bake_loop = bake[bake.index("for (char** e = environ;"):]
-    bake_prefixes = re.findall(r'"([A-Z0-9_]+)"', bake_loop[:bake_loop.index("add(*e")])
-    if bake_prefixes != prefixes:
-        raise SystemExit("nx2/bake_ds/bake_ds.cpp's stamp list differs from vk_shader.cpp translator_stamp's:\n  bake_ds %s\n  live    %s"
-                         % (bake_prefixes, prefixes))
-    # (a removed switch is none of the stamp's, in both: the names are passed over before the list is asked)
-    for what, text in (("vk_shader.cpp translator_stamp", loop[:loop.index("add(*e")]),
-                       ("nx2/bake_ds/bake_ds.cpp disk_stamp", bake_loop[:bake_loop.index("add(*e")])):
-        if "switches::find_gone(" not in text or "continue;" not in text:
-            raise SystemExit("%s hashes a set name that is no longer a switch (switches.def's GONE rows): a run that still sets "
-                             "one would get a program cache of its own for nothing" % what)
+    # (a removed switch is none of the stamp's: the names are passed over before the list is asked)
+    text = loop[:loop.index("add(*e")]
+    if "switches::find_gone(" not in text or "continue;" not in text:
+        raise SystemExit("vk_shader.cpp translator_stamp hashes a set name that is no longer a switch (switches.def's GONE rows): "
+                         "a run that still sets one would get a program cache of its own for nothing")
     gone = set(re.findall(r'^GONE\((RX_VK_[A-Z0-9_]+),', (args.source / "gpu" / "vk" / "switches.def").read_text(encoding="utf-8"), re.M))
     listed_gone = sorted(gone & set(prefixes))
     if listed_gone:

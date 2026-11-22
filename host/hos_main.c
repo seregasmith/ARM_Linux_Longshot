@@ -20,16 +20,18 @@
 #include "game_layout.h"
 #include "options_path.h"
 #include "hos_wide_size.h"   /* (the widescreen picture's size, shared with the Insert menu) */
+#include "ws_floor.h"        /* (the game's memory kept in RAM: HOS_WS_FLOOR_MB) */
 #include "../gpu/vk/vk_api.h"
 #include "../gpu/vk/oot_cheat_items.h"
+#include "oot_teleport_check.h"   /* (the teleport's follow-up: a dropped request sent again) */
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifndef LONGSHOT_VERSION   /* (nx2/build.py gives it: the release and a fingerprint of the sources, nx2/version.py) */
-#define LONGSHOT_VERSION "unknown"
+const char *hos_version(void);   /* (host/version.c: the one file nx2/build.py gives the version to) */
+#ifndef LONGSHOT_VERSION   /* (a test that cuts a piece of this file out may give its own) */
+#define LONGSHOT_VERSION hos_version()
 #endif
-const char *hos_version(void) { return LONGSHOT_VERSION; }   /* (discord_rpc.c's status) */
 
 #if defined(_WIN32) || defined(__EMSCRIPTEN__)
 #define WIN32_LEAN_AND_MEAN
@@ -117,6 +119,22 @@ static void no_power_throttling(void) {
         s.control = 0x1;
         set(GetCurrentProcess(), 4, &s, sizeof s);
     }
+}
+#endif
+
+#ifdef _WIN32
+/* (longshot) The game's memory kept in RAM under memory pressure: a soft working-set minimum (host/ws_floor.h, HOS_WS_FLOOR_MB) */
+static void ws_floor(void) {
+    uint64_t mb, ram_mb;
+    unsigned long err;
+    const int r = ws_floor_apply(getenv("HOS_WS_FLOOR_MB"), &mb, &ram_mb, &err);
+    if (r > 0)
+        hos_log("mem: the working set's minimum is %llu MB of the PC's %llu MB: Windows keeps that much of the game in RAM before "
+                "it trims below it (HOS_WS_FLOOR_MB=0: Windows' own)", (unsigned long long)mb, (unsigned long long)ram_mb);
+    else if (!r)
+        hos_log("mem: the working set's minimum is Windows' own (HOS_WS_FLOOR_MB=0)");
+    else
+        hos_log("mem: a working set minimum of %llu MB was refused (error %lu): Windows' own stays", (unsigned long long)mb, err);
 }
 #endif
 
@@ -211,7 +229,7 @@ static int reserve_guest(void) {
                     warned = 1;
                     const char *warning = "WARNING: /dev/udmabuf permission denied; GPU imports may be slower, especially on AMD/RADV. "
                         "Ask your administrator for access via its device group or a device-specific udev rule "
-                        "(see README, On Linux). Do not run the game as root.";
+                        "(see https://longshot.magicbean.dev/settings/advanced/, udmabuf). Do not run the game as root.";
                     if (startup_stderr >= 0) dprintf(startup_stderr, "%s (%s)\n", warning, strerror(err));
                     hos_log("%s (%s)", warning, strerror(err));
                 }
@@ -219,7 +237,7 @@ static int reserve_guest(void) {
             if (startup_stderr >= 0) close(startup_stderr), startup_stderr = -1;
             if (u >= 0) {
                 close(u);
-                /* (issue 1135) usable whatever size_limit_mb says: the renderer reads the limit itself and takes udmabuf's
+                /* usable whatever size_limit_mb says: the renderer reads the limit itself and takes udmabuf's
                    default, 64 MB, when it can't (gpu/vk/vk_memory.cpp import_dma_buf), and a limit too small only makes more
                    dma-bufs. A Flatpak's or Steam's container shows /dev/udmabuf but not /sys/module */
                 FILE *f = fopen("/sys/module/udmabuf/parameters/size_limit_mb", "r");
@@ -255,9 +273,9 @@ static int reserve_guest(void) {
     if (mmap((void *)A64_HOST_BASE, GUEST_SPACE, PROT_READ | PROT_WRITE,
              MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE | MAP_NORESERVE, -1, 0) != (void *)A64_HOST_BASE)
         return 0;
-    /* (issue 312) no transparent huge pages in the guest window: the renderer imports its pools as userptr memory, and every
+    /* no transparent huge pages in the guest window: the renderer imports its pools as userptr memory, and every
        collapse khugepaged makes in them changes their mappings, which the kernel answers by pinning the pages again at the
-       next submission: ~250 ms a submit on RADV while the GPU sat idle. HOS_THP=1: as before */
+       next submission: ~250 ms a submit on RADV while the GPU sits idle. HOS_THP=1: allowed */
     if (!env_on("HOS_THP")) madvise((void *)A64_HOST_BASE, GUEST_SPACE, MADV_NOHUGEPAGE);
 #ifdef __linux__
     /* (HOS_NO_THP=1, experiment: none outside the window either. With THP "always" 400-450 MB of the host heap's and the binary's bss are huge
@@ -399,10 +417,21 @@ static void delete_tree(const char *p) {
     }
     RemoveDirectoryA(p);
 }
+static int save_work_pending(const char *beside) {
+    char pattern[MAX_PATH];
+    if (snprintf(pattern, sizeof pattern, "%s" SEP_S "save-work" SEP_S "*.journal", beside) >= (int)sizeof pattern) return 1;
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h != INVALID_HANDLE_VALUE) { FindClose(h); return 1; }
+    const DWORD e = GetLastError();
+    return e != ERROR_FILE_NOT_FOUND && e != ERROR_PATH_NOT_FOUND;
+}
 static const char *saves_dir(const char *beside) {
     static char dir[MAX_PATH];
     const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
     if (is_link(beside)) return beside;
+    /* (a pending journal belongs with C; let the next save mount finish recovery before moving C) */
+    if (save_work_pending(beside)) return beside;
     if (xdg && xdg[0] == '/') snprintf(dir, sizeof dir, "%s", xdg);
     else if (home && home[0] == '/') {
         snprintf(dir, sizeof dir, "%s/.local", home);
@@ -429,7 +458,7 @@ static const char *saves_dir(const char *beside) {
         HANDLE h = FindFirstFileA(pattern, &fd);
         if (h == INVALID_HANDLE_VALUE) return dir;
         do {
-            if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..") || (move && kept)) continue;
+            if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..") || !strcmp(fd.cFileName, "save-work") || (move && kept)) continue;
             char from[MAX_PATH], to[MAX_PATH];
             snprintf(from, sizeof from, "%s" SEP_S "%s", beside, fd.cFileName);
             snprintf(to, sizeof to, "%s" SEP_S "%s", dir, fd.cFileName);
@@ -1063,6 +1092,9 @@ static struct {
     unsigned destination;
     const char *why, *banc;   /* (the last call's: why it was not sent, the map it was sent to; the control bridge's reply) */
     uint64_t result;          /* (and the event manager's answer to the request: 0 seen when the map did not change) */
+    int resent;               /* (the follow-up sent this request again: not a third time) */
+    const char *pending;      /* (the map of the last request sent, which the follow-up checks: a later call that is
+                                 refused clears banc, the bridge's reply, and must not cancel this one's retry) */
 } teleport;
 
 static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
@@ -1156,7 +1188,7 @@ static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
         release_link(c);
     }
     *c = saved;
-    /* (issues 2217, 2588) A map-hiding area can leave this saved flag set when a debug teleport skips its exit.
+    /* A map-hiding area can leave this saved flag set when a debug teleport skips its exit.
        Only clear it once the event manager takes the request; the destination may hide its own minimap.
        Use the game's Bool setter (mgr, value, hash): it queues the change for the live value AND the save's copy.
        Writing only the live byte restores the HUD until the next load, but saves keep the old hidden value. */
@@ -1176,7 +1208,9 @@ static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
     }
     teleport.requested_at = now;
     teleport.check_at = now + 1500000000LL;
+    teleport.resent = 0;   /* (a new request: the follow-up may send it once more) */
     teleport.destination = index;
+    teleport.pending = ok ? banc : NULL;
     hos_log("cheats: teleport %s to %s at %s (boot %s, event %s, starter %d): request %s, result %#llx",
             child ? "child" : "adult", banc, start, boot, event, with_starter, ok ? "sent" : "not built",
             (unsigned long long)result);
@@ -1242,15 +1276,27 @@ static int oot_toggle_age(Ctx *c, uint64_t actor) {
     return 1;
 }
 
-static void oot_teleport_followup(Ctx *c) {
+static void oot_teleport_followup(Ctx *c, uint64_t actor) {
     if (!teleport.check_at || hos_now_ns() < teleport.check_at) return;
     teleport.check_at = 0;
-    char next[80], current[80];
+    char next[80] = "", current[80] = "";
     oot_gamedata_string(c, 0xee27bf71u, next, sizeof next);     /* Sequence_ReservedNextBanc */
     oot_gamedata_string(c, 0x1d6189dau, current, sizeof current);   /* Sequence_CurrentBanc */
     const uint64_t events = oot_singleton(c, OOT_EVENTMGR_SLOT);
-    hos_log("cheats: teleport check: reserved \"%s\", current \"%s\", event playing %d", next, current,
-            events && recomp_load64(c, events + 104) ? 1 : 0);
+    const int playing = events && recomp_load64(c, events + 104) ? 1 : 0;
+    int loading = 0;
+    oot_gamedata_bool(c, 0xef2b60c2u, &loading);   /* Sequence_IsLoadingBanc */
+    hos_log("cheats: teleport check: reserved \"%s\", current \"%s\", event playing %d", next, current, playing);
+    /* (dropped by the game, as a request a few frames after a save has loaded is: sent once more, the 8 s guard aside, so
+       the control bridge's wait for the map sees it arrive. oot_teleport_check.h) */
+    if (oot_teleport_dropped(next, current, teleport.pending, playing, loading, teleport.result, teleport.resent)) {
+        hos_log("cheats: teleport to %s dropped by the game (answered 0, nothing reserved, no event): sending it again",
+                teleport.pending);
+        teleport.requested_at = 0;
+        const int sent = oot_teleport(c, actor, teleport.destination);
+        teleport.resent = 1;   /* (oot_teleport set it for a new request: this one is the same) */
+        if (!sent) hos_log("cheats: teleport to %s: not sent again: %s", teleport.pending, teleport.why);
+    }
 }
 
 /* (longshot) the control bridge (host/control.c): the map the game is in (Sequence_CurrentBanc), read on the game's thread
@@ -1547,7 +1593,21 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
         if (asked & OOT_BRIDGE_AGE) action = OOT_AGE_ACTION, bridge_adult = asked & 1;
         else if (asked) action = OOT_TELEPORT_ACTION + asked - 1;
     }
-    oot_teleport_followup(c);
+    {   /* (longshot, issue 1113) an input recording's playback gives the recording's actions at their frame and takes none
+           of the player's (the menu's, HOS_INPUT_LIVE's, the bridge's, which is told so): host/input_movie.c */
+        int hos_input_movie_action(int live, int *dropped);
+        int dropped;
+        const int live = action;
+        action = hos_input_movie_action(live, &dropped);
+        if (dropped && bridge_ticket) {
+            teleport.why = "an input recording is playing: its own teleports and age switches are taken";
+            oot_bridge_teleport_done(bridge_ticket, 0);
+            bridge_ticket = 0;
+        }
+        if (action != live) bridge_adult = -1;   /* (the recording's age switch: a switch, as it was taken) */
+    }
+    int taken = action;   /* (what the game took, for an input recording: not an age switch to the age Link has) */
+    oot_teleport_followup(c, actor);
     oot_inventory_refresh(c, now);
     oot_player_speed(c, components);
     oot_map_refresh(c, now);
@@ -1558,6 +1618,7 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
         if (bridge_adult >= 0 && oot_gamedata_bool(c, 0xcea220d3u, &child) && !child == bridge_adult) {
             hos_log("cheats: age toggle: Link is the %s already", child ? "child" : "adult");
             oot_bridge_teleport_done(bridge_ticket, 2);
+            taken = 0;
         } else {
             const int sent = oot_toggle_age(c, actor);
             if (bridge_ticket) oot_bridge_teleport_done(bridge_ticket, sent);
@@ -1570,6 +1631,8 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     } else if (action >= 100 && action < 124) {
         oot_set_time(c, action - 100);
     }
+    void hos_input_movie_action_taken(int a);
+    hos_input_movie_action_taken(taken);   /* (recording: the action at its frame) */
     if (!flying && action != 2 && action != 3) return;
 
     // Follow OneShotPhysicsCctChangePosition to Link's controller.
@@ -1799,6 +1862,34 @@ int hos_oot_opening(Ctx *c, int mode) {
     return 0;
 }
 
+/* (longshot, issue 1113) HOS_INPUT_SYNC: Link put at a position through the game's own move of his character controller
+   (OneShotPhysicsCctChangePosition, as the Mark / Return cheats do: oot_update_player_cheats), so his physics body moves
+   with him; 0 when the controller or the move is not there */
+#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
+static int oot_put_link(Ctx *c, uint64_t components, const float pos[3]) {
+    const uint64_t controller = oot_player_controller(c, components);
+    if (!controller || recomp_load64(c, 0x84c54f10ULL + 0xe8) != 0x806d2530ULL) return 0;
+    A64Fn change_position = a64_lookup(0x806d2530ULL);
+    if (!change_position) return 0;
+    const Ctx saved = *c;
+    const uint64_t arg = c->x[31] - 16;
+    for (unsigned i = 0; i < 3; i++) {
+        uint32_t bits;
+        memcpy(&bits, &pos[i], sizeof bits);
+        recomp_store32_sp(c, arg + i * 4, bits);
+    }
+    recomp_store32_sp(c, arg + 12, 0);
+    c->x[31] = arg;
+    c->x[0] = controller;
+    c->x[1] = arg;
+    flight_pose_actor = 0;
+    flight_transform_controller = 0;
+    change_position(c);
+    *c = saved;
+    return 1;
+}
+#endif
+
 void hos_oot_lift_player(Ctx *c, uint64_t actor) {
 #if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
     flight_pose_actor = 0;
@@ -1808,6 +1899,9 @@ void hos_oot_lift_player(Ctx *c, uint64_t actor) {
     if (movement < HOS_HEAP_BASE + 0x1d50 || recomp_load64(c, movement + 24) != actor ||
         !hos_oot_is_player(c, movement - 0x1d50)) return;
     if (!oot_event_playing(c)) hos_oot_opening(c, 3);   /* the opening has let Link go: later events keep their own skip */
+    void hos_oot_note_link(uint64_t components);   /* host/oot_high_fps.c: his driven body's target above 60 fps (here, in the
+                                                     debug tools' block, as the player's other hooks: built on both) */
+    hos_oot_note_link(components);
 
     // Link can be updated by different guest workers on successive frames.
     static SRWLOCK cheats_lock = SRWLOCK_INIT;
@@ -1815,6 +1909,21 @@ void hos_oot_lift_player(Ctx *c, uint64_t actor) {
     oot_update_player_cheats(c, actor, components);
     void hos_oot_state_tap(uint64_t actor);   /* the control bridge's copied snapshot and per-connection samples */
     hos_oot_state_tap(actor);
+    /* (longshot, issue 1113) an input recording's marks and anchors, and a replay held to them: Link's position (+0x31c, as
+       the state tap reads it) after each update (host/input_movie.c); nothing read with nothing recorded or played */
+    int hos_input_movie_active(void);
+    if (hos_input_movie_active()) {
+        int hos_input_movie_link(const float pos[3], float to[3]);
+        float pos[3], to[3];
+        for (int i = 0; i < 3; i++) {
+            const uint32_t bits = (uint32_t)recomp_load32(c, actor + 0x31c + 4 * (uint64_t)i);
+            memcpy(&pos[i], &bits, 4);
+        }
+        if (hos_input_movie_link(pos, to) && !oot_put_link(c, components, to)) {   /* (HOS_INPUT_SYNC: put back) */
+            static int said;
+            if (!said++) hos_log("input: HOS_INPUT_SYNC: Link's character controller was not found: he is not put back");
+        }
+    }
     ReleaseSRWLockExclusive(&cheats_lock);
 #else
     (void)c;
@@ -1905,8 +2014,14 @@ float hos_aspect_ratio = 0;   /* (the window's default shape: host/display.c) */
 /* (nx2/oot_wide.py) read by the widescreen patches in the game's code; 0: the game's own 16:9 */
 volatile uint64_t hos_wide_out, hos_wide_scene;
 volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
-volatile uint32_t hos_wide_keep_mask = 0xf;   /* (nx2/oot_wide.py KEEP_VTABLES: the screens that keep the whole picture, a bit each; MkwVkHost.wide_menus) */
-/* (issues 1241, 2838) Swap can keep a small Linux PC from running out of backing storage without keeping it responsive.
+int hos_camera_trace_enabled(void) {
+    FILE *marker = fopen("camera-clearance.trace", "rb");
+    if (!marker) return 0;
+    fclose(marker);
+    return 1;
+}
+volatile uint32_t hos_wide_keep_mask = 0x1f;   /* (nx2/oot_wide.py KEEP_VTABLES and KEEP_ALSO: the screens that keep the whole picture, a bit each; MkwVkHost.wide_menus) */
+/* Swap can keep a small Linux PC from running out of backing storage without keeping it responsive.
    Warn below the existing 10 GiB floor in physical RAM there too; this is not a promise that 10 GiB is enough.
    The game starts anyway, and headless runs only log the warning. Windows keeps its commit-limit check. */
 #define HOS_MEMORY_NEEDED_MB 10240ull
@@ -1976,7 +2091,7 @@ static void driver_env_log(void) {
 }
 #ifdef _WIN32
 /* (longshot) On laptops with two GPUs, the drivers run a program on the dedicated one when it exports these (NVIDIA Optimus, AMD
-   PowerXpress): without them a laptop could put the game on its integrated GPU, 5 fps (issue 176) */
+   PowerXpress): without them a laptop could put the game on its integrated GPU, 5 fps */
 __declspec(dllexport) unsigned long NvOptimusEnablement = 1;
 __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 
@@ -2062,7 +2177,33 @@ static int game_main(int argc, char **argv) {
         }
 #endif
         HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
-        if (!err || err == INVALID_HANDLE_VALUE || GetFileType(err) == FILE_TYPE_UNKNOWN) {
+        const DWORD err_kind = (!err || err == INVALID_HANDLE_VALUE) ? FILE_TYPE_UNKNOWN : GetFileType(err);
+        /* Steam markers say the process came from Steam, not that its stderr is Steam's log pipe: the launcher's build
+           steps (nx2/make_game.py's run: stdout=PIPE, stderr merged into it, its lines read for @@progress and its
+           silence accounted) keep Steam's markers through game_env's filter, and their stderr is a pipe the builder
+           reads. A --prepare-shaders run is that builder subprocess, never a played game: its pipe stays the
+           builder's, the log gate does not fire for it. (An icon start under UNKNOWN still writes its log as always;
+           only the new PIPE arm steps aside for the build step.) */
+        int prepare_only = 0;
+        for (int i = 1; i < argc; i++)
+            if (!strcmp(argv[i], "--prepare-shaders")) prepare_only = 1;
+        /* (Steam's Gaming mode hands the game its own log pipe on stderr — measured on Deck hardware 2026-11-17: fd/2 is an
+           anonymous FIFO shared with Steam, drained into Steam's console-linux.txt. The player cannot see that sink, and a
+           Gaming-mode crash report came with no game log (#1259): the game saw "external stderr" and wrote no file, while
+           the report collector read the game folder's logs/ and found nothing. Steam's own pipe counts as
+           nowhere-to-log-to like /dev/null does: the game writes its own log, and the crash report's readlink of fd/2
+           then finds a regular file, exactly as in Desktop mode. Two things say this pipe is STEAM's rather than a
+           pipe the player chose or a developer's live stream: Steam's marker variables (SteamGameId/SteamAppId, set in
+           everything Steam starts, non-Steam games and the launcher's routed Play included), and stdin — Steam gives
+           the programs it starts /dev/null there (measured), while a developer's own terminal session has a tty and
+           keeps its live stream even with Steam's markers in the environment. A player's `game | tee` carries neither
+           marker; a terminal stderr streams; a redirect to a real file (DISK) is honored as it was) */
+        if (err_kind == FILE_TYPE_UNKNOWN
+#ifndef _WIN32
+            || (!prepare_only && err_kind == FILE_TYPE_PIPE &&
+                (getenv("SteamGameId") || getenv("SteamAppId")) && !isatty(STDIN_FILENO))
+#endif
+            ) {
             char path[MAX_PATH + 32];
             DWORD n = hos_game_path_a(path, MAX_PATH);
             while (n && path[n - 1] != 92 && path[n - 1] != 47) n--;
@@ -2099,6 +2240,13 @@ static int game_main(int argc, char **argv) {
     hos_log("longshot %s", LONGSHOT_VERSION);   /* (the log's first line: which build a report comes from) */
     const char *hos_report_run_id(void);
     hos_log("run_id: %s", hos_report_run_id());
+    hos_log_flush();   /* (the run's own boundary, on disk before anything written straight to stderr: on Windows
+                          hos_log batches up to 250 ms, and a fast start that fails right after (no image, a guest
+                          window that can't be reserved, an image that can't be opened) writes its line direct —
+                          physically before the queued banner, so the crash dialog's reader gated at the run's
+                          run_id would never see the failure it is there to explain. The flush costs one write at
+                          start, and the report keeps both the version and the startup-failure line (issue #1374,
+                          review round three)) */
     hos_game_layout_log();
     driver_env_log();
     void hos_crash_record_log_notes(void);
@@ -2269,7 +2417,7 @@ static int game_main(int argc, char **argv) {
             const double r = hos_wide_clamp(want);
             /* (the height kept, the width at the screen's ratio, at most hos_wide_max_px() pixels (5120 x 2160's, a 21:9 screen's
                native at the 4K output) with the shape kept: host/hos_wide_size.h, which the Insert menu's Output and Render
-               resolution rows share; issue 1031) */
+               resolution rows share) */
             unsigned ow, oh;
             hos_wide_size(output_h, r, hos_wide_max_px(), &ow, &oh);
             const unsigned sh = oh * 3 / 4, sw = (unsigned)(ow * 0.75 / 8 + 0.5) * 8;   /* (the scene, 3/4 of the picture as shipped) */
@@ -2292,6 +2440,8 @@ static int game_main(int argc, char **argv) {
 #endif
     void hos_mods_init(const char *image_path);
     hos_mods_init(image);   /* mods.c: <exe folder>\mods (RomFS files) */
+    void hos_cheats_init(void);
+    hos_cheats_init();   /* (hookshot) cheats.c: the cheats of the mods that are on */
 
     Ctx *c = hos_boot_main_thread(hos_main_stack_size);
     uint64_t sp = c->x[31];
@@ -2303,6 +2453,7 @@ static int game_main(int argc, char **argv) {
 #ifdef _WIN32
     timeBeginPeriod(1);   /* 1 ms timer resolution: the 60 Hz vsync and the game's frame pacing sleep in short steps */
     no_power_throttling();
+    ws_floor();   /* (the game's memory kept in RAM under memory pressure: host/ws_floor.h) */
 #endif
     void hos_display_start(void);
     hos_display_start();  /* the game's window; HOS_HEADLESS=1 for none */
@@ -2325,7 +2476,12 @@ static int game_main(int argc, char **argv) {
         call_guest(c, hos_module_init[i], sp, what);
     }
     call_guest(c, hos_entry_nnMain, sp, "nnMain");
+    /* (longshot) the game is over: RenHDrum's backends stop and let go of the pads (host/rumble_renhdrum.c) */
+    void hos_sdl_vibration_shutdown(void);
+    hos_sdl_vibration_shutdown();
     hos_log("nnMain returned");
+    void hos_pad_speaker_shutdown(void);   /* (longshot) host/pad_speaker.c */
+    hos_pad_speaker_shutdown();
     void hos_crash_clean_end(void);
     hos_crash_clean_end();
     return 0;
@@ -2348,7 +2504,9 @@ static DWORD WINAPI game_thread(void *p) {
    at every start. NVIDIA's cache holds 1 GiB by default and cleans itself down to that as it is written: a full preparation filled
    it to the limit (1026 MB) and the pipelines it dropped were compiled again in play. Mesa's (RADV, ANV) has the same 1 GiB default.
    Raised for this process only, before anything loads Vulkan; a value the player set (or longshot_env.txt) is kept. Windows: the
-   NVIDIA driver takes its size from the control panel's Shader Cache Size, which a program cannot set (readme) */
+   NVIDIA driver takes its size from the control panel's Shader Cache Size alone (no environment variable), for every program;
+   the launcher raises it through NVIDIA's driver settings (LongshotLauncher's DriverSettings.RaiseShaderCache), and the game
+   reads it for the log and the pipeline cache file's rule (gpu/vk/nvidia_cache_limit.h) */
 static void driver_cache_room(void) {
     setenv("__GL_SHADER_DISK_CACHE_SIZE", "10737418240", 0);   /* (10 GiB, bytes) */
     setenv("MESA_SHADER_CACHE_MAX_SIZE", "10G", 0);

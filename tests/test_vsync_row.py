@@ -20,6 +20,10 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
+from menu_model_fixture import menu_text  # noqa: E402
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
@@ -200,7 +204,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cxx", default="g++")
     args = parser.parse_args()
-    menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
+    menu = menu_text()   # (vk_menu.cpp and its modules' rows, #1633)
     header = (ROOT / "gpu" / "vk" / "vk_menu.h").read_text(encoding="utf-8")
     main_cpp = (ROOT / "gpu" / "vk" / "vk_main.cpp").read_text(encoding="utf-8")
     replay = (ROOT / "gpu" / "vk" / "vk_replay.cpp").read_text(encoding="utf-8")
@@ -214,7 +218,7 @@ def main():
         raise SystemExit("FAIL: create_swapchain reads RX_VK_FIFO / RX_VK_IMMEDIATE itself: menu_vsync does")
     need(swap, r"if \(vsync != 1\)", "V-Sync On does not keep FIFO")
     need(swap, r"want_immediate = vsync == 2", "V-Sync Off does not ask for immediate")
-    present = block(replay, "void present_image(")
+    present = block(replay, "void present_image_with_trial(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view, bool source_srgb, bool allow_scale, OutputTrialSource trial) {")
     need(present, r"vsync_changed", "a V-Sync change does not make the swapchain again")
     need(present, r"vsync_now = [^;]*swapchain_dlssg\(\)", "DLSS-G starting or stopping to make the frames does not make the "
          "swapchain again (V-Sync Auto's mode follows it)")

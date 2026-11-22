@@ -1,6 +1,6 @@
 /* (longshot) The control bridge: HOS_CONTROL=<socket path> lets a tool on the same PC (a test, a script, a coding agent)
    drive the running game and read its state over a local socket, instead of a file the game polls (HOS_INPUT_LIVE) and its
-   log scraped for the frame rate and draw counts. docs/control.md has the protocol; scripts/longshot_ctl.py is a client.
+   log scraped for the frame rate and draw counts. docs/dev/reference/control-bridge.md has the protocol; scripts/longshot_ctl.py is a client.
 
    Off unless HOS_CONTROL is set. Linux: a Unix domain socket at that path, made 0600 (the umask around bind too), never
    over an existing file that is not a socket, and a client of another user is turned away (SO_PEERCRED). Windows: a named
@@ -605,7 +605,8 @@ static const struct { const char *name; int bit, axis, dir; } NAMES[] = {
     {"A", 0, 0, 0}, {"B", 1, 0, 0}, {"X", 2, 0, 0}, {"Y", 3, 0, 0}, {"LS", 4, 0, 0}, {"RS", 5, 0, 0}, {"L", 6, 0, 0}, {"R", 7, 0, 0}, {"ZL", 8, 0, 0}, {"ZR", 9, 0, 0},
     {"PLUS", 10, 0, 0}, {"MINUS", 11, 0, 0}, {"LEFT", 12, 0, 0}, {"UP", 13, 0, 0}, {"RIGHT", 14, 0, 0}, {"DOWN", 15, 0, 0},
     {"LUP", -1, 1, 1}, {"LDOWN", -1, 1, -1}, {"LLEFT", -1, 0, -1}, {"LRIGHT", -1, 0, 1},
-    {"RUP", -1, 3, 1}, {"RDOWN", -1, 3, -1}, {"RLEFT", -1, 2, -1}, {"RRIGHT", -1, 2, 1}};
+    {"RUP", -1, 3, 1}, {"RDOWN", -1, 3, -1}, {"RLEFT", -1, 2, -1}, {"RRIGHT", -1, 2, 1},
+    {"SPRINT", 48, 0, 0}};   /* (Sprint's key held, past the Switch's buttons: nn_hid.c B_SPRINT, npad_states) */
 
 /* One token of a button list into in: a button, a stick direction, or LX=/LY=/RX=/RY=<-32767..32767>. 0: not one */
 static int input_token(Input *in, const char *s, size_t n) {
@@ -924,6 +925,11 @@ static void status_reply(int ci, const char *id, const char *sample, int64_t now
         buf_printf(&b, ",\"draws\":%.1f,\"replayed\":%lld,\"window\":{\"width\":%d,\"height\":%d}", G.draws,
                    (long long)G.replayed, G.width, G.height);
     else buf_puts(&b, ",\"draws\":null,\"replayed\":null,\"window\":null");
+    HosControlPicture picture;
+    if (G.game->picture && G.game->picture(&picture))
+        buf_printf(&b, ",\"game_picture\":{\"texture_width\":%u,\"texture_height\":%u,\"width\":%u,\"height\":%u}",
+                   picture.texture_width, picture.texture_height, picture.width, picture.height);
+    else buf_puts(&b, ",\"game_picture\":null");
     buf_printf(&b, ",\"uptime\":%.1f,\"clients\":%d,\"input\":{\"queued\":%d,\"exclusive\":%s}", (now - G.started_ns) / 1e9,
                clients, active, ex ? "true" : "false");
     buf_puts(&b, ",\"map\":");
@@ -931,6 +937,21 @@ static void status_reply(int ci, const char *id, const char *sample, int64_t now
     else buf_puts(&b, "null");
     buf_puts(&b, ",\"game\":");
     status_game(&b, sample);
+    HosControlRecorder rec;   /* (longshot, issue 1113: an input recording now) */
+    if (G.game->recorder) {
+        memset(&rec, 0, sizeof rec);
+        G.game->recorder(&rec);
+        static const char *const modes[] = {"off", "recording", "playing"};
+        buf_printf(&b, ",\"recorder\":{\"mode\":\"%s\",\"started\":%s,\"waiting\":%s,\"frame\":%u,\"end\":%u,"
+                   "\"link_apart\":%u,\"link_checked\":%u,\"syncs\":%u,\"largest\":%.4f,\"diverged\":%s,\"anchors\":%u,"
+                   "\"anchors_wanted\":%u,\"path\":", modes[rec.mode >= 0 && rec.mode <= 2 ? rec.mode : 0],
+                   rec.started ? "true" : "false", rec.held ? "true" : "false", rec.frame, rec.end, rec.link_apart,
+                   rec.link_checked, rec.syncs, (double)rec.largest, rec.diverged ? "true" : "false", rec.anchors,
+                   rec.anchors_wanted);
+        if (rec.path[0]) buf_str(&b, rec.path);
+        else buf_puts(&b, "null");
+        buf_puts(&b, "}");
+    } else buf_puts(&b, ",\"recorder\":null");
     buf_puts(&b, ",\"version\":");
     buf_str(&b, G.game->version ? G.game->version : "unknown");
     const char *r = G.game->renderer ? G.game->renderer() : NULL;
@@ -1477,6 +1498,70 @@ static int teleport_done(Pending *p, Conn *c, int64_t now) {
 
 static void conn_flush_now(Conn *c);
 static void transport_cleanup(void);
+/* ---- record and play: input recordings (longshot, issue 1113: host/input_movie.c) ---- */
+/* {"cmd":"record","action":"start","path":<file>,"route":true} or {"cmd":"record","action":"stop"}; the reply's "path" is
+   the recording's file */
+static void cmd_record(int ci, const JDoc *d, int req, const char *id) {
+    Conn *c = &G.conns[ci];
+    if (!G.game->record_start || !G.game->record_stop || !G.game->recorder)
+        return reply_error(c, id, "unavailable", "no input recordings here");
+    const char *action = str_arg(d, req, "action");
+    HosControlRecorder rec;
+    memset(&rec, 0, sizeof rec);
+    if (!action || !strcmp(action, "start")) {
+        const char *path = str_arg(d, req, "path");
+        if (!G.game->record_start(path && *path ? path : NULL, bool_arg(d, req, "route", 0)))
+            return reply_error(c, id, "busy", "a recording or a playback is running: stop it first");
+    } else if (!strcmp(action, "stop")) {
+        G.game->recorder(&rec);
+        if (rec.mode != 1) return reply_error(c, id, "not_recording", "nothing is being recorded");
+        HosControlRecorder after;
+        memset(&after, 0, sizeof after);
+        G.game->record_stop();
+        G.game->recorder(&after);   /* (written: the last recording made is this one; else it had not started, or failed) */
+        Buf b = {0};
+        reply_start(&b, id, 1);
+        buf_puts(&b, ",\"path\":");
+        buf_str(&b, rec.path);
+        buf_printf(&b, ",\"written\":%s", strcmp(after.path, rec.path) || !rec.started ? "false" : "true");
+        reply_end(c, &b);
+        return;
+    } else return reply_error(c, id, "bad_request", "record: action, start or stop");
+    G.game->recorder(&rec);
+    Buf b = {0};
+    reply_start(&b, id, 1);
+    buf_puts(&b, ",\"path\":");
+    if (rec.path[0]) buf_str(&b, rec.path);
+    else buf_puts(&b, "null");
+    reply_end(c, &b);
+}
+/* {"cmd":"play","path":<file>,"sync":<updates>,"sync_max":<m>} (path: the last recording made; sync 1, sync_max 1 by
+   default), or {"cmd":"play","action":"stop"} */
+static void cmd_play(int ci, const JDoc *d, int req, const char *id) {
+    Conn *c = &G.conns[ci];
+    if (!G.game->play_start || !G.game->play_stop) return reply_error(c, id, "unavailable", "no input recordings here");
+    const char *action = str_arg(d, req, "action");
+    if (action && !strcmp(action, "stop")) {
+        G.game->play_stop();
+        Buf b = {0};
+        reply_start(&b, id, 1);
+        reply_end(c, &b);
+        return;
+    }
+    if (action && strcmp(action, "start")) return reply_error(c, id, "bad_request", "play: action, start or stop");
+    int bad = 0;
+    const double sync = num_arg(d, req, "sync", 1, &bad), sync_max = num_arg(d, req, "sync_max", 1, &bad);
+    if (bad || sync < 0 || sync > 1e6 || !(sync_max > 0) || sync_max > 1e4)
+        return reply_error(c, id, "bad_request", "play: sync (updates between corrections, 0 none), sync_max (metres)");
+    const char *path = str_arg(d, req, "path");
+    const int r = G.game->play_start(path && *path ? path : NULL, (int)sync, (float)sync_max);
+    if (r == 0) return reply_error(c, id, "busy", "a recording or a playback is running: stop it first");
+    if (r == -1) return reply_error(c, id, "not_found", "no such recording (or none made yet), or not ls-input-recording/1");
+    if (r == -2) return reply_error(c, id, "wrong_map", "the recording starts on a map no teleport goes to");
+    Buf b = {0};
+    reply_start(&b, id, 1);
+    reply_end(c, &b);
+}
 static void cmd_quit(int ci, const char *id) {
     Conn *c = &G.conns[ci];
     Buf b = {0};
@@ -1503,7 +1588,7 @@ static void cmd_relaunch(int ci, const char *id) {
     G.game->relaunch();
 }
 
-/* ---- guest memory (host/control.c's HOS_CONTROL_MEM, docs/control.md): mem_read, mem_read_many, mem_write ---- */
+/* ---- guest memory (host/control.c's HOS_CONTROL_MEM, docs/dev/reference/control-bridge.md): mem_read, mem_read_many, mem_write ---- */
 static void buf_hex(Buf *b, const uint8_t *p, uint64_t n) {
     static const char hex[] = "0123456789abcdef";
     buf_put(b, "\"", 1);
@@ -1615,7 +1700,7 @@ static int mem_off(const char *cmd) { return !strcmp(cmd, "mem_read") || !strcmp
 static void cmd_mem(int ci, const JDoc *d, int req, const char *id, const char *cmd) {
     Conn *c = &G.conns[ci];
     if (!mem_off(cmd))   /* symbols, or any other mem_* */
-        return reply_error(c, id, "unavailable", "no such memory command (named values are not served; docs/control.md)");
+        return reply_error(c, id, "unavailable", "no such memory command (named values are not served; docs/dev/reference/control-bridge.md)");
     if (!G.mem_level)
         return reply_error(c, id, "forbidden",
                            "guest memory is off: set HOS_CONTROL_MEM=ro for reads or rw for reads and writes");
@@ -1725,8 +1810,7 @@ static int mem_finished(Pending *p, Conn *c, int64_t now) {
     return 1;
 }
 
-/* ---- saves: the save folder the game uses, listed on the bridge's thread (a slot being written may show a size or time
-   between two writes: it is read as it is, never locked) ---- */
+/* ---- saves: hold the game's read guard through the listing and caption reads ---- */
 typedef struct { char name[64]; int64_t size, mtime; } SaveFile;
 typedef struct { char name[16]; SaveFile files[8]; int nfiles; int64_t mtime; } SaveSlot;
 /* the entries of a folder: name, size, modification time (Unix seconds), whether a folder. -1 when it cannot be read */
@@ -1820,10 +1904,13 @@ static void cmd_saves(int ci, const char *id) {
     Conn *c = &G.conns[ci];
     char root[1100];
     if (!G.game->save_root || !G.game->save_root(root, sizeof root))
-        return reply_error(c, id, "unavailable", "the game has not opened its saves yet");
+        return reply_error(c, id, "unavailable", "a consistent save listing is not available");
     static SaveList l;
     memset(&l, 0, sizeof l);
-    if (dir_list(root, top_entry, &l) < 0) return reply_error(c, id, "failed", "%.300s could not be read", root);
+    if (dir_list(root, top_entry, &l) < 0) {
+        if (G.game->save_end) G.game->save_end();
+        return reply_error(c, id, "failed", "%.300s could not be read", root);
+    }
     for (int i = 0; i < l.nslots; i++) {
         char dir[1200];
         snprintf(dir, sizeof dir, "%s%c%s", root, CTL_SEP, l.slots[i].name);
@@ -1851,6 +1938,7 @@ static void cmd_saves(int ci, const char *id) {
         buf_puts(&b, "}");
     }
     buf_puts(&b, "]");
+    if (G.game->save_end) G.game->save_end();
     reply_end(c, &b);
 }
 
@@ -1898,6 +1986,8 @@ static void request(int ci, const char *line, size_t len) {
         reply_ok(c, id);
     } else if (!strcmp(cmd, "quit")) cmd_quit(ci, id);
     else if (!strcmp(cmd, "relaunch")) cmd_relaunch(ci, id);
+    else if (!strcmp(cmd, "record")) cmd_record(ci, &d, req, id);
+    else if (!strcmp(cmd, "play")) cmd_play(ci, &d, req, id);
     else if (!strncmp(cmd, "mem_", 4) || !strcmp(cmd, "symbols")) cmd_mem(ci, &d, req, id, cmd);
     else reply_error(c, id, "unknown_cmd", "no command %.60s", cmd);
 }
@@ -2469,6 +2559,7 @@ void ExitProcess(unsigned int code);   /* (host/posix/win32_posix.c; Windows: wi
 extern volatile int64_t hos_present_count;   /* (display.c, posix/display_sdl.c: the game's presents; LONG64) */
 const char *rx_describe(void);
 int rx_control_frame_info(int64_t *presents, int64_t *draws, int *width, int *height);
+int rx_control_picture(HosControlPicture *out);
 int rx_control_shot(const char *path, int64_t after, void (*done)(void *ctx, int64_t present, int ok), void *ctx);
 int rx_control_setting(int index, HosControlSetting *out);   /* (rx_backend.c: MkwVkSetting's fields) */
 int rx_control_setting_set(const char *key, int value, HosControlSetting *out);
@@ -2483,6 +2574,7 @@ static void game_mem_write(uint64_t addr, const void *src, uint64_t size) {
     hos_mark_written(hos_guest_base() + addr, size);   /* (the soft write watch: synced into the GPU mirror next frame) */
 }
 int hos_fs_save_root(char *out, size_t cap);   /* (nn_fs.c) */
+void hos_fs_save_end(void);
 static int game_save_root(char *out, size_t cap) {
     if (!hos_fs_save_root(out, cap)) return 0;
 #ifndef _WIN32
@@ -2521,23 +2613,40 @@ void hos_oot_sample_cancel(uint64_t ticket);
 int hos_oot_sample(uint64_t ticket, char *out, size_t cap);
 void hos_oot_watch(int slot, const HosControlOotWatch *watch);
 int hos_oot_poll(int slot, char *out, size_t cap);
+/* (longshot, issue 1113) input recordings: host/input_movie.c's start, stop and status */
+#include "input_movie.h"
+int hos_input_record_start(const char *path, int route);
+void hos_input_record_stop(void);
+int hos_input_play_start(const char *path, int sync, float sync_max);
+void hos_input_play_stop(void);
+void hos_input_movie_status(HosInputMovieStatus *out);
+static void game_recorder(HosControlRecorder *out) {
+    HosInputMovieStatus s;
+    hos_input_movie_status(&s);
+    out->mode = s.mode, out->started = s.started, out->held = s.held, out->diverged = s.diverged;
+    out->frame = s.frame, out->end = s.end, out->link_apart = s.link_apart, out->link_checked = s.link_checked;
+    out->syncs = s.syncs, out->anchors = s.anchors, out->anchors_wanted = s.anchors_wanted, out->largest = s.largest;
+    snprintf(out->path, sizeof out->path, "%s", s.path);
+}
 static HosControlGame game = {
     .frame = game_frame, .frame_info = rx_control_frame_info, .shot = rx_control_shot, .setting = rx_control_setting,
     .setting_set = rx_control_setting_set, .mem_region = game_mem_region, .mem_read = game_mem_read,
-    .mem_write = game_mem_write, .save_root = game_save_root, .log = game_log, .quit = game_quit,
+    .mem_write = game_mem_write, .save_root = game_save_root, .save_end = hos_fs_save_end, .log = game_log, .quit = game_quit,
     .renderer = game_renderer, .map = hos_oot_current_map, .destination = hos_oot_destination,
     .teleport = hos_oot_teleport_ask, .teleport_result = hos_oot_teleport_result,
     .teleport_cancel = hos_oot_teleport_cancel, .age = hos_oot_age_ask, .oot_state = hos_oot_state,
     .oot_sample_ask = hos_oot_sample_ask, .oot_sample_cancel = hos_oot_sample_cancel,
     .oot_sample = hos_oot_sample, .oot_watch = hos_oot_watch, .oot_poll = hos_oot_poll,
-    .relaunch = game_relaunch};
+    .relaunch = game_relaunch, .picture = rx_control_picture,
+    .record_start = hos_input_record_start, .record_stop = hos_input_record_stop, .play_start = hos_input_play_start,
+    .play_stop = hos_input_play_stop, .recorder = game_recorder};
 
 void hos_control_start(const char *version) {
     const char *path = getenv("HOS_CONTROL");
     if (!path || !*path) return;
     game.version = version;
     if (hos_control_serve(path, &game))
-        hos_log("control: listening on %s (HOS_CONTROL: this user only, no TCP; guest memory %s; docs/control.md)", path,
+        hos_log("control: listening on %s (HOS_CONTROL: this user only, no TCP; guest memory %s; docs/dev/reference/control-bridge.md)", path,
                 G.mem_level == 2 ? "read and write" : G.mem_level == 1 ? "read only" : "off");
     else hos_log("control: off (HOS_CONTROL=%s could not be served)", path);
 }

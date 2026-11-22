@@ -4,7 +4,9 @@ The fallback's task and mesh stages are held to 32 lanes; on an Iris Xe its colo
 and each global load's storage buffer search, inlined at every load, filled them with spill code (Hyrule Castle's 739acd67:
 12.3 ms a frame, 5.7 ms through the table). This checks the switch (Intel's Mesa driver, RX_VK_MESH_PAGES over it), the program
 cache's stamp, that only the fallback's task and mesh stages take the table, and that its lookup is the page table the renderer
-writes: the same two windows, the same page numbering, 0 where a page is not mapped.
+writes: the same two windows, the same page numbering, 0 where a page is not mapped. And RX_VK_GP_TABLE, which sends the vertex,
+fragment and compute stages' loads through the same table: its rule, its stamp bits and the stages it reaches
+(tests/global_load_16_ir.cpp emits and inspects its modules).
 """
 import argparse
 from pathlib import Path
@@ -77,6 +79,15 @@ def shifted_overlap(flags, bit):
     return any(bit >> int(s) & 3 for s in re.findall(r"<< (\d+)", flags))
 
 
+def field_overlaps(flags, lo, width=2):
+    """whether bits lo .. lo + width - 1 of the stamp's flags are another switch's: a `? Nu : 0u` bit there, or a field shifted
+    in (`<< s`, two bits) that reaches them; the field at lo itself is left out"""
+    mine = ((1 << width) - 1) << lo
+    if any(int(b) & mine for b in re.findall(r"\? (\d+)u : 0u", flags)):
+        return True
+    return any(int(s) != lo and (3 << int(s)) & mine for s in re.findall(r"<< (\d+)", flags))
+
+
 def stamp():
     shader = (ROOT / "gpu/vk/vk_shader.cpp").read_text(encoding="utf-8")
     body = block(shader, "uint64_t translator_stamp(")   # (the program cache's stamp: vk_progcache.cpp's disk_stamp takes it)
@@ -105,14 +116,20 @@ def emission():
             raise SystemExit(f"fallback_pages is not limited to {why} ({needed} not found)")
     page = block(fn, "const auto page_load = [&](Id type, Id addr)")
     guest = block(fn, "const auto guest_lookup = [&](Id addr, u32 size, auto&& hit)")
-    # (the table's own lookup: the same address, windows and page numbering as the compute stages' guest_lookup)
-    for needed in ("Const(guest_pages_member_index)",
-                   "OpISub(U64, addr, Constant(U64, u64{kGuestPagesBase}))",
+    window = block(fn, "const auto table_window = [&](Id addr)")
+    # (the table's windows and page numbering, once for both lookups: each window's entries after the windows before it)
+    for needed in ("OpISub(U64, addr, Constant(U64, u64{kGuestPagesBase}))",
                    "OpISub(U64, addr, Constant(U64, u64{kGuestPagesBase2}))",
+                   "OpISub(U64, addr, Constant(U64, u64{kGuestPagesBase3}))",
                    "OpULessThan(U1, offset_a, Constant(U64, u64{kGuestPagesBytes}))",
                    "OpULessThan(U1, offset_b, Constant(U64, u64{kGuestPagesBytes2}))",
+                   "OpULessThan(U1, offset_c, Constant(U64, u64{kGuestPagesBytes3}))",
                    "OpIAdd(U64, OpShiftRightLogical(U64, offset_b, Const(12U)), Constant(U64, u64{kGuestPagesBytes >> 12}))",
-                   "OpShiftLeftLogical(U64, page_index, Const(3U))",
+                   "Constant(U64, u64{(kGuestPagesBytes + kGuestPagesBytes2) >> 12})",
+                   "OpLogicalOr(U1, in_a, OpLogicalOr(U1, in_b, in_c))"):
+        if needed not in window:
+            raise SystemExit(f"table_window does not number the pages as the page table is written: {needed}")
+    for needed in ("Const(guest_pages_member_index)", "table_window(addr)", "OpShiftLeftLogical(U64, page_index, Const(3U))",
                    "OpBitwiseAnd(U64, addr, Constant(U64, u64{0xfff}))"):
         if needed not in page:
             raise SystemExit(f"page_load does not look the address up as the page table is written: {needed}")
@@ -134,16 +151,80 @@ def emission():
     consts = dict(re.findall(r"constexpr unsigned long long (kGuestPages\w+) = ([^;]+);", emit))
     value = {k: eval(v.replace("ull", "")) for k, v in consts.items()}
     memory = (ROOT / "gpu/vk/vk_memory.cpp").read_text(encoding="utf-8")
-    if "for (const PageWindow& w : kPageWindows)" not in block(memory, "void guest_pages_set("):
-        raise SystemExit("vk_memory.cpp guest_pages_set no longer writes kPageWindows: check the shader's windows against it")
     census = (ROOT / "gpu/vk/page_table_census.h").read_text(encoding="utf-8")
-    want = re.search(r"kPageWindows\[\] = \{\{(0x[0-9a-f]+)ull, (\d+)ull << (\d+), 0\}, \{(0x[0-9a-f]+)ull, (\d+)ull << (\d+),", census)
-    if not want:
+    if "page_table_runs(lo, hi, address," not in block(memory, "void guest_pages_set("):
+        raise SystemExit("vk_memory.cpp guest_pages_set no longer writes kPageWindows (page_table_runs): check the shader's windows against it")
+    if "for (const PageWindow& w : kPageWindows)" not in block(census, "inline void page_table_runs("):
+        raise SystemExit("page_table_census.h page_table_runs no longer writes kPageWindows: check the shader's windows against it")
+    census = (ROOT / "gpu/vk/page_table_census.h").read_text(encoding="utf-8")
+    table = census[census.index("kPageWindows[] = "):census.index("};", census.index("kPageWindows[] = "))]
+    windows = [(int(base, 16), int(n) << int(sh)) for base, n, sh in re.findall(r"\{(0x[0-9a-f]+)ull, (\d+)ull << (\d+),", table)]
+    if not windows:
         raise SystemExit("page_table_census.h kPageWindows not found")
-    a, a_n, a_s, b, b_n, b_s = want.groups()
-    if (value["kGuestPagesBase"], value["kGuestPagesBytes"], value["kGuestPagesBase2"], value["kGuestPagesBytes2"]) != (
-            int(a, 16), int(a_n) << int(a_s), int(b, 16), int(b_n) << int(b_s)):
+    if windows != [(value["kGuestPagesBase"], value["kGuestPagesBytes"]), (value["kGuestPagesBase2"], value["kGuestPagesBytes2"]),
+                   (value["kGuestPagesBase3"], value["kGuestPagesBytes3"])]:
         raise SystemExit("the shader's page table windows are not the ones vk_memory.cpp writes")
+
+
+def table_loads(cxx):
+    """RX_VK_GP_TABLE (mma_layout.h graphics_table_loads): the vertex, fragment and compute stages' loads through the same table.
+    Its rule (table_loads_wanted, cut from vk_coopmat.cpp and run): on by default, 0, 1 or 2 over it, off where the table cannot
+    hold the pools; its value in the stamp's flags on bits of its own; and which stages take it"""
+    coopmat = (ROOT / "gpu/vk/vk_coopmat.cpp").read_text(encoding="utf-8")
+    fn = block(coopmat, "int table_loads_wanted(")
+    if "table_loads_wanted(e, dev.external_memory_host, dev.facts.buffer_device_address)" not in block(coopmat, "void coopmat_init("):
+        raise SystemExit("coopmat_init does not set graphics_table_loads from table_loads_wanted with the device's import and addresses")
+    cases = [  # RX_VK_GP_TABLE, host memory import, device addresses, wanted
+        (None, True, True, 1, "unset"), ("0", True, True, 0, "=0"), ("1", True, True, 1, "=1"), ("2", True, True, 2, "=2"),
+        ("3", True, True, 0, "=3"), ("off", True, True, 0, "=off"), (None, False, True, 0, "no host memory import"),
+        (None, True, False, 0, "no device addresses"), ("2", False, True, 0, "=2, no host memory import"),
+    ]
+    checks = "\n".join(
+        f'    if (table_loads_wanted({"nullptr" if e is None else chr(34) + e + chr(34)}, {str(h).lower()}, {str(d).lower()}) != {w}) '
+        f'{{ std::puts("FAIL: RX_VK_GP_TABLE {name}"); return 1; }}' for e, h, d, w, name in cases)
+    source = "#include <cstdio>\n#include <cstdlib>\n" + fn + "\nint main() {\n" + checks + "\n    return 0;\n}\n"
+    with tempfile.TemporaryDirectory(prefix="table-loads-") as folder:
+        folder = Path(folder)
+        (folder / "t.cpp").write_text(source, encoding="utf-8")
+        exe = folder / "t.exe"
+        subprocess.run([cxx, "-std=c++20", "-Wall", "-Wextra", str(folder / "t.cpp"), "-o", str(exe)], check=True)
+        run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=10)
+        if run.returncode:
+            raise SystemExit(run.stdout.strip() or "the RX_VK_GP_TABLE rule check failed")
+    shader = (ROOT / "gpu/vk/vk_shader.cpp").read_text(encoding="utf-8")
+    body = block(shader, "uint64_t translator_stamp(")
+    flags = body[body.index("const uint32_t flags"):body.index("add(&flags")]
+    shift = re.search(r"\(uint32_t\)graphics_table_loads << (\d+)", flags)
+    if not shift:
+        raise SystemExit("translator_stamp does not take graphics_table_loads: a program cached in one form is used in another")
+    lo = int(shift.group(1))
+    if field_overlaps(flags, lo):
+        raise SystemExit(f"graphics_table_loads' stamp bits {lo} and {lo + 1} are another switch's")
+    # (and the rule catches a clash: a switch's bit on the field's second bit, a field shifted onto it)
+    if not field_overlaps(flags + f" (x ? {1 << (lo + 1)}u : 0u)", lo) or not field_overlaps(flags + f" y << {lo + 1}", lo):
+        raise SystemExit("field_overlaps does not see a clash with the stamp's other bits")
+    emit = (ROOT / "gpu/vk/eden/shader_recompiler/backend/spirv/spirv_emit_context.cpp").read_text(encoding="utf-8")
+    fn = block(emit, "void EmitContext::DefineGlobalMemoryFunctions(")
+    stages = re.search(r"const bool table_stage\{([^;]+)\};", fn)
+    if not stages:
+        raise SystemExit("DefineGlobalMemoryFunctions has no table_stage condition")
+    c = " ".join(stages.group(1).split())
+    for needed in ("graphics_stage", "stage == Stage::Compute", "mesh_fallback && (stage == Stage::Task || stage == Stage::Mesh)"):
+        if needed not in c:
+            raise SystemExit(f"table_stage leaves out {needed}")
+    table = " ".join(re.search(r"const bool graphics_table\{([^;]+)\};", fn).group(1).split())
+    for needed in ("wants_guest_pages", "rescaling_push_constants.value != 0", "profile.supported_spirv >= 0x00010400"):
+        if needed not in table:
+            raise SystemExit(f"graphics_table does not need {needed}")
+    check = " ".join(re.search(r"const bool table_check\{([^;]+)\};", fn).group(1).split())
+    if "stage != Stage::Task" not in check or "stage != Stage::Mesh" not in check:
+        raise SystemExit("RX_VK_GP_TABLE=2 reaches the task and mesh stages, which have no miss buffer")
+    load = block(fn, "const auto define_load{")
+    if "if (fallback_pages || table_alone)" not in load:
+        raise SystemExit("define_load does not return the table's answer alone for RX_VK_GP_TABLE=1")
+    if load.index("const Id differs{") > load.index("OpSelectionMerge(end_label"):
+        raise SystemExit("the check's condition is made after its OpSelectionMerge (RADV crashed on such modules)")
+    return len(cases)
 
 
 def main():
@@ -153,7 +234,9 @@ def main():
     n = switch(args.cxx)
     stamp()
     emission()
-    print(f"PASS: mesh fallback page table switch ({n} cases), cache stamp, and the table's lookup as the renderer writes it")
+    t = table_loads(args.cxx)
+    print(f"PASS: mesh fallback page table switch ({n} cases), cache stamp, and the table's lookup as the renderer writes it; "
+          f"RX_VK_GP_TABLE's rule ({t} cases), stamp bits and stages")
 
 
 if __name__ == "__main__":

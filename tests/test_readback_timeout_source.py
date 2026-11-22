@@ -85,6 +85,7 @@ VkResult vkEndCommandBuffer(VkCommandBuffer) { return VK_SUCCESS; }
 VkResult vkResetFences(VkDevice, uint32_t, const VkFence*) { return VK_SUCCESS; }
 VkResult vkQueueSubmit2(VkQueue, uint32_t, const VkSubmitInfo2*, VkFence) { return VK_SUCCESS; }
 VkResult vkWaitForFences(VkDevice, uint32_t, const VkFence*, uint32_t, uint64_t) { return VK_TIMEOUT; }   // (the GPU behind)
+void vkDestroyCommandPool(VkDevice, VkCommandPool, const void*) {}
 void vkDestroyImageView(VkDevice, VkImageView, const void*) {}
 void vkFreeMemory(VkDevice, VkDeviceMemory, const void*) {}
 void queue_flush_locked() {}
@@ -106,6 +107,10 @@ static void destroy_buffer(VkBuffer, VmaAllocation) {}
 static uint64_t pool_cap() { return 256ull << 20; }
 static std::set<VkImage> freed, pooled;
 static void destroy_image(VkImage i, VmaAllocation) { if (i) freed.insert(i); }
+// (vk_vma.cpp: the image handed to the reaper's thread, which destroys it; here at once)
+static void destroy_image_later(VkImage i, VmaAllocation, std::vector<VkImageView>, VkBuffer, VmaAllocation,
+                                std::vector<VkDeviceMemory>) { if (i) freed.insert(i); }
+static std::atomic<uint64_t> dead_pooled_n{0};   // (vk_texture.cpp: the render targets' images on their way to the pool)
 struct { bool in_pass = false; } compact;
 
 namespace {

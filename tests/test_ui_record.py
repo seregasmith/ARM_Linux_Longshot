@@ -32,12 +32,22 @@ def main():
 #include <cstdlib>
 #include <string>
 #include <vector>
+#include "colour_vision.h"
+using namespace mkwvk;
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); std::exit(1); } } while (0)
 enum { ImTextureStatus_OK, ImTextureStatus_Destroyed, ImTextureStatus_WantCreate };
 bool can_make = true;
 void logf(const char*, ...) {}
+// (imgui.h's: the draw lists' vertices, which the colour vision correction recolours; none here)
+using ImU32 = uint32_t;
+#define IM_COL32_R_SHIFT 0
+#define IM_COL32_G_SHIFT 8
+#define IM_COL32_B_SHIFT 16
+#define IM_COL32_A_MASK 0xFF000000
+struct ImDrawVert { float pos[2], uv[2]; ImU32 col; };
+struct ImDrawList { std::vector<ImDrawVert> VtxBuffer; };
 struct ImTextureData { int Status; };
-struct ImDrawData { std::vector<ImTextureData*>* Textures; };
+struct ImDrawData { std::vector<ImTextureData*>* Textures; std::vector<ImDrawList*> CmdLists; };
 std::string calls;
 ImDrawData draw_data;
 namespace ImGui { void Render() { calls += "R"; } ImDrawData* GetDrawData() { return &draw_data; } }
@@ -72,7 +82,7 @@ int main() {
     ImTextureData atlas{ImTextureStatus_WantCreate}, logo{ImTextureStatus_OK};
     std::vector<ImTextureData*> textures = {&atlas, &logo};
     draw_data.Textures = &textures;
-    record(cmd, 1, 640, 360);
+    record(cmd, 1, 640, 360, 0);   // (mode 0: no colour vision correction)
     CHECK(calls == "RrUB[D]B");   // (render, reap, the new texture, to the attachment, the pass, back)
     CHECK(presents == 1);
     const VkImageMemoryBarrier2& in = barriers[0];
@@ -94,26 +104,26 @@ int main() {
     CHECK(out.dstStageMask == VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT && (out.dstAccessMask & VK_ACCESS_2_TRANSFER_WRITE_BIT));
     // (an sRGB image without a UNORM view: the colours made linear before the pass)
     calls.clear(), barriers.clear(), srgb_target = true, draw_data.Textures = &textures;
-    record(cmd, 0, 640, 360);
+    record(cmd, 0, 640, 360, 0);
     CHECK(calls == "RrLB[D]B" && barriers[0].image == (VkImage)0x100);
     // (an HDR10 image: the colours as HDR10 shows them, at the paper white)
     calls.clear(), barriers.clear(), srgb_target = false, dev.hdr = true, draw_data.Textures = &textures;
-    record(cmd, 0, 640, 360);
+    record(cmd, 0, 640, 360, 0);
     CHECK(calls == "RrHB[D]B");
     dev.hdr = false;
     // (an image with no view, or past the views: nothing recorded on it)
     calls.clear(), barriers.clear(), srgb_target = false, draw_data.Textures = &textures;
-    record(cmd, 2, 640, 360);
-    record(cmd, 7, 640, 360);
+    record(cmd, 2, 640, 360, 0);
+    record(cmd, 7, 640, 360, 0);
     CHECK(calls == "RrRr" && barriers.empty());
     // (a texture that could not be made: nothing drawn that frame, no barrier, no pass; made the next frame, all as before)
     ImTextureData failed{ImTextureStatus_WantCreate}, gone{ImTextureStatus_Destroyed};
     std::vector<ImTextureData*> more = {&failed, &gone};
     calls.clear(), barriers.clear(), can_make = false, draw_data.Textures = &more;
-    record(cmd, 0, 640, 360);
+    record(cmd, 0, 640, 360, 0);
     CHECK(calls == "RrU" && barriers.empty() && draw_data.Textures == nullptr);
     calls.clear(), can_make = true, draw_data.Textures = &more;
-    record(cmd, 0, 640, 360);
+    record(cmd, 0, 640, 360, 0);
     CHECK(calls == "RrUB[D]B");
     std::printf("PASS: the overlays' pass: textures, barrier in, load and store, barrier out, nothing while a texture is missing\n");
 }
@@ -122,7 +132,8 @@ int main() {
         cpp = Path(tmp) / "fixture.cpp"
         exe = Path(tmp) / "fixture"
         cpp.write_text(fixture, encoding="utf-8")
-        cmd = [a.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", "-Wno-missing-field-initializers"]
+        cmd = [a.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", "-Wno-missing-field-initializers",
+               "-I" + str(ROOT / "gpu/vk")]   # (colour_vision.h)
         if a.headers:
             cmd.append("-I" + str(a.headers))
         subprocess.run(cmd + [str(cpp), "-o", str(exe)], check=True)

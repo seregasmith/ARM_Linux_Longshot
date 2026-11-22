@@ -45,7 +45,8 @@ static std::atomic<uint64_t> pushed{10}, q_values{12};
 static int flushes, unlimited_waits, waits;
 static uint64_t last_timeout;
 static char logged[512];
-static void queue_flush_for(int why) { if (why == FR_VALUE) flushes++; }
+static uint64_t queue_flush_for(int why, uint64_t = 0) { if (why == FR_VALUE) flushes++; return 0; }
+namespace rec { struct Settled { Settled() {} ~Settled() {} }; }   // (vk_recorder.h, RX_VK_RECORDER_PARTS: no recorder here)
 static uint64_t completed() { return signalled; }
 static void wait_value(uint64_t) { unlimited_waits++; }
 static void logf(const char* f, ...) { va_list a; va_start(a, f); std::vsnprintf(logged, sizeof logged, f, a); va_end(a); }

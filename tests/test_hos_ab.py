@@ -1,4 +1,4 @@
-"""(longshot) The A/B within one run (host/hos_ab.c, HOS_AB) and its summary (scripts/ab_summary.py), game-free.
+"""(longshot) The A/B within one run (host/hos_ab.c, HOS_AB) and its summary (scripts/perf.py ab), game-free.
 
 The real host/hos_ab.c is compiled over a stub hos.h (the real one's A/B declarations, a clock the fixture moves, the log kept
 in memory) and a stub windows.h (no thread is started: the fixture calls hos_ab_tick at the times it chooses), with the wired
@@ -24,10 +24,10 @@ across a flip not a transition, the name not checked, a period of 0 accepted, a 
 The wiring's safety under flips, with the existing check of that switch run while hos_ab_value flips at every call:
 tests/test_collect_wide.py's 400 rounds of random marks and ranges (every walk's pages, their order and the marks left those
 of a plain walk, the 256-mark step and the 32-mark one taking turns).
-The places of the calls (hos_ab_start before the game's threads, hos_ab_present in rx_nvn_present, hos_ab_end in
-hos_close_finish, hos_ab_frame last in vk_host) and the list of wired switches are read from the source.
+The places of the calls (hos_ab_start before the game's threads, hos_ab_present before each renderer dispatch, hos_ab_end in
+hos_close_finish, hos_ab_frame before the Mods callbacks in vk_host) and the list of wired switches are read from the source.
 
-scripts/ab_summary.py on made-up traces: known means per side (16 and 18 ms), the warm-up's and the transitions' frames (50 and
+scripts/perf.py ab (scripts/profiling/ab.py) on made-up traces: known means per side (16 and 18 ms), the warm-up's and the transitions' frames (50 and
 100 ms) left out, a last period cut short left out and one more for the same side at both ends, two files together, and a
 steady drift that moves both sides alike giving no difference. Its broken variants (transitions kept, sides swapped, the
 warm-up counted, the cut-short period kept, the parity trim gone) must fail.
@@ -347,6 +347,10 @@ WIRED = {
     "HOS_OOT_BARRIER_WAIT": "host/oot_barrier.c",
     # (read at each nn::os::YieldThread; nothing is kept between two yields)
     "HOS_OS_YIELD": "host/hos_thread.c",
+    # (the renderer's, through MkwVkHost.ab_value: read at each recording's start; each recording converts one way whole, the
+    # ring's y and z words are 1 for every value (filled once, slots at 48 bytes): tests/test_mesh_conv.py flips it between
+    # recordings)
+    "RX_VK_MESH_CONV": "gpu/vk/vk_draw.cpp",
 }
 
 
@@ -358,16 +362,38 @@ def wiring_checks():
     if not 0 <= main.index("hos_ab_start();") < main.index("hos_display_start();") < main.index('call_guest(c, hos_entry_init_libc0'):
         fail("host/hos_main.c: hos_ab_start is not called before the display and the game's threads start")
     backend = (ROOT / "host/rx_backend.c").read_text(encoding="utf-8")
-    present = block(backend, "void rx_nvn_present(const nvn_tex *t, const int crop[4]) {")
-    if not 0 <= present.index("hos_ab_present();") < present.index("vk->nvn_present(t, crop)"):
-        fail("host/rx_backend.c: rx_nvn_present does not count the frame (hos_ab_present) before the renderer presents")
+    present = block(backend, "static void nvn_present_with_generation(")
+    count = present.index("hos_ab_present();")
+    for dispatch in ("vk->nvn_present(t, crop)", "vk->nvn_present_trial(t, crop, generation)", "wgr_nvn_present(t, crop)"):
+        if count >= present.index(dispatch):
+            fail("host/rx_backend.c: the A/B frame count must precede " + dispatch)
+    for entry, generation in (("rx_nvn_present", "0"), ("rx_nvn_present_trial", "generation")):
+        if f"nvn_present_with_generation(t, crop, {generation});" not in block(backend, f"void {entry}("):
+            fail("host/rx_backend.c: " + entry + " does not use the shared present dispatch")
     table = re.sub(r"/\*.*?\*/", "", block(backend, "static const MkwVkHost vk_host = {"), flags=re.S)
-    if [v.strip() for v in table.split(",") if v.strip()][-2] != "hos_ab_frame":
-        fail("host/rx_backend.c: vk_host does not end with hos_ab_frame (MkwVkHost.ab_frame, version 34)")
+    names = [v.strip() for v in table.split(",") if re.fullmatch(r"\w+", v.strip())]
+    if "hos_ab_frame" not in names or names[names.index("hos_ab_frame") + 1:] != [
+            "hos_mod_info", "hos_mod_edit", "hos_mods_changed", "hos_cheat_info", "hos_cheat_set",
+            "host_ab_value", "nvn_output_preview_request", "host_input_record", "host_input_play", "host_input_status",
+            "hos_input_recording_at", "hos_reset_binding", "hos_rebind_control", "hos_binding_is_default"]:
+        fail("host/rx_backend.c: vk_host does not have hos_ab_frame (MkwVkHost.ab_frame, version 34) right before the "
+             "Mods tab's functions, and host_ab_value (ab_value, version 36) after them")
+    if "static int host_ab_value(const char *name, int normal) { return hos_ab_value(name, normal); }" not in backend:
+        fail("host/rx_backend.c: host_ab_value is not hos_ab_value")
     api = (ROOT / "gpu/vk/vk_api.h").read_text(encoding="utf-8")
-    if int(re.search(r"#define MKWVK_API_VERSION (\d+)", api).group(1)) < 34 or \
-            "int (*ab_frame)(int64_t from_ns, int64_t to_ns);\n} MkwVkHost;" not in api:
-        fail("gpu/vk/vk_api.h: MkwVkHost does not end with ab_frame at version 34 or later")
+    if int(re.search(r"#define MKWVK_API_VERSION (\d+)", api).group(1)) < 36 or \
+            not re.search(r"int \(\*ab_frame\)\(int64_t from_ns, int64_t to_ns\);\n    /\* \(version 35: .*?\*/\n"
+                          r"    int \(\*mod_info\)\(", api, re.S) or \
+            ("int (*ab_value)(const char *name, int normal);\n"
+             "    /* Version 41: request a live output preview. */\n"
+             "    int (*output_preview_request)(uint32_t width, uint32_t height);\n") not in api or \
+            not re.search(r"int \(\*output_preview_request\)\(uint32_t width, uint32_t height\);\n    /\* \(version 42, longshot\)"
+                          r".*?\*/\n    int \(\*input_record\)\(int start\);\n    int \(\*input_play\)\(int start, int sync, const char \*path\);\n"
+                          r"    void \(\*input_status\)\(MkwVkInputStatus \*out\);\n"
+                          r"    int \(\*input_recording\)\(int i, char \*out, size_t cap\);\n"
+                          r"    /\* Version 43: restore one control's default bindings", api, re.S):
+        fail("gpu/vk/vk_api.h: MkwVkHost does not have ab_frame at version 34 right before the Mods tab's functions, and "
+             "ab_value (version 36) before the output preview callback")
     replay = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
     if "host->version >= 34 && host->ab_frame ? host->ab_frame(l_at, at) : -1" not in replay:
         fail("gpu/vk/vk_replay.cpp: the frame trace does not ask the host for ab_side (only from a version 34 host)")
@@ -379,6 +405,12 @@ def wiring_checks():
     for path in sorted((ROOT / "host").rglob("*.c")):
         for m in re.finditer(r'hos_ab_value\("([A-Z0-9_]+)"', path.read_text(encoding="utf-8")):
             found.setdefault(m.group(1), []).append(path.relative_to(ROOT).as_posix())
+    for path in sorted((ROOT / "gpu/vk").glob("*.cpp")):   # ((longshot) the renderer's readers: through the host's table)
+        text = path.read_text(encoding="utf-8")
+        for m in re.finditer(r'\bab_value\("([A-Z0-9_]+)"', text):
+            found.setdefault(m.group(1), []).append(path.relative_to(ROOT).as_posix())
+            if "host->version >= 36 && host->ab_value" not in text:
+                fail("%s: ab_value is asked of a host older than version 36" % path.relative_to(ROOT).as_posix())
     if {k: v for k, v in found.items()} != {k: [v] for k, v in WIRED.items()}:
         fail("the switches wired to hos_ab_value are %r, not %r (a switch whose value sets something up once may not be)"
              % (found, WIRED))
@@ -428,38 +460,44 @@ def c_fixture(cc, tmp):
 
 
 def flips_collect(cc, tmp):
-    """tests/test_collect_wide.py's 400 rounds with hos_ab_value flipping HOS_COLLECT_WIDE at every walk"""
+    """tests/test_collect_wide.py's rounds with hos_ab_value flipping HOS_COLLECT_WIDE at every walk"""
     t = load("test_collect_wide")
     src = (ROOT / "host/rx_backend.c").read_text(encoding="utf-8")
-    text = (t.FIXTURE.replace("@MARKS_CLEAR@", t.block(src, "static inline int marks_clear_256("))
-            .replace("@COLLECT_IN@", t.block(src, "static int64_t collect_in(")))
+    text = t.fixture(src)
     stub = re.compile(r"^static int hos_ab_value\(const char \*name, int normal\) \{[^\n]*$", re.M)
     end = "    return 0;\n}\n"
     if len(stub.findall(text)) != 1 or not text.endswith(end):
         fail("tests/test_collect_wide.py's fixture has no hos_ab_value stub or end to change: update the test")
-    # (odd walks the A/B's value 0, even ones the normal 1: the last walk, the 401st, is a 32-mark one, so the fixture's own
-    # check of the wide step expects none; every round's pages, their order and the marks left must still be a plain walk's)
-    text = stub.sub(lambda m: "static long ab_calls, ab_old;\nstatic int hos_ab_value(const char *name, int normal) "
-                              "{ (void)name; if (++ab_calls & 1) { ab_old++; return 0; } return normal; }", text)
+    # (odd walks the A/B's value 0, even ones the normal 1, through all the rounds; every round's pages, their order and the
+    # marks left must still be a plain walk's. The fixture's own check of the steps taken, after the rounds, runs with no flip)
+    marker = "    word_wide_calls = wide_calls = vector_calls = vector256_calls = 0;\n"
+    if text.count(marker) != 1:
+        fail("tests/test_collect_wide.py's fixture has no single check of the steps taken to run without a flip: update the test")
+    text = text.replace(marker, "    ab_flip = 0;\n" + marker)
+    text = stub.sub(lambda m: "static long ab_calls, ab_old;\nstatic int ab_flip = 1;\nstatic int hos_ab_value(const char *name, int normal) "
+                              "{ (void)name; if (ab_flip && (++ab_calls & 1)) { ab_old++; return 0; } return normal; }", text)
     text = text[:-len(end)] + "    printf(\"ab: %ld reads, %ld old\\n\", ab_calls, ab_old);\n" + end
     c, exe = Path(tmp) / "collect_flips.c", Path(tmp) / "collect_flips.exe"
     c.write_text(text, encoding="utf-8")
-    subprocess.run([cc, "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS", str(c), "-o", str(exe)],
+    # (the fixture defines _CRT_SECURE_NO_WARNINGS itself and includes the switches' header; HOS_COLLECT_VECTOR=0 keeps the
+    # word walk, the one HOS_COLLECT_WIDE flips: the vector walk does not read it)
+    subprocess.run([cc, "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "gpu/vk/compat"), str(c), "-o", str(exe)],
                    check=True, timeout=180)
     env = {k: v for k, v in os.environ.items() if not k.startswith("HOS_")}
-    r = subprocess.run([str(exe), "0"], env=env, capture_output=True, text=True, timeout=300)
+    env["HOS_COLLECT_VECTOR"] = "0"
+    r = subprocess.run([str(exe), "1", "0"], env=env, capture_output=True, text=True, timeout=300)
     m = re.search(r"ab: (\d+) reads, (\d+) old", r.stdout)
     if r.returncode or not m:
         fail("the write marks' walk with HOS_COLLECT_WIDE flipping at every walk found other pages or left other marks:\n%s%s"
              % (r.stdout, r.stderr))
     reads, old = int(m.group(1)), int(m.group(2))
-    if reads != 401 or old != 201:
-        fail("the walk's flips: %d reads, %d of them the old walk (401 and 201 expected)" % (reads, old))
+    if reads < 1600 or old != (reads + 1) // 2:
+        fail("the walk's flips: %d reads, %d of them the old walk (at least 1600, every other one expected)" % (reads, old))
     print("write marks' walk flipping between 256 and 32 marks a step at every walk: every walk right (%d reads, %d old)"
           % (reads, old))
 
 
-# ---- scripts/ab_summary.py
+# ---- scripts/perf.py ab (scripts/profiling/ab.py)
 BROKEN_PY = [
     ("transitions kept", '        if v in TRANSITION:\n            p["transitions"] += 1\n        else:\n            p["ms"].append(ms)\n',
      '        p["ms"].append(ms)\n'),
@@ -509,16 +547,19 @@ def drifting(path):
 
 
 def summary_checks(tmp):
-    script = (ROOT / "scripts/ab_summary.py").read_text(encoding="utf-8")
+    script = (ROOT / "scripts/profiling/ab.py").read_text(encoding="utf-8")
     a, b = Path(tmp) / "frames.csv", Path(tmp) / "drift.csv"
     made_up(a)
     drifting(b)
+    # (a copy of the tool, whose ab.py each variant replaces)
+    copy = Path(tmp) / "scripts"
+    shutil.copytree(ROOT / "scripts/profiling", copy / "profiling", ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copyfile(ROOT / "scripts/perf.py", copy / "perf.py")
 
     def run(text, *args):
-        p = Path(tmp) / "ab_summary_run.py"
-        p.write_text(text, encoding="utf-8")
-        r = subprocess.run([sys.executable, "-I", "-B", str(p), "--json", *map(str, args)], capture_output=True, text=True,
-                           timeout=120)
+        (copy / "profiling" / "ab.py").write_text(text, encoding="utf-8")
+        r = subprocess.run([sys.executable, "-I", "-B", str(copy / "perf.py"), "ab", "--json", *map(str, args)],
+                           capture_output=True, text=True, timeout=120)
         if r.returncode:
             return None, r.stderr
         return json.loads(r.stdout), ""
@@ -555,18 +596,18 @@ def summary_checks(tmp):
 
     bad = check(script)
     if bad:
-        fail("scripts/ab_summary.py:\n  " + "\n  ".join(bad))
-    r = subprocess.run([sys.executable, "-I", "-B", str(ROOT / "scripts/ab_summary.py"), str(a)], capture_output=True, text=True,
-                       timeout=120)
+        fail("scripts/profiling/ab.py:\n  " + "\n  ".join(bad))
+    r = subprocess.run([sys.executable, "-I", "-B", str(ROOT / "scripts/perf.py"), "ab", str(a)], capture_output=True,
+                       text=True, timeout=120)
     if r.returncode or "side 1 is slower" not in r.stdout:
-        fail("scripts/ab_summary.py's text:\n" + r.stdout + r.stderr)
+        fail("scripts/perf.py ab's text:\n" + r.stdout + r.stderr)
     print(r.stdout.rstrip())
     for what, old, new in BROKEN_PY:
         if script.count(old) != 1:
-            fail("scripts/ab_summary.py no longer has the text the broken variant '%s' changes: %r" % (what, old))
+            fail("scripts/profiling/ab.py no longer has the text the broken variant '%s' changes: %r" % (what, old))
         found = check(script.replace(old, new))
         if not found:
-            fail("broken variant of scripts/ab_summary.py '%s' passed" % what)
+            fail("broken variant of scripts/profiling/ab.py '%s' passed" % what)
         print("broken variant %s: caught (%s)" % (what, found[0][:110]))
 
 
@@ -583,7 +624,7 @@ def main():
         flips_collect(cc, tmp)
         summary_checks(tmp)
     print("PASS: the A/B's parser, schedule, frames, cheap path and sums; the wired switch flips with it and stays right when "
-          "flipped at every call; ab_summary.py's sides, transitions, warm-up, trims and interval")
+          "flipped at every call; perf.py ab's sides, transitions, warm-up, trims and interval")
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@ source = (ROOT / "gpu" / "vk" / "vk_antilag.cpp").read_text(encoding="utf-8")
 
 
 def present_image_block(text):
-    return block(text, "void present_image(")
+    return block(text, "void present_image_with_trial(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view, bool source_srgb, bool allow_scale, OutputTrialSource trial) {")
 
 
 def block(text, marker):
@@ -45,7 +45,7 @@ if main.index("antilag_device_features(tail);") > main.index("vkGetPhysicalDevic
     raise SystemExit("vk_main.cpp: Anti-Lag 2's feature joins the chain after the features were queried")
 replay = (ROOT / "gpu" / "vk" / "vk_replay.cpp").read_text(encoding="utf-8")
 # (present ahead, #1720: present_image's present is its end, present_out, which present_commit also runs)
-present = block(replay, "static bool present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {")
+present = block(replay, "static bool present_out(uint32_t index, std::unique_lock<decltype(dev.present_mu)>& qk, OutputTrialSource trial, bool preview_path) {")
 if "antilag_present();" not in present or present.index("antilag_present();") > present.index("vkQueuePresentKHR("):
     raise SystemExit("present_out: Anti-Lag 2's present stage is not given before vkQueuePresentKHR")
 if "reflex_sleep(); antilag_input();" not in block(replay, "void do_present("):

@@ -1,5 +1,5 @@
-"""scripts/chain.py walks a frame back from its present through waits, signals and virtual-core grants (HOS_CHAIN,
-host/hos_chain.c). A made-up recording of three threads, written in the recorder's own format, must come out with the
+"""scripts/perf.py chain (scripts/profiling/chain.py) walks a frame back from its present through waits, signals and
+virtual-core grants (HOS_CHAIN, host/hos_chain.c). A made-up recording of three threads, written in the recorder's own format, must come out with the
 path's time where it was spent: the presenting thread's run after its wake-up, the main thread's run, the worker's run
 before its signal, and a wait for a virtual core inside an event wait kept on the waiting thread (with the thread that
 gave the core up).
@@ -16,17 +16,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-import chain  # noqa: E402
+from profiling import chain  # noqa: E402
 
 
 def check_layout():
     hdr = (ROOT / "host" / "hos.h").read_text(encoding="utf-8")
     m = re.search(r"enum \{ HOS_CHAIN_WAIT = 1, HOS_CHAIN_WOKE, HOS_CHAIN_SIGNAL, HOS_CHAIN_SLEEP, HOS_CHAIN_AWAKE, "
                   r"HOS_CHAIN_PRESENT \};", hdr)
-    assert m, "host/hos.h: the HOS_CHAIN kinds changed: update scripts/chain.py and this test"
+    assert m, "host/hos.h: the HOS_CHAIN kinds changed: update scripts/profiling/chain.py and this test"
     assert (chain.WAIT, chain.WOKE, chain.SIGNAL, chain.SLEEP, chain.AWAKE, chain.PRESENT) == (1, 2, 3, 4, 5, 6)
     src = (ROOT / "host" / "hos_chain.c").read_text(encoding="utf-8")
-    assert '"%s"' % chain.REC.format in src, "host/hos_chain.c: the record's layout and scripts/chain.py's differ"
+    assert '"%s"' % chain.REC.format in src, "host/hos_chain.c: the record's layout and scripts/profiling/chain.py's differ"
     assert chain.REC.size == 32 and "} ChainRec;" in src
     vc = (ROOT / "host" / "hos_thread.c").read_text(encoding="utf-8")
     assert "return 1ULL << 63 | (uint64_t)(uintptr_t)t;" in vc and chain.VCORE == 1 << 63

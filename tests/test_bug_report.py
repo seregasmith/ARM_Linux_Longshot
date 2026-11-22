@@ -7,8 +7,8 @@ Checked:
 
 - the report's folder holds report.txt, both logs and the picture, and nothing else; no file in it names the home folder,
   the user's name as a folder, or the game folder's path;
-- report.txt's sections are the issue form's (.forgejo/ISSUE_TEMPLATE/1-game-problem.yml), and scripts/hardware_report.py
-  reads the GPU's vendor and class and the system from it as it reads an issue; its link fills in the form's own fields
+- report.txt's sections are the issue form's (.forgejo/ISSUE_TEMPLATE/1-game-problem.yml), read as an issue's are (a
+  ### heading each), the GPU as written and the system naming its OS; its link fills in the form's own fields
   (Forgejo's field:<id> query, for ids the form has) and stays within 2000 characters: more switches than fit are
   counted, not listed;
 - where the player is comes from the last map line (host/hos_main.c logs them), the run before's crash line is named;
@@ -26,7 +26,6 @@ Checked:
 python -I -B tests/test_bug_report.py [--cxx g++]
 """
 import argparse
-import importlib.util
 import os
 import re
 import subprocess
@@ -150,11 +149,20 @@ int main(int argc, char** argv) {
 '''
 
 
-def load_hardware_report():
-    spec = importlib.util.spec_from_file_location("hardware_report", ROOT / "scripts" / "hardware_report.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def section(body, name):
+    """the answer under an issue form's "### <name>" heading, as an issue's body or report.txt holds it"""
+    m = re.search(r"### " + re.escape(name) + r"[^\n]*\n+(.*?)(\n### |\Z)", body or "", re.S)
+    return m.group(1).strip() if m else ""
+
+
+def os_of(text):
+    """the OS a system answer names: what a reader of the issues counts it as"""
+    t = text.lower()
+    if re.search(r"linux|ubuntu|arch|fedora|steamos|bazzite|cachy|nixos|mint|pop!?_os|steam ?deck|vangogh", t):
+        return "Linux / SteamOS"
+    if re.search(r"windows|win ?1[01]", t):
+        return "Windows"
+    return "unknown"
 
 
 def check(ok, why):
@@ -184,16 +192,17 @@ def no_private(files, home, user, game):
 
 def wiring():
     menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
-    at = menu.index('{TAB_GAMEPLAY, "Bug report", nullptr')
-    row = menu[at:menu.index("},", at)]
+    # (the row: its module's, gpu/vk/menu/bug_report.cpp, #1633; Restart and Quit after it, session.cpp's)
+    module = (ROOT / "gpu" / "vk" / "menu" / "bug_report.cpp").read_text(encoding="utf-8")
+    row = module[module.index('.label = "Bug report"'):module.index("menu::last()")]
     for word in ("report.txt", "logs", "picture", "user name", "No saves", "nothing is sent"):
         check(word in row, "the row's help does not say " + word)
-    check(menu.index('"Bug report"') < menu.index('{TAB_GAMEPLAY, "Restart"') and
-          "constexpr int kBugReportRow = kRestartRow - 1;" in menu, "the row is not the one before Restart")
-    check("&r == &rows[kBugReportRow]) bug_report_save()" in menu[menu.index("void menu_tick() {"):],
+    session = (ROOT / "gpu" / "vk" / "menu" / "session.cpp").read_text(encoding="utf-8")
+    check('.key = "bug_report"' in module and session.count('menu::after("bug_report")') == 2 and
+          session.index('"restart"') < session.index('"quit"'), "the row is not the one before Restart")
+    check(".on_activate = MENU_HOOK(bug_report_save)" in row and "r.setting->on_activate()" in menu[menu.index("void menu_tick() {"):],
           "A or Enter on the row does not save the report")
-    check(menu.count('&selr == &rows[kBugReportRow] || is_share_row(selr) ? "Save" : "Open"') +
-          menu.count('&r == &rows[kBugReportRow] || is_share_row(r) ? "Save" : "Open"') >= 2,
+    check('.verb = "Save"' in row and menu.count("setting->verb ?") >= 2,
           "a prompt (the menu's, or the compact bar's) does not say Save for the row")
     save = menu[menu.index("void bug_report_save() {"):]
     save = save[:save.index("\n}\n")]
@@ -243,7 +252,6 @@ def main():
     p.add_argument("--cxx", default="g++")
     a = p.parse_args()
     wiring()
-    hw = load_hardware_report()
     windows = os.name == "nt"
     with tempfile.TemporaryDirectory(prefix="bug-report-") as tmp:
         tmp = Path(tmp)
@@ -293,15 +301,14 @@ def main():
             check(kept in copy, "the copy of this run's log does not read " + kept)
         check(len(copy.splitlines()) == len(now_log.read_text(encoding="utf-8").splitlines()), "lines lost in the copy")
         report = files["report.txt"]
-        section = lambda name: hw.section(report, name)
-        check(section("Longshot version") == VERSION, "the version: " + section("Longshot version"))
-        gpu = section("Graphics card")
-        check(gpu == "NVIDIA GeForce RTX 4090, NVIDIA 580.95.05" and hw.classify(gpu) == ("NVIDIA", "RTX 40"),
-              "hardware_report.py reads the GPU as %s from %r" % (hw.classify(gpu), gpu))
-        check(hw.os_of(section("CPU, RAM and operating system")) == "Linux / SteamOS", "hardware_report.py's OS")
-        where = section("Where in the game")
+        answer = lambda name: section(report, name)
+        check(answer("Longshot version") == VERSION, "the version: " + answer("Longshot version"))
+        gpu = answer("Graphics card")
+        check(gpu == "NVIDIA GeForce RTX 4090, NVIDIA 580.95.05", "the GPU reads %r" % gpu)
+        check(os_of(answer("CPU, RAM and operating system")) == "Linux / SteamOS", "the system's OS")
+        where = answer("Where in the game")
         check(where.startswith("HyruleField_Child (child)") and "Market_Child (child)" in where, "where: " + where)
-        settings = section("Changes from the defaults")
+        settings = answer("Changes from the defaults")
         lines = settings.splitlines()
         for want in ("Upscaler: NVIDIA DLSS (default: Game's)", "HOS_HEADLESS=1", "MANGOHUD=1", "RX_VK_SHOT_EVERY=60",
                      "RX_VK_X_MODE=off", "HOS_OUTPUT_RES=3840x2160", "RX_VK_NEG=-1", "RX_VK_SCALE=1.5"):
@@ -312,9 +319,9 @@ def main():
         for unwanted in ("PATH=", "SECRET_TOKEN", "=C:", "93127", "58213", "47731", "hunter2", "192.168", "relay.example", "47732",
                          "1234567890123", "1:INS"):
             check(unwanted not in report, "report.txt holds " + unwanted)
-        logs = section("longshot_log.txt")
+        logs = answer("longshot_log.txt")
         check("longshot v2.0.14" in logs and "CRASH: exception 0xc0000005" in logs, "the logs' section: " + logs)
-        check("picture.png" in section("Screenshots or video"), "the picture is not named")
+        check("picture.png" in answer("Screenshots or video"), "the picture is not named")
         link = report[report.index("https://git.magicbean.dev/MagicBeanDev/Longshot/issues/new?template=.forgejo/ISSUE_TEMPLATE/1-game-problem.yml"):].split()[0]
         for part in ("&field:version=v2.1.0-rc.3-39-gbdfe09c%20%28source%20763271ad%29", "&field:gpu=NVIDIA%20GeForce%20RTX%204090",
                      "&field:where=HyruleField_Child%20%28child%29", "&field:system=", "&field:settings=Upscaler", "HOS_HEADLESS", "RX_VK_MENU_SCRIPT"):
@@ -327,7 +334,7 @@ def main():
         # 2. the menu's way: on a thread, its state read each frame; no frame comes, so no picture
         folders, out = run(exe, "start", game, str(now_log), home, user, windows)
         files = files_of(game_path / folders[0])
-        check("picture.png" not in files and "No picture" in hw.section(files["report.txt"], "Screenshots or video"),
+        check("picture.png" not in files and "No picture" in section(files["report.txt"], "Screenshots or video"),
               "a report without a frame: %s" % sorted(files))
 
         # 2b. the picture comes after the report went without it (no present in time): the report says it has none, and the
@@ -335,7 +342,7 @@ def main():
         folders, out = run(exe, "late", game, str(now_log), home, user, windows)
         files = files_of(game_path / folders[0])
         check("LATE removed (asked for the report's own picture.png)" in out and "picture.png" not in files and
-              "No picture" in hw.section(files["report.txt"], "Screenshots or video"), "a late picture: %s %s" % (out, sorted(files)))
+              "No picture" in section(files["report.txt"], "Screenshots or video"), "a late picture: %s %s" % (out, sorted(files)))
 
         # 3. started from a terminal: no log file this run; the run before's is the game folder's longshot_log.txt
         folders, out = run(exe, "terminal", game, "", home, user, windows)
@@ -344,7 +351,7 @@ def main():
         check(set(files) == {"report.txt", "longshot_log.1.txt"}, "from a terminal the folder holds %s" % sorted(files))
         check("HyruleField_Child" in files["longshot_log.1.txt"], "the run before's log is not the game folder's last one")
         report = files["report.txt"]
-        check("terminal" in hw.section(report, "Where in the game") and "terminal" in hw.section(report, "longshot_log.txt"),
+        check("terminal" in section(report, "Where in the game") and "terminal" in section(report, "longshot_log.txt"),
               "the report does not say where this run's log is")
         no_private(files, home, user, game)
 
@@ -366,7 +373,7 @@ def main():
         check(copy.startswith("[hos host] longshot " + VERSION) and copy.endswith("[hos host] the last line\n") and
               "of this log's middle left out here" in copy, "the long log's copy lost its start, its end or the note")
         report = (game_path / folders[0] / "report.txt").read_text(encoding="utf-8")
-        check(hw.section(report, "Where in the game").startswith("DeathMountainTrail_Child (child)"), "the middle's map")
+        check(section(report, "Where in the game").startswith("DeathMountainTrail_Child (child)"), "the middle's map")
         check(home not in copy, "the long log's copy names the home folder")
 
         # 4b. more switches than a link takes: the link stays within 2000 characters and carries the options and how many
@@ -375,7 +382,7 @@ def main():
         report = (game_path / folders[0] / "report.txt").read_text(encoding="utf-8")
         link = report[report.index("https://git.magicbean.dev/MagicBeanDev/Longshot/issues/new?template=.forgejo/ISSUE_TEMPLATE/1-game-problem.yml"):].split()[0]
         check(len(link) <= 2000, "the link with 98 switches: %d characters" % len(link))
-        settings = hw.section(report, "Changes from the defaults")
+        settings = section(report, "Changes from the defaults")
         listed = [ln for ln in settings.splitlines() if re.match(r"[A-Z_][A-Z0-9_]*=", ln)]
         check("&field:settings=Upscaler%3A%20NVIDIA%20DLSS" in link and
               "Switches%%20set%%3A%%20%d%%2C%%20listed%%20in%%20the%%20attached%%20report.txt" % len(listed) in link and
@@ -383,9 +390,9 @@ def main():
         check(all("RX_TEST_SWITCH_%d=(value left out)" % i in listed for i in range(80)) and "HOS_HEADLESS=1" in listed and
               "v" * 20 not in report, "report.txt does not list every switch, or writes a value it should leave out")
 
-        # 5. this PC: the system as the form asks it, read by hardware_report.py as this OS
+        # 5. this PC: the system as the form asks it, read as this OS
         system = next(ln[7:] for ln in out if ln.startswith("SYSTEM "))
-        check(hw.os_of(system) == ("Windows" if windows else "Linux / SteamOS") and " GB, " in system,
+        check(os_of(system) == ("Windows" if windows else "Linux / SteamOS") and " GB, " in system,
               "this PC's system reads " + system)
 
         # 6. NUL bytes, one in a line and a run of them at the end (what a power cut or a hard kill leaves): the copy is the
@@ -402,7 +409,7 @@ def main():
         copy = (game_path / folders[0] / "longshot_log.txt").read_bytes()
         check(copy == nul_text.replace(home, home_as).encode("utf-8"), "the copy of a log with NUL bytes differs: %r" % copy[-200:])
         report = (game_path / folders[0] / "report.txt").read_text(encoding="utf-8")
-        check(hw.section(report, "Where in the game").startswith("LostWoods_Child (child)"), "the map after a NUL is lost")
+        check(section(report, "Where in the game").startswith("LostWoods_Child (child)"), "the map after a NUL is lost")
 
         # 7. a report's folder that cannot be made (bug-reports is a file here): the system's reason, GetLastError's on Windows
         blocked = tmp / "blocked" / "Longshot"
@@ -420,7 +427,7 @@ def main():
             folders, _ = run(exe, mode, game, str(now_log), home, user, windows)
             report = (game_path / folders[0] / "report.txt").read_text(encoding="utf-8")
             check("### Depends on this PC" not in report, "a heading the issue form has no field for")
-            changes = hw.section(report, "Changes from the defaults")
+            changes = section(report, "Changes from the defaults")
             check(marker in changes and "Switches set" in changes and
                   changes.index(marker) < changes.index("Switches set"), "the PC rows are not under their line: " + changes)
             fixed = changes[:changes.index(marker)] if marker in changes else changes

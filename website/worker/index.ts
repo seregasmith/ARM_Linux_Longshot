@@ -1,40 +1,40 @@
 // longshot.magicbean.dev's Worker: the built site (dist/), and permanent download links for the Longshot Launcher.
 //
 //   /download                                   a page: the launcher for this computer, from the best channel there is
-//   /download/launcher/<os>                     302 to that file of the best channel (stable, else rc, else nightly)
+//   /download/launcher/<os>                     302 to that file of the best channel (stable, else nightly)
 //   /download/launcher/<channel>                302 to that channel's newest release page
 //   /download/launcher/<channel>/<os>           302 to that file of the channel's newest release
 //
-// <channel> is stable, rc or nightly; <os> is windows (the setup), windows-portable (the zip) or linux (the AppImage).
+// <channel> is stable or nightly (rc, the channel there was, goes to stable: old pages link it); <os> is windows (the setup), windows-portable (the zip) or linux (the AppImage).
 // The channels follow the launcher's rules (Core/ReleaseManifest.cs, Newest; scripts/release.py, newest): drafts never;
-// stable the newest vX.Y.Z that is not a pre-release; rc the newest vX.Y.Z-rc.N or vX.Y.Z; nightly the newest
-// nightly-<count>-<8 hex> by its count. The release list is read from git.magicbean.dev and kept 60 seconds.
+// stable the newest vX.Y.Z that is not a pre-release; nightly the newest nightly-<count>-<8 hex> by its count.
+// An old vX.Y.Z-rc.N is on no channel. The release list is read from git.magicbean.dev and kept 60 seconds.
 
 const FORGE = "https://git.magicbean.dev";
 const REPO = "MagicBeanDev/LongshotLauncher";
 const FIRST_MAJOR = 1;
 const CACHE_SECONDS = 60;
-const CHANNELS = ["stable", "rc", "nightly"];
+const CHANNELS = ["stable", "nightly"];
+// (release candidates are gone: links to their channel go to stable)
+const ALIASES = { rc: "stable" };
 const FILES = {
   windows: { suffix: "-windows-x64-setup.exe", label: "Windows installer", note: "setup.exe" },
   "windows-portable": { suffix: "-windows-x64-portable.zip", label: "Windows portable", note: "zip, no install" },
   linux: { suffix: "-x86_64.AppImage", label: "Linux", note: "AppImage" },
 };
-const CHANNEL_NAME = { stable: "Stable", rc: "Release candidate", nightly: "Nightly" };
+const CHANNEL_NAME = { stable: "Stable", nightly: "Nightly" };
 const CHANNEL_NOTE = {
   stable: "for playing",
-  rc: "the next version, to try before it is stable",
   nightly: "every change, untested",
 };
 
 const STABLE = /^v(\d+)\.(\d+)\.(\d+)$/;
-const VERSION = /^v(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?$/;
 const NIGHTLY = /^nightly-([0-9]{1,9})-([0-9a-f]{8})$/;
 
 export function versionKey(tag) {
-  const m = VERSION.exec(tag || "");
+  const m = STABLE.exec(tag || "");
   if (!m) return null;
-  return [+m[1], +m[2], +m[3], m[4] ? 0 : 1, +(m[4] || 0)];
+  return [+m[1], +m[2], +m[3]];
 }
 
 function compareKeys(a, b) {
@@ -57,7 +57,7 @@ export function newest(releases, channel) {
   for (const r of published) {
     const k = versionKey(r.tag_name);
     if (!k || k[0] < FIRST_MAJOR) continue;
-    if (channel === "stable" && (!STABLE.test(r.tag_name) || r.prerelease)) continue;
+    if (r.prerelease) continue;
     if (!best || compareKeys(k, versionKey(best.tag_name)) > 0) best = r;
   }
   return best;
@@ -69,7 +69,7 @@ export function assetOf(release, kind) {
   return (release.assets || []).find((a) => a.name.startsWith("LongshotLauncher-") && a.name.endsWith(suffix)) || null;
 }
 
-/** The best channel there is: stable, else rc, else nightly; [channel, release] or [null, null] */
+/** The best channel there is: stable, else nightly; [channel, release] or [null, null] */
 export function best(releases) {
   for (const c of CHANNELS) {
     const r = newest(releases, c);
@@ -339,6 +339,7 @@ async function download(request, ctx, parts) {
   // /download/launcher
   if (parts.length === 1) return redirect("/download");
   let [channel, kind] = parts.slice(1);
+  channel = ALIASES[channel] || channel;
   if (parts.length === 2 && FILES[channel]) {
     // /download/launcher/<os>: the best channel there is
     [kind, channel] = [channel, best(releases)[0]];

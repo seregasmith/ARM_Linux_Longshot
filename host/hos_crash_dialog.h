@@ -19,6 +19,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../gpu/vk/compat/longshot_redact.h"   /* (the home folder and the user's name out: one implementation) */
+#define LONGSHOT_NO_GPU_KEYS_ONLY
+#include "../gpu/vk/compat/longshot_no_gpu.h"   /* (why Vulkan listed no GPU: the renderer's line's names) */
 
 #define HOS_CRASH_WATCH_ARG "--crash-watch"
 #define HOS_CRASH_SHOW_ARG "--crash-show"
@@ -161,6 +163,7 @@ static inline size_t hos_crash_quote_arg(char *out, size_t cap, const char *arg)
 typedef struct HosCrashLog {
     int map, preparing, prepared;   /* the stage: a map line (host/hos_main.c, a save loaded), the shaders' preparation */
     int files, vulkan, window, reserve, memory, low_memory, device_lost;
+    int no_gpu;   /* (Vulkan listed no GPU at all: 1 + its cause, LONGSHOT_NO_GPU_*, from the renderer's line; 0 no such line) */
     char version[128], gpu[160], driver[160], devices[240], dlss[240], fsr4[240];
     /* (what Report automatically's card says too, from the same lines as build_report (hos_crash_dialog.c): the report: lines, the
        place (the last map, else the shaders' preparation or the title and intro) and the crash in one line) */
@@ -295,6 +298,12 @@ static inline void hos_crash_log_line(HosCrashLog *f, const char *line) {
         strstr(line, "] vk: create_device failed") || strstr(line, "] rx: the Vulkan back end could not start") ||
         strstr(line, "] display: the renderer did not start"))
         f->vulkan = 1;
+#define HOS_CRASH_NO_GPU_LINE "] vk: no Vulkan device (cause "   /* (gpu/vk/compat/longshot_no_gpu.h's line: why, where the PC said) */
+    if ((at = strstr(line, HOS_CRASH_NO_GPU_LINE))) {
+        const char *key = at + sizeof HOS_CRASH_NO_GPU_LINE - 1, *end = strchr(key, ')');
+        const int cause = end ? longshot_no_gpu_cause_of(key, (size_t)(end - key)) : -1;
+        f->vulkan = 1, f->no_gpu = 1 + (cause < 0 ? LONGSHOT_NO_GPU_UNKNOWN : cause);
+    }
     if (strstr(line, "] display: no SDL") || strstr(line, "] display: SDL_Init: ") || strstr(line, "] display: SDL_CreateWindow: ") ||
         ((at = strstr(line, "] display: ")) && strstr(at, " failed (error ")))
         f->window = 1;
@@ -431,11 +440,11 @@ static inline int hos_crash_driver_module(const char *module) {
 /* ---- was it a crash ---- */
 enum { HOS_CRASH_QUIET, HOS_CRASH_SHOW_CRASH, HOS_CRASH_SHOW_UNCLEAN, HOS_CRASH_SHOW_START };
 /* What the helper says once the game has ended. A crash record of the run: it crashed, whatever came before it, a quit
-   included (as the renderer's crash markers count a crash after a quit: PR 498). A start the log says could not go on (its
+   included (as the renderer's crash markers count a crash after a quit). A start the log says could not go on (its
    files, Vulkan, the window, memory) before a save was loaded: that, a quit included (the black window closed). An unclean
    end, the run's marker left with no crash record (killed, out of memory, a handler that could not run): only when the
    player had not asked to quit (a quit never counts, however the process ends after it: a second close of a window that
-   stopped answering while it closes, PR 498) and, on Windows, the exit code is not 0. Anything else (the marker removed:
+   stopped answering while it closes) and, on Windows, the exit code is not 0. Anything else (the marker removed:
    a quit, a return, a restart) says nothing; nor does a run another took the place of (Linux's restart: the same process). */
 static inline int hos_crash_verdict(const HosCrashRecord *r, const HosCrashLog *f, int have_exit, unsigned long exit_code,
                                     int replaced) {
@@ -446,13 +455,17 @@ static inline int hos_crash_verdict(const HosCrashRecord *r, const HosCrashLog *
     return HOS_CRASH_QUIET;
 }
 enum { HOS_CAUSE_UNKNOWN, HOS_CAUSE_FILES, HOS_CAUSE_VULKAN, HOS_CAUSE_WINDOW, HOS_CAUSE_MEMORY, HOS_CAUSE_GPU_DRIVER,
-       HOS_CAUSE_ENDED };
-/* Why, where the record or the log says: the first that holds of the game's files, Vulkan, the window (before play), memory,
-   the graphics driver; an unclean end with nothing else known was ended from outside (or out of memory, when the start
-   warned of low memory); else not known */
+       HOS_CAUSE_ENDED, HOS_CAUSE_NO_GPU, HOS_CAUSE_NVIDIA_RT, HOS_CAUSE_NVIDIA_UNLOADED, HOS_CAUSE_NVIDIA_VULKAN };
+/* Why, where the record or the log says: the first that holds of the game's files, Vulkan (no GPU listed at all, and why
+   where the PC said: f->no_gpu), the window (before play), memory, the graphics driver; an unclean end with nothing else
+   known was ended from outside (or out of memory, when the start warned of low memory); else not known */
 static inline int hos_crash_cause(int verdict, const HosCrashRecord *r, const HosCrashLog *f, int have_exit, unsigned long exit_code) {
     if (f->files && !f->map) return HOS_CAUSE_FILES;
-    if (f->vulkan && !f->map) return HOS_CAUSE_VULKAN;
+    if (f->vulkan && !f->map)
+        return f->no_gpu == 1 + LONGSHOT_NO_GPU_NVIDIA_RT ? HOS_CAUSE_NVIDIA_RT
+             : f->no_gpu == 1 + LONGSHOT_NO_GPU_NVIDIA_UNLOADED ? HOS_CAUSE_NVIDIA_UNLOADED
+             : f->no_gpu == 1 + LONGSHOT_NO_GPU_NVIDIA_VULKAN ? HOS_CAUSE_NVIDIA_VULKAN
+             : f->no_gpu ? HOS_CAUSE_NO_GPU : HOS_CAUSE_VULKAN;
     if (f->window && !f->map) return HOS_CAUSE_WINDOW;
     if (f->reserve || f->memory || r->oom || r->code == 0xC0000017u || (have_exit && exit_code == 0xC0000017ul)) return HOS_CAUSE_MEMORY;
     if (!strcmp(r->reason, "device lost") || !strcmp(r->reason, "Vulkan fatal") || f->device_lost ||
@@ -480,6 +493,20 @@ static inline const char *hos_crash_cause_text(int cause) {
     case HOS_CAUSE_VULKAN:
         return "Vulkan didn't start on your graphics card. Update your graphics driver: Longshot needs a graphics card and "
                "driver with Vulkan 1.3.";
+    case HOS_CAUSE_NO_GPU:
+        return "Vulkan found no graphics card. Check that a Vulkan driver is installed and loaded, and that Vulkan loader "
+               "filters are not hiding your card. Install or update your graphics driver and restart your PC: Longshot needs "
+               "a graphics card and driver with Vulkan 1.3.";
+    case HOS_CAUSE_NVIDIA_RT:
+        return "NVIDIA's kernel module isn't loaded and this is a real-time kernel (PREEMPT_RT). A driver compatibility or "
+               "loading issue is possible. Check your NVIDIA driver and kernel module logs, and try a supported driver or a "
+               "standard kernel. Also check that a Vulkan driver is installed and loaded.";
+    case HOS_CAUSE_NVIDIA_UNLOADED:
+        return "NVIDIA's kernel module isn't loaded. This may be a driver loading issue. Restart your PC or reinstall the NVIDIA "
+               "driver, and check that a Vulkan driver is installed and loaded.";
+    case HOS_CAUSE_NVIDIA_VULKAN:
+        return "NVIDIA's kernel module is loaded, but Vulkan found no graphics card. Check that a Vulkan driver is installed "
+               "and loaded. NVIDIA's Vulkan files may be missing or mismatched; try restarting or reinstalling its driver.";
     case HOS_CAUSE_WINDOW: return "Longshot couldn't open its window. Restart your PC, and update your graphics driver.";
     case HOS_CAUSE_MEMORY:
         return "Your PC ran out of memory. Close other programs and try again; Longshot needs 16 GB of RAM, and on Windows a "
@@ -666,10 +693,9 @@ static inline int hos_crash_show_at_start(const char *name, const char *shown, i
     return t <= now + 300 && now - t <= 86400;
 }
 
-/* ---- Report automatically: the report built and sent here (docs/crash-report-window.md) ---- */
-/* Where it goes: crash_reports= (Longshot-api's POST /telemetry/crash) and crash_issue= (the issue the reports are posted on,
-   the only place the Sent page's link may go) in the folder's longshot_version.txt, which nx2/make_game.py writes from
-   nx2/addresses.ini. A key's value, "" when the stamp has none; 0 then, or when it is not an https:// address on one line */
+/* ---- Report automatically: the report built and sent here (docs/dev/reference/crash-window.md) ---- */
+/* Where it goes: crash_reports= (Longshot-api's POST /telemetry/crash, which keeps the reports where only the team reads
+   them) in the folder's longshot_version.txt, which nx2/make_game.py writes from nx2/addresses.ini. A key's value, "" when the stamp has none; 0 then, or when it is not an https:// address on one line */
 static inline int hos_crash_stamp_address(const char *stamp, const char *key, char *out, size_t cap) {
     const size_t kn = strlen(key);
     if (cap) out[0] = 0;
@@ -991,9 +1017,9 @@ static inline void hos_crash_report_version(char *out, size_t cap, const char *v
 }
 
 /* The answer to the send, from the HTTP status (0: no answer: curl could not reach the server, or did not run) and the relay's
-   JSON ({"comment": link} or {"error": why}), as the Sent page or the Not sent page says it: 1 sent (*link: the report's own
-   comment on the crash issue when the answer names one there, else the issue itself), 0 not (*again: whether trying again
-   could help: the server unreachable or busy, not a refusal) */
+   JSON ({"error": why} on a refusal), as the Sent page or the Not sent page says it: 1 sent, 0 not (*again: whether trying
+   again could help: the server unreachable or busy, not a refusal). The reports are kept where only the team reads them, so
+   the Sent page links nowhere, whatever the answer names (an older relay's {"comment": link} is ignored) */
 static inline int hos_crash_json_field(const char *json, const char *key, char *out, size_t cap) {
     char want[64];
     snprintf(want, sizeof want, "\"%s\"", key);
@@ -1011,19 +1037,11 @@ static inline int hos_crash_json_field(const char *json, const char *key, char *
     out[o] = 0;
     return *at == '"';
 }
-static inline int hos_crash_answer(char *out, size_t cap, int status, const char *body, const char *issue, char *link,
-                                   size_t link_cap, int *again) {
-    char said[300], comment[300];
+static inline int hos_crash_answer(char *out, size_t cap, int status, const char *body, int *again) {
+    char said[300];
     *again = 0;
-    if (link_cap) link[0] = 0;
     if (status >= 200 && status < 300) {
-        hos_crash_json_field(body, "comment", comment, sizeof comment);
-        const size_t in = issue ? strlen(issue) : 0;
-        int own = in && !strncmp(comment, issue, in) && !strncmp(comment + in, "#issuecomment-", 14) && comment[in + 14];
-        for (const char *d = comment + in + 14; own && *d; d++) own = isdigit((unsigned char)*d);
-        snprintf(link, link_cap, "%s", own ? comment : issue ? issue : "");
-        snprintf(out, cap, "Sent. Thank you: the team sees it%s.%s", link[0] ? " on the crash reports' issue" : "",
-                 link[0] ? " Open it to follow the crash there." : "");
+        snprintf(out, cap, "Sent. Thank you: the Longshot team has it. Only the team can read it.");
         return 1;
     }
     if (status == 429) {

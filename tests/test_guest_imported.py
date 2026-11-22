@@ -23,6 +23,7 @@ def main():
 #include <map>
 #include <mutex>
 #include <vector>
+#include "import_reach.h"
 
 struct Pool { uint64_t lo, hi, memory; };
 std::map<uint64_t, Pool> imported;
@@ -32,10 +33,12 @@ std::map<uint64_t, uint64_t> bg_inflight;
 std::vector<std::pair<uint64_t, Pool>> bg_ready;
 struct DeadImport { uint64_t lo, bytes; };
 std::deque<DeadImport> dead_imports;
+import_reach::Reach live_reach;   // (vk_memory.cpp: the live imports' spans, kept by imported_add)
 """ + function + r"""
 
 int main() {
     imported.emplace(0x2000, Pool{0x2000, 0x5000, 1});
+    live_reach.add(0x3000);
     auto check = [] {
         assert(!memory_guest_imported(0x1000, 0x2000));
         assert(!memory_guest_imported(0x5000, 0x6000));
@@ -51,14 +54,19 @@ int main() {
     check();
     evicted_pools.front().mapped().memory = 0;
     assert(!memory_guest_imported(0x2000, 0x5000));
-
+    // (a large import over a small one inside it: the scan down from the small one still finds the large one)
+    imported.emplace(0x100000, Pool{0x100000, 0x900000, 1});
+    imported.emplace(0x200000, Pool{0x200000, 0x201000, 1});
+    live_reach.add(0x800000), live_reach.add(0x1000);
+    assert(memory_guest_imported(0x300000, 0x301000));
+    assert(!memory_guest_imported(0x900000, 0x901000));
 }
 """
     with tempfile.TemporaryDirectory() as tmp:
         cpp = Path(tmp) / "check.cpp"
         exe = Path(tmp) / "check.exe"
         cpp.write_text(fixture, encoding="utf-8")
-        subprocess.run([args.cxx, "-std=c++17", str(cpp), "-o", str(exe)], check=True)
+        subprocess.run([args.cxx, "-std=c++20", "-I" + str(ROOT / "gpu/vk"), str(cpp), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], cwd=tmp, check=True)
 
 

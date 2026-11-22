@@ -41,8 +41,15 @@ void nvn_tex_level_tiles(const nvn_texdesc *d, unsigned level, unsigned *tileH, 
 static inline int nvn_tex_is_linear(const nvn_texdesc *d) { return (d->flags & 0x50) != 0; }
 uint32_t nvn_tex_linear_stride(const nvn_texdesc *d);
 
+/* (C11's _Static_assert in C, static_assert in C++: g++ has no _Static_assert, and this header is both) */
+#ifdef __cplusplus
+#define NVN_STATIC_ASSERT static_assert
+#else
+#define NVN_STATIC_ASSERT _Static_assert
+#endif
+
 /* ---- objects (in place in the game's NVN object memory; each fits the reserved size of its type) ---- */
-#define NVN_FITS(T, H) _Static_assert(sizeof(T) <= sizeof(H), #T " is larger than " #H)
+#define NVN_FITS(T, H) NVN_STATIC_ASSERT(sizeof(T) <= sizeof(H), #T " is larger than " #H)
 
 typedef struct { uint32_t flags; } nvn_dev_builder;
 typedef struct { uint32_t magic, flags, origin, depth_mode; } nvn_dev;
@@ -70,6 +77,7 @@ typedef struct {
 } nvn_tex_builder;
 typedef struct {
     uint32_t magic; nvn_texdesc d; uint8_t has_layout, layout[8];
+    uint8_t output_preview;               /* 1–3 for preview slots, 0 for regular textures */
     nvn_texlayout L;
     uint64_t gpu;                         /* GPU address of the storage (pool gpu + offset) */
     const nvn_pool *pool; int64_t off;
@@ -80,7 +88,7 @@ typedef struct {
     uint8_t set_levels : 1, set_layers : 1, set_format : 1, set_target : 1, set_swizzle : 1, pad0 : 3;
     uint8_t base_level, nlevels, target; uint16_t min_layer, nlayers; uint16_t format; uint8_t swz[4]; uint8_t pad1[2];
 } nvn_view;
-_Static_assert(sizeof(nvn_view) == 16, "NVNtextureView is 16 bytes in TOTK's NVN");
+NVN_STATIC_ASSERT(sizeof(nvn_view) == 16, "NVNtextureView is 16 bytes in TOTK's NVN");
 
 typedef struct {
     uint8_t minf, magf, ws, wt, wr, cmp_mode, cmp_func, reduction;
@@ -122,8 +130,8 @@ typedef struct {
     uint64_t cmd_used, ctl_used, rec_start;
     uint64_t hw_used, last_rec, hw_start; /* what the real driver would have used (the game sizes heaps from it) */
 } nvn_cmd;
-_Static_assert(offsetof(nvn_cmd, guest_flags) == 0x10, "NVN inline dirty flag");
-_Static_assert(offsetof(nvn_cmd, inline_cur) == 0x20 && offsetof(nvn_cmd, inline_end) == 0x28, "NVN inline fast path");
+NVN_STATIC_ASSERT(offsetof(nvn_cmd, guest_flags) == 0x10, "NVN inline dirty flag");
+NVN_STATIC_ASSERT(offsetof(nvn_cmd, inline_cur) == 0x20 && offsetof(nvn_cmd, inline_end) == 0x28, "NVN inline fast path");
 
 /* state objects (the game copies them by value): packed in place */
 typedef struct { uint32_t blend_en : 8, logic_op : 4, alpha_func : 4; } nvn_color_st;

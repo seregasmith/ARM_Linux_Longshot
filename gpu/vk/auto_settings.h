@@ -19,9 +19,9 @@ struct Hardware {
     bool handheld = false;      // (a Steam Deck or another handheld PC: its own small screen and a shared memory budget)
     bool mesh_native = true;    // (the card has mesh shaders, by its feature query; false: the fallback, the mesh programs as compute)
     bool mesh_as_compute = false;   // (this run runs them as compute all the same: RX_VK_MESH_SHADERS=compute, or Linux AMD's
-                                    // Automatic, #2245. The card's tier is its own: not for the choice nor the fingerprint)
+                                    // Automatic. The card's tier is its own: not for the choice nor the fingerprint)
     bool rtx = false;           // (an NVIDIA RTX card: DLSS's tensor cores)
-    bool rdna4 = false;         // (an AMD RDNA 4 card, RX 9000: FSR 4)
+    bool rdna4 = false;         // (an AMD RDNA 4 card, an RX 9000 or Radeon AI PRO: FSR 4)
     bool dlss_built = false;    // (the game was built with NVIDIA's DLSS SDK)
     bool fsr4_built = false;    // (with AMD's FSR 4 runtime)
     bool xess_ready = false;    // (Intel's libxess.dll found and loaded: Intel XeSS on the Upscaler row. Only said in the
@@ -115,7 +115,7 @@ inline Choice choose(const Hardware& h) {
 }
 
 // The Render resolution for the upscaler that runs (the engine, upscaler_rows.h engine), unsnapped; 0: as it is. The build having
-// DLSS or FSR 4 does not say this PC runs it (an old driver, no NGX libraries, #1748): when the game's own runs instead, it draws
+// DLSS or FSR 4 does not say this PC runs it (an old driver, no NGX libraries): when the game's own runs instead, it draws
 // at DLSS's share, under what the tier sets for it, so it goes back to the tier's own; and to the choice's when the chosen one
 // runs again. Only between those two: a step the tuning made is left alone. chosen: the choice's Render resolution as the menu
 // set it (snapped to its upscaler)

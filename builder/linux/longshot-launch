@@ -21,9 +21,10 @@ if ! [ -f "$folder/image.bin" ] || ! [ -x "$folder/bin/longshot" ]; then
 fi
 
 # The AppImage runtime and the builder put their own libraries on the search path. The game loads
-# SDL from beside itself, so those names go before it starts. The same set as make_game.GAME_ENV_DROP.
-# (RX_MARCH and RX_CPM: the build's, which the game takes for misspelt switches of its own)
-names=$(env | awk -F= '$1 ~ /^(LONGSHOT_|PYTHON|APPDIR|APPIMAGE|ARGV0|OWD|RX_MARCH|RX_CPM)/ || $1 == "LD_LIBRARY_PATH" { print $1 }')
+# SDL from beside itself, so those names go before it starts. The same set as make_game.GAME_ENV_DROP,
+# but for the game's own switches it keeps (make_game.GAME_ENV_KEEP: the shader store's folder).
+# Filter builder variables before passing Steam's preload list to any helper.
+names=$(LD_PRELOAD= env | LD_PRELOAD= awk -F= '($1 ~ /^(LONGSHOT_|PYTHON|APPDIR|APPIMAGE|ARGV0|OWD|RX_MARCH|RX_CPM)/ || $1 == "LD_LIBRARY_PATH") && $1 != "LONGSHOT_SHADER_STORE" { print $1 }')
 for name in $names; do
     unset "$name"
 done

@@ -331,20 +331,22 @@ extern const uint64_t hos_image_end;
 static void query_memory(uint64_t out, uint64_t addr) {
     uint64_t base = 0, size = 0;
     uint32_t state = 0, perm = 0;   /* Free */
-    uint64_t stack, stack_size;
+    uint64_t stack, stack_size, output, output_size;
     hos_thread_stack(hos_self(), &stack, &stack_size);
+    hos_output_boot_region(&output, &output_size);
     if (addr >= stack && addr < stack + stack_size) { base = stack; size = stack_size; state = 0x0B; perm = 3; }   /* Stack */
     else if (addr >= hos_image_base && addr < hos_image_end) { base = hos_image_base; size = hos_image_end - base; state = 0x03; perm = 5; }   /* Code */
     else if (addr >= HOS_HEAP_BASE && addr < HOS_HEAP_BASE + hos_heap_size) { base = HOS_HEAP_BASE; size = hos_heap_size; state = 0x05; perm = 3; }   /* Normal */
     else if (addr >= HOS_SYSTEM_BASE && addr < HOS_SYSTEM_END) { base = HOS_SYSTEM_BASE; size = HOS_SYSTEM_END - HOS_SYSTEM_BASE; state = 0x05; perm = 3; }
+    else if (addr >= output && addr < output + output_size) { base = output; size = output_size; state = 0x05; perm = 3; }
     else if (addr >= HOS_GUEST_SPACE) { base = HOS_GUEST_SPACE; size = 0 - HOS_GUEST_SPACE; state = 0x10; }   /* Inaccessible: past the address space, to its end, as the kernel answers */
     else {   /* Free: the whole gap, from the end of the region before addr to the start of the one after it, as the kernel
                 answers (free blocks are merged). A walk over the address space region by region, base + size each step,
                 reaches every mapping in a few steps; at one page a step it never got past the system region */
-        const uint64_t lo[] = {HOS_SYSTEM_BASE, hos_image_base, HOS_HEAP_BASE, stack};
-        const uint64_t hi[] = {HOS_SYSTEM_END, hos_image_end, HOS_HEAP_BASE + hos_heap_size, stack + stack_size};
+        const uint64_t lo[] = {HOS_SYSTEM_BASE, hos_image_base, HOS_HEAP_BASE, stack, output};
+        const uint64_t hi[] = {HOS_SYSTEM_END, hos_image_end, HOS_HEAP_BASE + hos_heap_size, stack + stack_size, output + output_size};
         uint64_t end = HOS_GUEST_SPACE;
-        for (int i = 0; i < 4; i++) {
+        for (size_t i = 0; i < sizeof lo / sizeof *lo; i++) {
             if (hi[i] <= lo[i]) continue;
             if (hi[i] <= addr && hi[i] > base) base = hi[i];
             if (lo[i] > addr && lo[i] < end) end = lo[i];
@@ -367,11 +369,17 @@ void a64_svc(Ctx *c, uint32_t imm) {
     switch (imm) {
     case 0x01: { /* SetHeapSize(-, size) -> (result, heap address) */
         int hos_heap_size_fits(uint64_t size);   /* (longshot, hos_mem.c: the heap stays in the guest window) */
+        if (!hos_output_page_change_begin(HOS_HEAP_BASE, c->x[1])) {
+            c->x[0] = 0xCA01;
+            return;
+        }
         if (!hos_heap_size_fits(c->x[1])) {
+            hos_output_page_change_end();
             c->x[0] = 0xCA01;   /* svc::ResultOutOfMemory */
             return;
         }
         hos_heap_size = c->x[1];
+        hos_output_page_change_end();
         c->x[0] = R_OK;
         c->x[1] = HOS_HEAP_BASE;
         return;
@@ -484,12 +492,22 @@ void a64_svc(Ctx *c, uint32_t imm) {
         return;
     }
     case 0x2C:   /* MapPhysicalMemory(address, size) */
+        if (!hos_output_page_change_begin(c->x[0], c->x[1])) {
+            c->x[0] = 0xCA01;
+            return;
+        }
         hos_commit(c->x[0], c->x[1]);
+        hos_output_page_change_end();
         if (hos_trace) hos_log("MapPhysicalMemory(%#llx, %#llx)", (unsigned long long)c->x[0], (unsigned long long)c->x[1]);
         c->x[0] = R_OK;
         return;
     case 0x2D:   /* UnmapPhysicalMemory(address, size): the pages read as zero if mapped again */
-        if (!hos_guest_range(c->x[0], c->x[1])) {   /* (longshot: guest pages only) */
+        /* A zero-length MEM_DECOMMIT at the allocation base frees the entire Windows reservation. */
+        if (!c->x[1]) {
+            c->x[0] = 0xCA01;
+            return;
+        }
+        if (!hos_guest_range(c->x[0], c->x[1]) || !hos_output_page_change_begin(c->x[0], c->x[1])) {
             c->x[0] = 0xCA01;
             return;
         }
@@ -499,6 +517,7 @@ void a64_svc(Ctx *c, uint32_t imm) {
             if (rx_guest_imported(c->x[0], c->x[0] + c->x[1])) hos_guest_fill(c->x[0], 0, c->x[1]);
             else VirtualFree(GP(c->x[0]), (SIZE_T)c->x[1], MEM_DECOMMIT);
         }
+        hos_output_page_change_end();
         c->x[0] = R_OK;
         return;
     case 0x1F: { /* ConnectToNamedPort(-, name) -> (result, session handle): (longshot) SDK code that resolves a

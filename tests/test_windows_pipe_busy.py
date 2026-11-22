@@ -14,7 +14,7 @@ from unittest import mock
 class WindowsPipeBusy(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        spec = importlib.util.spec_from_file_location("ctl_pipe_test", Path(__file__).resolve().parents[1] / "scripts/longshot_ctl.py")
+        spec = importlib.util.spec_from_file_location("ctl_pipe_test", Path(__file__).resolve().parents[1] / "scripts/longshot_bridge.py")
         cls.ctl = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.ctl)
         cls.k = ctypes.WinDLL("kernel32", use_last_error=True)

@@ -528,7 +528,7 @@ def check_slots(replay, internal, imgui):
     assert m, "vk_internal.h: kPresentSlotsMax"
     assert "Frame frames[kPresentSlotsMax];" in replay and "LogSlot log_slots[kPresentSlotsMax];" in replay, \
         "vk_replay.cpp: the frame slots and their frame-log slots, kPresentSlotsMax of each"
-    image = block(replay, "void present_image(VkImage src,", where="gpu/vk/vk_replay.cpp")
+    image = block(replay, "void present_image_with_trial(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view, bool source_srgb, bool allow_scale, OutputTrialSource trial) {", where="gpu/vk/vk_replay.cpp")
     for part in ("const uint32_t slots = framegen_on() ? std::clamp<uint32_t>(dev.swap_slots.load(std::memory_order_relaxed), 3u,",
                  "const uint32_t slot = frame_index % slots;", "Frame& f = frames[slot];",
                  "frame_index = (slot + 1) % slots;", "for (uint32_t k = slots; k < slots_was; k++)"):

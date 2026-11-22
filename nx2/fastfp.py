@@ -22,8 +22,8 @@ import a64emit
 # (the kit's names the copied method reads; nothing in nx2 rebinds them: nx2/insn.py replaces a64_lift.classify and
 # a64emit.translate, which the method does not name, or names through the module. fp_is_frame is the kit's, its answers
 # kept below)
-from a64_lift import (COND, FLAG_REF, REG_REF, SYNC_ALL, SYNC_BACK, SYNC_CALL, SYNC_RELOAD, SYNC_RET, drop_flag_stores,
-                      frame_stores, local_regs, localize_regs, pc_relative)
+from a64_lift import (COND, FLAG_REF, FP_STORE, FP_STORE_PRE, MG_NOT_STRAIGHT, REG_REF, SYNC_ALL, SYNC_BACK, SYNC_CALL,
+                      SYNC_RELOAD, SYNC_RET, drop_flag_stores, frame_stores, local_regs, localize_regs, pc_relative)
 
 _frame = {}
 
@@ -42,7 +42,8 @@ KIT_TREE = "6164061ea8dc7896da53490df9ebc5e43b50faa50c1da61cdf9fc5e207773f7d"   
 # (longshot) Fast float regions (A64_FASTFP at lift time: on unless "0"; "hot" the A64_HOT_FUNCS list only; "check"
 # both copies every time, compared: see ff_region).
 # Each float op on the exact path carries its own tests (~25 instructions around one SSE op). A straight run of
-# instructions with no label, store, call, branch or system access inside, holding at least A64_FASTFP_MIN (8) single-
+# instructions with no label, call, branch or system access inside (and no guest load after a guest store: see
+# FF_STORE below; with A64_FASTFP_STORES=0 no store at all), holding at least A64_FASTFP_MIN (8) single-
 # precision adds, subtracts, multiplies, divides or square roots, is emitted twice: a fast copy whose ops are plain SSE,
 # with MXCSR's flags cleared before it and read once after, and the exact copy. A clean fast run is the Arm result: with
 # no invalid operation (no NaN made), no denormal operand and no underflow (FTZ on under FPCR.FZ: a tiny result is
@@ -59,6 +60,13 @@ FF_PURE = {"recomp_load8", "recomp_load16", "recomp_load32", "recomp_load64", "r
            "recomp_fixed_to_fp", "recomp_fp_to_int", "recomp_fp_to_fixed", "recomp_umulh", "recomp_smulh",
            "recomp_fp_estimate", "recomp_aes_sbox", "RECOMP_LIKELY", "RECOMP_UNLIKELY", "RECOMP_FPX_OPEN",
            "RECOMP_FPX_FZ", "a64_fcmp32k", "a64_fcmp64k"}
+# ((longshot) nx2/fastvec.py's whole-register moves and byte shuffles (#1576): LDR Q as a64_vld16 (a guest load: FF_LOAD),
+# DUP by element as a64_vdup, EXT as A64_EXT16 / A64_EXT8, TBL as a64_tbl1. Integer SSE on the registers, no float flag;
+# before #1576 the same instructions were recomp_ldp64 and memcpy / a64_vst16 blocks, which joined. Named after FF_PURE was
+# written, they ended runs: in the lifted C of 89c3d21e's base, ~23,700 run ends within 6 statements of float ops on both
+# sides in the functions play runs (8,100 a64_vld16, 7,500 a64_vdup, 6,700 A64_EXT16). A64_FASTFP_VMOVES=0 at lift time:
+# they end a run again)
+FF_VMOVES = {"a64_vld16", "a64_vdup", "A64_EXT16", "A64_EXT8", "a64_tbl1"}
 FF_BAD = ("c->fpcr", "c->fpsr", "c->excl", "c->pc", "c->halted", "c->poll", "c->tpidr", "\x01", "goto ", "return",
           "switch", "A64_PTR", "A64_MARK")
 # (the exact blocks' own uses, safe in a region: FPCR read in a test (it doesn't change inside one: no MSR there), and
@@ -70,6 +78,11 @@ FF_FP_OK = re.compile(r"c->fpcr\s*&|c->fpsr\s*\|=")
 FF_CONV = re.compile(r"\ba64_vfpx_(add32|sub32|mul32)\(|"
                      r"\ba64_fpx_(add32_add32|sub32_sub32|mul32_fma32|fma32_fma32|div32_div32|sqrt32_sqrt32)\(")
 VREG_REF = re.compile(r"c->vreg\[(\d+)\]")
+# ((longshot) nx2/vecfp.py: an instruction it puts behind an SSE fast path, `if (!a64_vfpx_<form>(c, ...)) { its lanes }`,
+# is in a region's fast copy `if (!a64_ff_<form>(c, ...)) { ... }`: one SSE op in the MXCSR window with the guard on
+# its lanes, which always answers 1, so the lanes are dead code there. The run's count of float ops is still its lanes'
+# FF_CONV matches, as before vecfp)
+FF_VX = re.compile(r"\ba64_vfpx_(mul32e|fma32e|fms32e|mul32v|fma32v|fms32v|div32v)\(")
 
 
 def fastfp_mode():
@@ -83,12 +96,175 @@ def ff_min():
     return int(v) if v.isdigit() else 8
 
 
-def ff_eligible(text):
-    """an instruction's C text may sit inside a fast float region: no store, control flow or system state; only pure calls"""
+# (longshot) Guest stores inside a region (A64_FASTFP_STORES at lift time: on unless "0"). A plain store (STR, STP, with
+# or without writeback, through any base: recomp_storeN / recomp_stpN and their _sp forms) may join a run, and the run is
+# cut before a guest load that follows a store in it (ff_split), so every load of a region comes before every store of
+# it. The exact copy is the lifted text as before. The fast copy does not store: each store's address and values go
+# into locals (_ffaK, _ffdK, and _ffeK for a pair's second value) where the store stood, and once a64_ff_end has passed
+# the stores run from them, in their order, with the same helpers (so the same page marks), before the jump past the
+# exact copy. On a flag that sends the run to its exact copy nothing has been stored, the registers are put back and the
+# exact copy stores as before. The guest's memory sees the same accesses in the same order either way (the region's
+# loads, then its stores), only later by the region's register work; another thread could see a store a few
+# instructions later, never a different one or out of order. A store through x29 that the function's frame stores would
+# make an unmarked _sp store (a64_lift.frame_stores) names its locals _ffp..., and ff_frame_stores does the same to the
+# deferred one. Not joined: STLR (a plain recomp_storeN(c,c->x[N],...), as mark_groups reads it), a store under a
+# condition (MG_NOT_STRAIGHT), and a text whose own load follows its store; exclusive, atomic and memcpy (A64_PTR)
+# stores stay out by FF_BAD.
+FF_STORE = re.compile(r"\brecomp_(store8|store16|store32|store64|stp32|stp64)(_sp)?\(")
+FF_STORE_SIZE = {"store8": 8, "store16": 16, "store32": 32, "store64": 64, "stp32": 32, "stp64": 64}
+FF_LOAD = re.compile(r"\b(?:recomp_(?:load(?:8|16|32|64)|ldp(?:32|64))|a64_vld16)\(")
+FF_STLR = re.compile(r"\brecomp_(?:store|stp)\d+(?:_sp)?\(c,c->x\[\d+\],")
+FF_FRAME = re.compile(r"\brecomp_(store8|store16|store32|store64|stp32|stp64)\(c,_ffp")
+
+
+def ff_stores():
+    """A64_FASTFP_STORES: guest stores may sit inside a region (on unless "0")"""
+    return os.environ.get("A64_FASTFP_STORES", "1") != "0"
+
+
+def ff_args(text, at):
+    """the top-level arguments of the call whose "(" is at text[at], and the index after its ")"; None if unbalanced"""
+    depth, args, start = 0, [], at + 1
+    for j in range(at, len(text)):
+        ch = text[j]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                args.append(text[start:j].strip())
+                return args, j + 1
+        elif ch == "," and depth == 1:
+            args.append(text[start:j].strip())
+            start = j + 1
+    return None
+
+
+def ff_store_ok(text):
+    """a text with guest stores may join a region (ff_stores on): plain stores, each a whole statement of its own that
+    always runs, no load after the first one"""
+    if FF_STLR.search(text) or MG_NOT_STRAIGHT.search(text):
+        return False
+    first = None
+    for m in FF_STORE.finditer(text):
+        first = m.start() if first is None else first
+        p = ff_args(text, m.end() - 1)
+        if p is None or p[0][0] != "c" or len(p[0]) != (4 if m.group(1).startswith("stp") else 3):
+            return False
+        if not text[p[1]:].lstrip().startswith(";") or text[:m.start()].rstrip()[-1:] not in ("", ";", "{", "}"):
+            return False
+    return first is None or not FF_LOAD.search(text, first)
+
+
+def ff_vmoves():
+    """A64_FASTFP_VMOVES: nx2/fastvec.py's vector moves and shuffles (FF_VMOVES) may sit inside a region (on unless "0")"""
+    return os.environ.get("A64_FASTFP_VMOVES", "1") != "0"
+
+
+def ff_eligible(text, stores=None):
+    """an instruction's C text may sit inside a fast float region: no control flow or system state; only pure calls, and
+    guest stores when stores (ff_stores() unless given) and ff_store_ok"""
     rest = FF_FP_OK.sub("", text)
     if any(b in rest for b in FF_BAD):
         return False
-    return all(n in FF_PURE or n.startswith(("a64_fpx_", "a64_vfpx_")) for n in FF_CALL.findall(text))
+    names = FF_CALL.findall(text)
+    pure = FF_PURE | FF_VMOVES if ff_vmoves() else FF_PURE
+    if all(n in pure or n.startswith(("a64_fpx_", "a64_vfpx_")) for n in names):
+        return True
+    if not (ff_stores() if stores is None else stores):
+        return False
+    return all(n in pure or n.startswith(("a64_fpx_", "a64_vfpx_")) or FF_STORE.match(n + "(") for n in names) and \
+        ff_store_ok(text)
+
+
+def ff_split(items):
+    """a run cut into the parts a region may hold: a new part before each instruction with a guest load that follows a
+    guest store of the part so far (no load after a store inside a region, so the stores can wait for its end)"""
+    parts, cur, stored = [], [], False
+    for item in items:
+        t = item[1]
+        if stored and ("recomp_l" in t or "a64_vld16" in t) and FF_LOAD.search(t):
+            parts.append(cur)
+            cur, stored = [], False
+        cur.append(item)
+        if "recomp_st" in t and FF_STORE.search(t):
+            stored = True
+    if cur:
+        parts.append(cur)
+    return parts
+
+
+def ff_defer(text, k, record=False):
+    """one instruction's text with its guest stores written as assignments of their address and values to the region's
+    locals, numbered from k: (the text, [(helper, locals' prefix, number, pair)]). record: the stores kept, each after its
+    assignment (the check copy's exact text, A64_FASTFP=check)"""
+    if "recomp_st" not in text:
+        return text, []
+    out, stores, at = [], [], 0
+    for m in FF_STORE.finditer(text):
+        if m.start() < at:
+            continue
+        args, end = ff_args(text, m.end() - 1)
+        name = "recomp_%s%s" % (m.group(1), m.group(2) or "")
+        frame = not m.group(2) and (FP_STORE.match(text, m.start()) is not None or
+                                    any(p.end(1) == m.start() for p in FP_STORE_PRE.finditer(text)))
+        pre = ("_ffp" if frame else "_ff") + ("o" if record else "")
+        vals = ["%sa%d=(%s)" % (pre, k, args[1]), "%sd%d=(%s)" % (pre, k, args[2])]
+        if len(args) == 4:
+            vals.append("%se%d=(%s)" % (pre, k, args[3]))
+        if record:
+            vals.append("%s(c,%sa%d,%sd%d%s)" % (name, pre, k, pre, k, ",%se%d" % (pre, k) if len(args) == 4 else ""))
+        out.append(text[at:m.start()] + "(" + ",".join(vals) + ")")
+        stores.append((name, pre, k, len(args) == 4))
+        at, k = end, k + 1
+    out.append(text[at:])
+    return "".join(out), stores
+
+
+def ff_frame_stores(text):
+    """the deferred stores through x29 (their locals named _ffp...) as frame_stores makes their exact copies: _sp, unmarked.
+    Run where emit_function runs frame_stores"""
+    return FF_FRAME.sub(r"recomp_\1_sp(c,_ffp", text) if "(c,_ffp" in text else text
+
+
+_patched_addrs = [None]   # (set_patched: nx2/oot_patches.py's mentioned_addresses, asked once a process)
+_patched = []             # (those addresses: [sorted list, set]; made on first use)
+
+
+def ff_patched(e, body, pcs):
+    """the function at e (its body, pcs: its addresses in order) holds an address the game's patches name, its entry or
+    an instruction's, as nx2/guest_locals.py's keep_mentioned finds them (nx2/oot_patches.py: an edit of the lifted text
+    pins its place by one). No stores join its runs, so that an edit's text, a store among it, stays one text the edit
+    finds in a copy that runs (a store's fast copy is rewritten: an edit there would miss it)"""
+    if not _patched:
+        addrs = sorted(_patched_addrs[0]()) if _patched_addrs[0] else []
+        _patched[:] = [addrs, set(addrs)]
+    addrs, aset = _patched
+    if not addrs or not pcs:
+        return False
+    if e in aset:
+        return True
+    import bisect
+    for i in range(bisect.bisect_left(addrs, pcs[0]), bisect.bisect_right(addrs, pcs[-1])):
+        if addrs[i] in body:
+            return True
+    return False
+
+
+def ff_regions(items, least=None, stores=None):
+    """a run's C text, cut by ff_split and each part through ff_region: (text, regions made, float ops made fast). stores:
+    the run may hold guest stores (ff_stores() unless given; emit_function: not in a function the game's patches edit)"""
+    least = ff_min() if least is None else least
+    if not (ff_stores() if stores is None else stores) or len(items) < 2 or \
+            not any("recomp_st" in t for _, t in items) or sum(ff_convs(t) for _, t in items) < least:
+        text, n = ff_region(items, least)   # (no store, or too few ops for any part of it: as before)
+        return text, int(n > 0), n
+    texts, regions, ops = [], 0, 0
+    for part in ff_split(items):
+        text, n = ff_region(part, least)
+        texts.append(text)
+        regions, ops = regions + (n > 0), ops + n
+    return "\n".join(texts), regions, ops
 
 
 # (the emit asks these of every instruction of every function, ~13 million times in a lift of OoT, but there are far fewer
@@ -98,11 +274,12 @@ _joins = {}
 _convs = {}
 
 
-def ff_joins(text, dead):
-    """ff_eligible of an instruction's text with the flag stores dead there (dead_flags' mask) dropped, by (text, dead)"""
-    j = _joins.get((text, dead))
+def ff_joins(text, dead, stores=False):
+    """ff_eligible of an instruction's text with the flag stores dead there (dead_flags' mask) dropped, by (text, dead,
+    stores)"""
+    j = _joins.get((text, dead, stores))
     if j is None:
-        j = _joins[(text, dead)] = ff_eligible(drop_flag_stores(text, dead) if dead else text)
+        j = _joins[(text, dead, stores)] = ff_eligible(drop_flag_stores(text, dead) if dead else text, stores)
     return j
 
 
@@ -124,7 +301,20 @@ def ff_region(items, least=None):
     n = sum(ff_convs(t) for _, t in items)
     if n < (ff_min() if least is None else least):
         return exact, 0
-    fast = FF_CONV.sub(lambda m: "a64_ff_v%s(" % m.group(1) if m.group(1) else "a64_ff_%s(" % m.group(2), exact)
+    # (guest stores, FF_STORE: the fast copy's assign their address and values to locals, stored once a64_ff_end passed)
+    stores = []
+    if "recomp_st" in exact:
+        fast_items = []
+        for _, t in items:
+            t, s = ff_defer(t, len(stores))
+            fast_items.append(t)
+            stores += s
+        fast = "\n".join(fast_items)
+    else:
+        fast = exact
+    fast = FF_CONV.sub(lambda m: "a64_ff_v%s(" % m.group(1) if m.group(1) else "a64_ff_%s(" % m.group(2), fast)
+    if "a64_vfpx_" in fast:   # (nx2/vecfp.py's lane forms: their region twins, one SSE op each; their lanes go dead)
+        fast = FF_VX.sub(r"a64_ff_\1(", fast)
     xs = sorted({int(r) for r in REG_REF.findall(exact)})
     vs = sorted({int(r) for r in VREG_REF.findall(exact)})
     fl = sorted(set(FLAG_REF.findall(exact)))
@@ -135,18 +325,44 @@ def ff_region(items, least=None):
                "".join("c->vreg[%d][0] = _ffv%d0; c->vreg[%d][1] = _ffv%d1; " % (r, r, r, r) for r in vs) +
                "".join("c->%s = _fff%s; " % (f, f) for f in fl) + "c->fpsr = _ffsr; ")
     label = "L_ff_%08x" % items[0][0]
+    # (the stores' locals, declared with the saved registers; and the stores, run once the fast copy is kept)
+    temps = "".join("uint64_t %sa%d, %sd%d%s; " % (p, k, p, k, ", %se%d" % (p, k) if pair else "")
+                    for _, p, k, pair in stores)
+    deferred = "".join("%s(c,%sa%d,%sd%d%s); " % (h, p, k, p, k, ",%se%d" % (p, k) if pair else "")
+                       for h, p, k, pair in stores)
     if fastfp_mode() == "check":
-        # (A64_FASTFP=check: both copies every time, the exact one's result kept, the registers the run names compared;
-        # a64_ff_check counts and prints the first mismatches with the run's guest address)
+        # (A64_FASTFP=check: both copies every time, the exact one's result kept, the registers the run names compared,
+        # and each store's address and values (the exact copy's noted as it stores, _ffo...); a64_ff_check counts and
+        # prints the first mismatches with the run's guest address. The fast copy stores nothing here)
         keep = ("".join("const uint64_t _ffox%d = c->x[%d]; " % (r, r) for r in xs) +
                 "".join("const uint64_t _ffov%d0 = c->vreg[%d][0], _ffov%d1 = c->vreg[%d][1]; " % (r, r, r, r) for r in vs) +
                 "".join("const uint8_t _ffof%s = c->%s; " % (f, f) for f in fl))
         same = " && ".join(["1"] + ["_ffox%d == c->x[%d]" % (r, r) for r in xs] +
                            ["_ffov%d0 == c->vreg[%d][0] && _ffov%d1 == c->vreg[%d][1]" % (r, r, r, r) for r in vs] +
                            ["_ffof%s == c->%s" % (f, f) for f in fl])
-        return ("{ if (A64_FF_ON(c)) { %sconst unsigned _ffm = a64_ff_begin(c);\n%s\n"
-                "const int _ffok = a64_ff_end(c, _ffm);\n%s%s\n%s\na64_ff_check(0x%xu, _ffok, %s); } else {\n%s\n} }"
-                % (save, fast, keep, restore, exact, items[0][0], same, exact)), n
+        checked = exact
+        if stores:
+            checked, k = [], 0
+            for _, t in items:
+                t, s = ff_defer(t, k, record=True)
+                checked.append(t)
+                k += len(s)
+            checked = "\n".join(checked)
+            temps += "".join("uint64_t %soa%d, %sod%d%s; " % (p, k, p, k, ", %soe%d" % (p, k) if pair else "")
+                             for _, p, k, pair in stores)
+            for h, p, k, pair in stores:
+                ty = "uint%d_t" % FF_STORE_SIZE[h[len("recomp_"):].replace("_sp", "")]
+                same += " && %sa%d == %soa%d && (%s)%sd%d == (%s)%sod%d" % (p, k, p, k, ty, p, k, ty, p, k)
+                if pair:
+                    same += " && (%s)%se%d == (%s)%soe%d" % (ty, p, k, ty, p, k)
+        # (the "}" of its else not at the start of a line: one there closes the function, nx2/split_giants.py)
+        return ("{ if (A64_FF_ON(c)) { %s%sconst unsigned _ffm = a64_ff_begin(c);\n%s\n"
+                "const int _ffok = a64_ff_end(c, _ffm);\n%s%s\n%s\na64_ff_check(0x%xu, _ffok, %s); } else {\n%s\n    } }"
+                % (save, temps, fast, keep, restore, checked, items[0][0], same, exact)), n
+    if stores:
+        return ("{ if (A64_FF_ON(c)) { %s%sconst unsigned _ffm = a64_ff_begin(c);\n%s\n"
+                "if (RECOMP_LIKELY(a64_ff_end(c, _ffm))) { %sgoto %s; }\n%s}\n%s\n%s:; }"
+                % (save, temps, fast, deferred, label, restore, exact, label)), n
     return ("{ if (A64_FF_ON(c)) { %sconst unsigned _ffm = a64_ff_begin(c);\n%s\n"
             "if (RECOMP_LIKELY(a64_ff_end(c, _ffm))) goto %s;\n%s}\n%s\n%s:; }"
             % (save, fast, label, restore, exact, label)), n
@@ -290,6 +506,80 @@ static inline __attribute__((always_inline)) void a64_ff_check(unsigned pc, int 
 #endif
 """
 
+# (longshot) nx2/vecfp.py's lane forms' region twins (FF_VX), appended to a64_fpx.h after FASTFP_HEADER only when vecfp is on
+# (vecfp_on): with A64_VECFP=0 the header is main's to the byte. They use FASTFP_HEADER's helpers (a64_ff_vld, the guard)
+FF_VX_HEADER = r"""
+#if RECOMP_FPX_HOST == 2 && defined(__x86_64__) && !defined(__EMSCRIPTEN__)
+/* (longshot) nx2/vecfp.py's lane forms in a region: one SSE op each, guarded as the others (a NaN lane, or one exactly
+   2^-126 from a product, quotient or multiply-add, raises the invalid flag), returning 1 so that the lanes the lifted C
+   keeps behind them are dead code here. By element: the element broadcast; FMLS: the first operand's sign flipped, as the
+   lanes do. 2 lanes: the inputs' top halves are loaded as zeros (a64_ff_vld) and a divisor's as ones, so that they raise
+   no flag of their own; the result's top half is zero. Without FMA3 the fused forms answer 0: their lanes run (the region's
+   own scalar helpers, a64_ff_fma32_fma32 = the exact helper there) */
+static inline __attribute__((always_inline)) __m128 a64_ff_vlane(const void *p) { float x; memcpy(&x, p, 4); return _mm_set1_ps(x); }
+static inline __attribute__((always_inline)) int a64_ff_vmul_(uint64_t *d, __m128 a, __m128 b, int k) {
+    __m128 r; A64_FF_OP("mulps", r, a, b); a64_ff_vguard_(r, k, 1); a64_ff_vst(d, r, k); return 1; }
+static inline __attribute__((always_inline)) int a64_ff_mul32e(Ctx *c, uint64_t *d, const uint64_t *n, const void *m, int k) {
+    (void)c; return a64_ff_vmul_(d, a64_ff_vld(n, k), k == 4 ? a64_ff_vlane(m) : _mm_castsi128_ps(_mm_move_epi64(_mm_castps_si128(a64_ff_vlane(m)))), k); }
+static inline __attribute__((always_inline)) int a64_ff_mul32v(Ctx *c, uint64_t *d, const uint64_t *n, const uint64_t *m, int k) {
+    (void)c; return a64_ff_vmul_(d, a64_ff_vld(n, k), a64_ff_vld(m, k), k); }
+static inline __attribute__((always_inline)) __m128 a64_ff_vneg(__m128 a) { return _mm_castsi128_ps(_mm_xor_si128(_mm_castps_si128(a), _mm_set1_epi32((int)0x80000000u))); }
+#ifdef __FMA__
+static inline __attribute__((always_inline)) int a64_ff_vfma_(uint64_t *d, __m128 a, __m128 b, int k) {
+    __m128 r = a64_ff_vld(d, k);
+    __asm__ volatile("vfmadd231ps %2, %1, %0" : "+x"(r) : "x"(a), "x"(b));
+    a64_ff_vguard_(r, k, 1); a64_ff_vst(d, r, k); return 1; }
+static inline __attribute__((always_inline)) __m128 a64_ff_vlane_k(const void *m, int k) {
+    return k == 4 ? a64_ff_vlane(m) : _mm_castsi128_ps(_mm_move_epi64(_mm_castps_si128(a64_ff_vlane(m)))); }
+static inline __attribute__((always_inline)) int a64_ff_fma32e(Ctx *c, uint64_t *d, const uint64_t *n, const void *m, int k) {
+    (void)c; return a64_ff_vfma_(d, a64_ff_vld(n, k), a64_ff_vlane_k(m, k), k); }
+static inline __attribute__((always_inline)) int a64_ff_fms32e(Ctx *c, uint64_t *d, const uint64_t *n, const void *m, int k) {
+    (void)c; return a64_ff_vfma_(d, a64_ff_vneg(a64_ff_vld(n, k)), a64_ff_vlane_k(m, k), k); }
+static inline __attribute__((always_inline)) int a64_ff_fma32v(Ctx *c, uint64_t *d, const uint64_t *n, const uint64_t *m, int k) {
+    (void)c; return a64_ff_vfma_(d, a64_ff_vld(n, k), a64_ff_vld(m, k), k); }
+static inline __attribute__((always_inline)) int a64_ff_fms32v(Ctx *c, uint64_t *d, const uint64_t *n, const uint64_t *m, int k) {
+    (void)c; return a64_ff_vfma_(d, a64_ff_vneg(a64_ff_vld(n, k)), a64_ff_vld(m, k), k); }
+#else
+#define a64_ff_fma32e(c, ...) 0
+#define a64_ff_fms32e(c, ...) 0
+#define a64_ff_fma32v(c, ...) 0
+#define a64_ff_fms32v(c, ...) 0
+#endif
+/* (a subnormal over a zero, as a64_ff_div32_div32: x86 raises no denormal flag beside divide-by-zero, Arm under FZ
+   flushes it, 0 / 0: such a lane raises the invalid flag here) */
+static inline __attribute__((always_inline)) int a64_ff_div32v(Ctx *c, uint64_t *d, const uint64_t *n, const uint64_t *m, int k) {
+    const __m128 a = a64_ff_vld(n, k);
+    __m128 b = a64_ff_vld(m, k), r;
+    (void)c;
+    if (k != 4) b = _mm_or_ps(b, _mm_castsi128_ps(_mm_set_epi32(0x3f800000, 0x3f800000, 0, 0)));
+    const __m128i ai = _mm_castps_si128(a), bi = _mm_castps_si128(b);
+    const __m128i bz = _mm_cmpeq_epi32(_mm_slli_epi32(bi, 1), _mm_setzero_si128());
+    const __m128i as = _mm_cmplt_epi32(_mm_sub_epi32(_mm_slli_epi32(ai, 1), _mm_set1_epi32(1)), _mm_set1_epi32(0x00ffffff));
+    const __m128i ap = _mm_cmpgt_epi32(_mm_slli_epi32(ai, 1), _mm_setzero_si128());   /* ((a << 1) - 1 in 0 .. 0xfffffe: a subnormal) */
+    if (__builtin_expect(_mm_movemask_ps(_mm_castsi128_ps(_mm_and_si128(bz, _mm_and_si128(as, ap)))) & (k == 4 ? 15 : 3), 0)) a64_ff_spoil_();
+    A64_FF_OP("divps", r, a, b);
+    a64_ff_vguard_(r, k, 1);
+    a64_ff_vst(d, r, k);
+    return 1;
+}
+#else
+#define a64_ff_mul32e a64_vfpx_mul32e
+#define a64_ff_fma32e a64_vfpx_fma32e
+#define a64_ff_fms32e a64_vfpx_fms32e
+#define a64_ff_mul32v a64_vfpx_mul32v
+#define a64_ff_fma32v a64_vfpx_fma32v
+#define a64_ff_fms32v a64_vfpx_fms32v
+#define a64_ff_div32v a64_vfpx_div32v
+#endif
+"""
+
+
+def vecfp_on():
+    """nx2/vecfp.py is installed and A64_VECFP turns a group on: the lifted C may name the twins"""
+    import vecfp
+    return vecfp.installed() and bool(vecfp.groups())
+
+
 
 _ff_only = []
 
@@ -325,13 +615,15 @@ def emit_function(self, e, texts):
     # (the run of joinable instructions so far, [(pc, text)]: ff_region)  # (fastfp)
     ff = bool(fastfp_mode()) and (ff_only() is None or self.fname(e) in ff_only())  # (fastfp)
     least = ff_min()  # (fastfp)
+    # (guest stores may join a run (A64_FASTFP_STORES), but not in a function the game's patches edit: ff_patched)  # (fastfp)
+    stores = ff and ff_stores() and not ff_patched(e, body, pcs)  # (fastfp)
     run = []  # (fastfp)
     def flush():  # (fastfp)
         if run:  # (fastfp)
-            text, n = ff_region(run, least)  # (fastfp)
+            text, k, n = ff_regions(run, least, stores)  # (fastfp)
             out.append(text)  # (fastfp)
             if n:  # (fastfp)
-                self.stats["ff_regions"] = self.stats.get("ff_regions", 0) + 1  # (fastfp)
+                self.stats["ff_regions"] = self.stats.get("ff_regions", 0) + k  # (fastfp)
                 self.stats["ff_ops"] = self.stats.get("ff_ops", 0) + n  # (fastfp)
             del run[:]  # (fastfp)
     for i, pc in enumerate(pcs):
@@ -344,7 +636,7 @@ def emit_function(self, e, texts):
         if ff and kind == "op" and pc not in self.after and not (pc in labels or (pc == e and e in labels)):  # (fastfp)
             t, f = texts[(w, pc) if pc_relative(w) else w]  # (fastfp)
             if not f & (a64emit.UNHANDLED | a64emit.TERMINATOR):  # (fastfp)
-                joins = ff_joins(t, dead.get(pc, 0))  # (fastfp)
+                joins = ff_joins(t, dead.get(pc, 0), stores)  # (fastfp)
         if not joins:  # (fastfp)
             flush()  # (fastfp)
         mark = len(out)  # (fastfp)
@@ -453,10 +745,17 @@ def emit_function(self, e, texts):
     text = "\n".join(out)
     if frame:
         text = frame_stores(text)
+        text = ff_frame_stores(text)  # (fastfp)
     return localize_regs(text, local, dirty) + "\n", self.refs
 
 
 _installed = False
+
+
+def set_patched(addresses):
+    """addresses(): the guest addresses the game's patches name (nx2/oot_patches.py's mentioned_addresses; ff_patched)"""
+    _patched_addrs[0] = addresses
+    del _patched[:]
 
 
 def install():
@@ -474,7 +773,7 @@ def install():
         mode = fastfp_mode()
         if mode:
             with open(os.path.join(out_dir, "a64_fpx.h"), "a", newline="\n") as f:   # (after the kit's fpx and FCMP parts)
-                f.write(FASTFP_HEADER)
+                f.write(FASTFP_HEADER + (FF_VX_HEADER if vecfp_on() else ""))
             print("fast float regions (A64_FASTFP=%s): %d, %d float ops in them" % (
                 mode, self.stats.get("ff_regions", 0), self.stats.get("ff_ops", 0)))
         return files

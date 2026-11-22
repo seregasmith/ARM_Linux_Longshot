@@ -1,8 +1,7 @@
 #!/bin/bash
 # Game-free: a player's build started from what the AppImage carries, not from the repository. CI's AppImage job packages
-# the builder but never builds a game with it, so a file the AppImage leaves out was found by every player instead: #1459
-# made nx2/build.py write the menu's fonts from third_party/fonts at every build start, the AppImage does not carry that
-# folder, and every Linux build stopped at LibertinusSans-Regular.ttf while CI stayed green (2026-11-10, #1567).
+# the builder but never builds a game with it, so a file the AppImage leaves out would be found by every player instead
+# (a build start that reads a folder the AppImage does not carry stops every Linux build while CI stays green).
 #
 #   scripts/linux/check_player_build.sh [<Longshot-...-x86_64.AppImage>]   (default: the newest in build-linux/)
 #

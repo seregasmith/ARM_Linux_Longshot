@@ -90,13 +90,14 @@ def main():
         subprocess.run([args.cxx, "-std=c++20", "-O1", "-g", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS", "-I" + str(folder),
                         str(ROOT / "tests/program_cache_one_variant_test.cpp"), "-o", str(exe)], check=True, cwd=folder)
         out = {}
-        for mode in ("whole", "light"):
-            ran = subprocess.run([str(exe), mode], capture_output=True, text=True, timeout=60)
+        # (each way twice: the SPIR-V in the records, and in the shader store, gpu/vk/spirv_pack.h)
+        for mode, store in (("whole", None), ("light", None), ("whole-store", folder / "store-w"), ("light-store", folder / "store-l")):
+            ran = subprocess.run([str(exe), mode.split("-")[0]] + ([str(store)] if store else []), capture_output=True, text=True, timeout=60)
             if ran.returncode:
                 raise SystemExit("%s: %s%s" % (mode, ran.stdout, ran.stderr))
             out[mode] = ran.stdout.splitlines()
         picks = {m: [l for l in out[m] if l.startswith("bound ")] for m in out}
-        if picks["whole"] != picks["light"] or len(picks["whole"]) != 9:
+        if any(picks[m] != picks["light"] for m in picks) or len(picks["whole"]) != 9:
             raise SystemExit("the variant taken differs:\nwhole: %s\nlight: %s" % (picks["whole"], picks["light"]))
         want = ["bound 4: variant 3 ", "bound 1: variant 0 ", "bound 11: variant 11 ", "bound 9: variant 9 ", "bound 4: variant 3 ",
                 "bound 10: none", "bound 12: none", "bound 3: variant 2 ", "bound 1: variant 0 "]

@@ -5,7 +5,7 @@
 #
 #   scripts/linux/deps.sh         what the AppImage carries and is packed with (python/, appimagetool, the runtime)
 #   scripts/linux/deps.sh tools   also the build tools, each packed as a tools.lock archive into build-linux/deps/tools/
-#                                 (a maintainer's step when a tool changes: RELEASING.md, "Bump a tool"; add.sh there
+#                                 (a maintainer's step when a tool changes: docs/dev/reference/releases.md, "Bumping a tool"; add.sh there
 #                                 holds the tools.py add lines). The builder downloads them by tools.lock, not the AppImage
 #
 # The AppImage:
@@ -262,7 +262,7 @@ if [ "$WHAT" = tools ]; then
     for t in "$DEPS/emsdk" "$DEPS/ffmpeg" "$DEPS/sdl2" "$DEPS/sysroot" "$STAGE/cpm"; do
         python3 -I scripts/tools.py pack "$t" --out "$OUT/$(basename "$t").zip"
     done
-    # (the lines that publish them as package versions and write tools.lock: RELEASING.md, "Bump a tool")
+    # (the lines that publish them as package versions and write tools.lock: docs/dev/reference/releases.md, "Bumping a tool")
     {
         echo "# scripts/linux/deps.sh tools: each archive into Longshot's packages and tools.lock (RELEASE_TOKEN: your token)"
         add() { echo "python3 -I scripts/tools.py add $1 $2 \"${OUT#"$PWD/"}/$1.zip\" --system linux-x64 --dest $3 --prefix $1"; }

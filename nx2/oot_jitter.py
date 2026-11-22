@@ -13,7 +13,7 @@ game's own cameras and views keep the projection as it is.
 The jitter used to go into sead's perspective projection itself (its frustum offset, +0xb4 and +0xb8), where the game's
 CPU work saw it too: the shadow cascades are fitted to the view's frustum, so with the camera still the shadow map's origin
 moved by a sixth of a shadow texel each frame (up to a third; 0.003 without the jitter), and with it the shadows' edges
-(#841: a tester saw shadows flicker at DLAA). Here the cascades (and culling, and anything else on the CPU) see the view as
+(the shadows flicker at DLAA). Here the cascades (and culling, and anything else on the CPU) see the view as
 the game set it.
 
 host/rx_backend.c hos_dlss_jitter_clip picks the jitter and checks the projection is one of the picture's: perspective, of

@@ -1,0 +1,3 @@
+| Date | Build | OS / desktop | GPU / driver | CPU / RAM | Settings | Where | Result |
+|---|---|---|---|---|---|---|---|
+| Not reported | PR #1382, 095a6434; Game's on the same build as baseline | Windows 11 | RTX 5090, NVIDIA 621.01 | 32 threads; RAM not reported | 2560x1440; other field-run settings not reported | Hyrule Field by the Kakariko gate; one run from one spot, tiles remade after each change | GPU ms/frame in 10 s blocks: 9.29/9.49 Game's, 9.72/9.12 2x, 9.84/9.86/9.46 4x. In a debug white view, pixels in four 40 px bands: 6501/5756/3718/2925 Game's, 7010/7426/5498/4000 3x; the game's foliage setting at 3x: 6246/7517/6682/4502. These measurements used the field-grass patch subsequently removed because it can overflow the blade list. |

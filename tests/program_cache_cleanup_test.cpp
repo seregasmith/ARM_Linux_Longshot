@@ -78,7 +78,7 @@ int vkCreateShaderModule(uintptr_t device, const VkShaderModuleCreateInfo* info,
 }
 using VkResult = int;
 constexpr VkResult VK_SUCCESS = 0;
-struct IntelDriverGate { bool busy = false; explicit IntelDriverGate(bool = false) {} };   // (vk_internal.h's, never held here)
+struct IntelDriverGate { bool busy = false; explicit IntelDriverGate(bool = false, bool = false) {} };   // (vk_internal.h's, never held here)
 thread_local uint64_t module_program = 0;
 bool driver_faulted_program(uint64_t) { return false; }
 void driver_faulted_module(uint64_t) {}
@@ -99,6 +99,13 @@ bool disk_on = true, disk_listing = true;
 bool disk_zstd = false;   // (vk_progcache.cpp's RX_VK_PROGRAM_CACHE_ZSTD; the tests below use the uncompressed records)
 constexpr size_t kZstdHead = 20;
 constexpr uint32_t kCompressedKind = 16;
+// (the shader store, gpu/vk/spirv_pack.h, as vk_progcache.cpp has it: on when the runner names a folder for it, a second
+// argument. Each stage's SPIR-V is then a reference to it, and every read takes it from there)
+#include "../gpu/vk/spirv_pack.h"
+spirv_pack::Store& store = *new spirv_pack::Store;   // (never destroyed, as there: its threads' read handles outlive it)
+bool store_on = false;
+constexpr uint64_t kStoreWords = 1ull << 63;
+constexpr int64_t kInStore = 1ll << 62;
 // (the zstd calls the cache functions may make: a stub that copies, so the compressed record path and its 8-byte
 // unpacked size are exercised without linking zstd. It keeps the last plain payload for the matching decompress.)
 static std::vector<uint8_t> zstd_plain;
@@ -164,11 +171,15 @@ void release_accepted(std::vector<std::unique_ptr<Program>>& programs) {
     programs.clear();
 }
 int main(int argc, char** argv) {
-    CHECK(argc == 2);
+    CHECK(argc == 2 || argc == 3);
     disk_in = disk_out = std::tmpfile();
     CHECK(disk_in);
     const std::string scenario = argv[1];
     disk_zstd = scenario == "compressed";
+    if (argc == 3) {   // (the store as the game has it: none with the compressed cache)
+        CHECK(store.open(argv[2]));
+        store_on = !disk_zstd;
+    }
     save(7, scenario == "empty", scenario == "answer_stage" ? 1 : scenario == "answer_desc" ? 2 : 0);
     if (scenario == "first") fail_at = 1;
     if (scenario == "second" || scenario == "mixed") fail_at = 2;
@@ -200,6 +211,8 @@ int main(int argc, char** argv) {
     release_accepted(programs);
     CHECK(created == releases);
     for (const auto& [module, count] : destroyed) { (void)module; CHECK(count == 1); }
+    // (every stage's code is the one word 0x07230203: one blob for all of them, kept once)
+    if (store_on) CHECK(store.blob_count() == 1);
     CHECK(std::fclose(disk_in) == 0);
     std::puts("PASS: no live, invalid or double-destroyed module");
 }

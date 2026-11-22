@@ -28,7 +28,8 @@ def main():
     a = p.parse_args()
     source = (ROOT / "gpu/vk/vk_texture.cpp").read_text(encoding="utf-8-sig")
     mip = block(source, "{   // huge textures leave out their top levels:")
-    policy = block(source, "bool low_vram_texture_mips(") if "bool low_vram_texture_mips(" in source else ""
+    # (its definition: the BC scratch above it declares it too)
+    policy = block(source, "bool low_vram_texture_mips() {") if "bool low_vram_texture_mips() {" in source else ""
     menu = (ROOT / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8-sig")
     tier = block(menu, "int menu_memory_tier() {") if "int menu_memory_tier() {" in menu else ""
     helpers = "\n".join(block(source, marker) for marker in (

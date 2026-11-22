@@ -58,6 +58,9 @@ int temporal_mode() { return mode==ur::OFF ? ur::GAME : mode; }
 bool temporal_off() { return mode==ur::OFF; }
 bool scene_tonemap_on() { return tone; }
 int env_switch(const char*) { return enabled; }
+// (the FPS counter footer's record, upscale_route.h: nobody reads it here, so nothing is published for it)
+namespace upscale_route { enum class Route { Network, StandIn, Blit, Engine, Stretch }; }
+static void route_drawn(upscale_route::Route, int, uint32_t, uint32_t, uint32_t, uint32_t) {}
 uint64_t texture_frame_no() { return 10; }
 int dispatches=0, bound_pipe=0, bound_layout=0, disturbed=0, creates=0;
 uint32_t groups_x=0,groups_y=0;

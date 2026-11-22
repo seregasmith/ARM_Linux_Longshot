@@ -249,7 +249,7 @@ static uintptr_t exe_base(void) {
 
 /* HOS_SAMPLE=<thread name> (with HOS_PROFILE_EVERY=<seconds>): that thread sampled every millisecond; every interval its
    most frequent places, as module+offset of the leaf and of the first frame in the runtime under it. HOS_SAMPLE_FILE:
-   every sample's whole stack too, a line of frames leaf first (scripts/prof.py) */
+   every sample's whole stack too, a line of frames leaf first (scripts/perf.py stacks) */
 static DWORD WINAPI sample_thread(void *p) {
     const char *want = (const char *)p;
     const DWORD ms = (DWORD)atoi(getenv("HOS_PROFILE_EVERY")) * 1000;
@@ -327,7 +327,7 @@ static DWORD WINAPI sample_thread(void *p) {
 
 /* HOS_SAMPLE_ALL=<path> (on its own: not HOS_PROFILE_EVERY): while <path>.go exists, every 2 ms every guest thread and the renderer's
    threads (names starting "mkw_vk") sampled one after another: a line per thread, "<ms> <name>|<frames>", 16 frames
-   at most (scripts/crit.py, scripts/hotlist.py) */
+   at most (scripts/perf.py threads, hotlist) */
 static DWORD WINAPI sample_all_thread(void *p) {
     const char *path = (const char *)p;
     char go[MAX_PATH];
@@ -341,7 +341,7 @@ static DWORD WINAPI sample_all_thread(void *p) {
     int64_t t0 = 0;
     const int self = (int)syscall(SYS_gettid);
     /* (with HOS_CHAIN: "# at <ns>" before each sample, when it was taken: the threads are sampled one after another, a
-       millisecond or more apart, and scripts/chain.py lays the samples on its exact path) */
+       millisecond or more apart, and scripts/perf.py chain lays the samples on its exact path) */
     const int at = getenv("HOS_CHAIN") != NULL;
     /* (longshot) HOS_SLOW_FRAMES (host/slow_frames.c): sampled the whole run into its ring, the thread list taken again every
        5 s (threads come and go), nothing written here */
@@ -377,7 +377,7 @@ static DWORD WINAPI sample_all_thread(void *p) {
                                         hos_slow_frames_every_ms(), path);
             } else if (opened) {
                 t0 = hos_now_ns();
-                fprintf(out, "# t0_ns %lld\n", (long long)t0);   /* (the clock of HOS_CHAIN's records: scripts/chain.py) */
+                fprintf(out, "# t0_ns %lld\n", (long long)t0);   /* (the clock of HOS_CHAIN's records: scripts/perf.py chain) */
                 hos_log("prof: all-thread sampling of %d threads into %s", nt, path);
             }
             listed_at = hos_now_ns();

@@ -5,9 +5,8 @@
 // hold_ms exists for a game that polls for the stopped work itself: nothing else would ever let it on. But the game's
 // threads also wait for the GPU on recorded work of a queue with nothing stopped (OoT's main thread once a frame,
 // nvnSyncWait on the last fence of the frame before), and the signal the stopped queues wait for is made after that wait.
-// When the GPU took longer than hold_ms over that work (a load's uploads: ~100 ms), the watch thread made the stopped
-// queues go, and the frame was drawn with what the game had not written yet: the lit scene and Link dark for a frame
-// (issue 366; once or twice a run at Castle Town's gate, the dark frames left with the met-wait capture). They are held
+// When the GPU takes longer than hold_ms over that work (a load's uploads: ~100 ms), making the stopped queues go would
+// draw the frame with what the game has not written yet: the lit scene and Link dark for a frame. They are held
 // on while such a wait is under way and for hold_ms after it (the signal follows the wait: it is not made in it), most_ms
 // at most since they stopped, so a wait that never ends cannot hold them for good.
 #pragma once

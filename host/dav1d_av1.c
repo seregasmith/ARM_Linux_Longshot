@@ -2,9 +2,9 @@
 
    OoT's movies (romfs/Movie: the intro, ...) are 1080p AV1, and the static FFmpeg in the CPM cache has no AV1 decoder. Without
    this they go to Media Foundation (host/mf_av1.c): the synchronous decoder of Microsoft's AV1 Video Extension, its software
-   one, whatever the GPU, and a Store download where it is missing (issue 380). Movies stutter and fall behind their sound
-   there (issue 2316, an RTX 4060; a GTX 1050). dav1d is what Linux decodes them with (through FFmpeg). Built in when the build
-   finds dav1d in the CPM cache (LONGSHOT_DAV1D: nx2/build.py, scripts/windows/dav1d.sh); without it, Media Foundation as before.
+   one, whatever the GPU, and a Store download where it is missing. Movies stutter and fall behind their sound
+   there. dav1d is what Linux decodes them with (through FFmpeg). Built in when the build
+   finds dav1d in the CPM cache (LONGSHOT_DAV1D: nx2/build.py, scripts/windows/dav1d.sh); without it, Media Foundation.
 
    The same interface as mf_av1.c: dav1d_av1_decode takes one temporal unit (or NULL at the end, which drains) and calls back
    once per picture with NV12, which nn_video.c keeps as it is (no RGBA unless the game reads one).

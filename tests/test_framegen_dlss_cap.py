@@ -27,6 +27,9 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
+from menu_model_fixture import menu_text  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
 from srccut import between, block  # noqa: E402
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
@@ -122,10 +125,10 @@ def check_sources(framegen, main_cpp, dlss, menu, replay):
     assert "framegen_capped(v, dlss_fg_most())" in tx, "tx_framegen: a saved value past the top shows as the top"
     assert "framegen_maker()" in tx and '"Auto (FSR 3.1 FG)"' in tx and '"Auto (Built-in FG)"' in tx, \
         "tx_framegen: Auto names who makes its frames (DLSS FG makes fixed multipliers only)"
-    row = block(menu, "void set_row(Row& r, int v, int dir, bool keep = true) {", where="gpu/vk/vk_menu.cpp")
-    assert "if (r.value == &opts.framegen && dir && v == *r.value + dir * r.step) {" in row and \
-        "framegen_capped(*r.value, most)" in row and \
-        "top = framegen_capped(r.hi, most)" in row, "set_row: Frame generation's arrows step from the value shown, up to DLSS FG's top"
+    # (the arrows' step: the row's own step_fn in its module, gpu/vk/menu/framegen.cpp (#1633), as set_row's was)
+    step = block(menu, "int framegen_step(int now, int dir) {", where="gpu/vk/menu/framegen.cpp")
+    assert "top = framegen_capped(8, most)" in step and "framegen_capped(now, most) + dir" in step and \
+        ".step_fn = MENU_HOOK(framegen_step)" in menu, "Frame generation's arrows step from the value shown, up to DLSS FG's top"
     bridge = block(menu, "int menu_setting_set(", where="gpu/vk/vk_menu.cpp")
     assert "r.value == &opts.framegen ? 0 :" in bridge, "menu_setting_set: Frame generation's value as asked, not an arrow's step"
 
@@ -138,7 +141,7 @@ def main():
     framegen = (vk / "vk_framegen.cpp").read_text(encoding="utf-8")
     main_cpp = (vk / "vk_main.cpp").read_text(encoding="utf-8")
     dlss = (vk / "vk_dlss.cpp").read_text(encoding="utf-8")
-    menu = (vk / "vk_menu.cpp").read_text(encoding="utf-8")
+    menu = menu_text()   # (vk_menu.cpp and its modules' rows, #1633)
     replay = (vk / "vk_replay.cpp").read_text(encoding="utf-8")
     capped = block(framegen, "int framegen_capped(", where="gpu/vk/vk_framegen.cpp")
     fixture = "#include <algorithm>\n" + capped + MAIN

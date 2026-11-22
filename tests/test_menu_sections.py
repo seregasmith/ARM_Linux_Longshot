@@ -2,17 +2,27 @@
 
 A heading row (Row::heading) is a section's title: draw_options draws it (a gold title and a rule, nothing to click) and
 menu_tick's keys step over it. The Graphics tab is grouped as Resolution and upscaling, Frame generation and latency,
-Screen, HDR, Detail, and GPU and memory, after the Quality preset that sets rows in all of them. Each section must keep a
+Screen, HDR, Accessibility, Post-processing, Detail, and GPU and memory, after the Quality preset that sets rows in all of them. Each section must keep a
 row on every PC: a row row_shown can hide (Reflex, Anti-Lag 2, the Upscaler, the DLSS model, HDR's levels) cannot be a
-section's only row, or a GPU without it would show a title over nothing. The rows table is read from the source; nothing
-runs.
+section's only row, or a GPU without it would show a title over nothing. The rows are the menu as built (#1633: vk_menu.cpp's
+own and the modules', gpu/vk/menu/, in the model's order: tests/menu_model_fixture.py built_menu compiles and runs it, with no
+game); a module's row can be hidden when it has a shown() of its own.
 
-    python -I -B tests/test_menu_sections.py
+    python -I -B tests/test_menu_sections.py [--cxx g++]
 """
+import argparse
 import re
+import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
+from menu_model_fixture import built_menu, module_rows  # noqa: E402
+
+RUN_ALL_ARGS = ["--cxx", "g++"]
+
 ROOT = Path(__file__).resolve().parents[1]
+PAGES = {"TAB_GRAPHICS": "graphics", "TAB_AUDIO": "audio", "TAB_GAMEPLAY": "gameplay", "TAB_CONTROLS": "controls",
+         "TAB_NFC": "nfc", "TAB_MODS": "mods", "TAB_DEBUG": "debug", "TAB_MOTION": "motion", "TAB_SPEAKER": "controller_speaker", "TAB_FPS_DEV": "fps_details", "TAB_PAGE": "controls_page"}
 
 GRAPHICS = [
     ("Resolution and upscaling", ["Aspect ratio", "Output resolution", "Profile", "Upscaler", "DLSS model", "Render resolution", "Sharpness"]),
@@ -20,6 +30,8 @@ GRAPHICS = [
                                       "NVIDIA Reflex", "AMD Anti-Lag 2"]),
     ("Screen", ["Fullscreen", "Fullscreen monitor", "V-Sync", "Window scaling filter", "CRT filter", "CRT lines", "Ultrawide menus"]),
     ("HDR", ["HDR", "HDR paper white", "HDR peak brightness", "HDR contrast", "HDR tone mapper"]),
+    ("Accessibility", ["Colour vision correction"]),
+    ("Post-processing", ["ReShade preset", "Compare ReShade Preset", "User preset file", "Rescan ReShade presets"]),
     ("Detail", ["Anisotropic filtering", "Shadow resolution"]),
     ("GPU and memory", ["GPU device"]),
 ]
@@ -36,32 +48,30 @@ def function(text, marker):
     raise SystemExit("unterminated: " + marker)
 
 
-def rows_of(menu):
-    """The rows table's entries in order: (tab, name, value expression, heading)"""
-    table = menu[menu.index("Row rows[] = {"):]
-    table = table[:table.index("\n};")]
-    out = []
-    for m in re.finditer(r'\n    \{(TAB_[A-Z]+), "([^"]+)", ([^,]+),', table):
-        entry = table[m.start():table.find("\n    {", m.end())]
-        heading = bool(re.search(r"nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true\}", entry))
-        out.append((m.group(1), m.group(2), m.group(3).strip(), heading))
-    return out
-
-
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--cxx", default="g++")
+    args = parser.parse_args()
     menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
-    rows = rows_of(menu)
+    pages, diags = built_menu(args.cxx)
+    if diags:
+        raise SystemExit("FAIL: the menu as built has diagnostics: %s" % diags)
+    rows = [(tab, it.label, it.value, it.heading, it.shown) for tab, page in PAGES.items() for it in pages.get(page, [])]
     if len(rows) < 40:
-        raise SystemExit("FAIL: the rows table was not found (%d rows read)" % len(rows))
+        raise SystemExit("FAIL: the menu's rows were not found (%d rows read)" % len(rows))
 
-    # the values row_shown can hide: a section needs a row that is not one of them
+    # the values row_shown can hide, and a module's row with a shown() of its own: a section needs a row that is neither
     hidable = set(re.findall(r"&opts\.\w+", function(menu, "bool row_shown(int i) {")))
-    if "&opts.reflex" not in hidable or "&opts.hdr_white" not in hidable:
-        raise SystemExit("FAIL: row_shown no longer reads as expected (Reflex, HDR's levels)")
+    # (#1633: a module's row with a shown() in its source: one asking the renderer is a MENU_HOOK, absent from the layout-only
+    # build the rows above come from: the Upscaler's, Reflex's)
+    module_shown = {row["label"].strip('"') for row in module_rows() if "shown" in row and "label" in row}
+    if ("&opts.dlss" not in hidable and "Upscaler" not in module_shown) or not (module_shown or any(shown for *_, shown in rows)):
+        raise SystemExit("FAIL: row_shown, or a module's shown(), no longer reads as expected (the Upscaler, HDR's levels)")
 
     tabs = {}
-    for tab, name, value, heading in rows:
-        tabs.setdefault(tab, []).append((name, value, heading))
+    for tab, name, value, heading, shown in rows:
+        tabs.setdefault(tab, []).append((name, "(shown)" if shown or name in module_shown else value, heading))
+    hidable.add("(shown)")
     for tab, entries in tabs.items():
         for i, (name, value, heading) in enumerate(entries):
             if not heading:

@@ -1,0 +1,12 @@
+# ruff (pinned in mise.toml): a conservative check of the Python, run by pre-commit on what a branch changes
+# (`mise run lint`). It finds mistakes; it does not format: never run `ruff format` over the tree.
+line-length = 120
+target-version = "py312"
+extend-exclude = ["third_party", "gpu/third_party", "gpu/vk/sirit", "docs/old", "website/node_modules", "_deps"]
+
+[lint]
+# F: pyflakes (undefined names, unused imports and variables); E9: syntax errors; E7: statement mistakes
+# (== None, bare except, lambda assignment ...); W6: deprecated escapes.
+select = ["F", "E7", "E9", "W6"]
+# E731: the code assigns small lambdas on purpose; E741: names like l and I are the hardware's.
+ignore = ["E731", "E741"]

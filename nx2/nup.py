@@ -32,7 +32,7 @@ from time import monotonic
 if os.path.dirname(os.path.abspath(__file__)) not in sys.path:   # (python -I leaves the script folder off)
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import long_paths  # noqa: E402
-long_paths.install()   # (paths past 260 characters on Windows, before anything reads a file: #1115)
+long_paths.install()   # (paths past 260 characters on Windows, before anything reads a file)
 
 
 ZSTD = b"\x28\xb5\x2f\xfd"
@@ -266,7 +266,7 @@ class Nup:
     def _data(self, n):
         """Up to n bytes of the package from where it stands. A read the system refuses partway through the file (another
         program's lock on that part of it, a drive that cannot read it back) stops with what that means and what to do, not
-        as a bare "PermissionError: [Errno 13] Permission denied" (issue 295)"""
+        as a bare PermissionError ("[Errno 13] Permission denied")"""
         at = self.f.tell()
         try:
             return self.f.read(n)
@@ -452,7 +452,7 @@ def pick_title(nup, want):
 
 def long_path(p):
     """(Windows) p as an extended-length path (\\\\?\\...), so a game folder whose deepest file passes 260 characters (MAX_PATH)
-    still unpacks, links and is read (#1468: a 262-character path in Event\\EventSetting stopped the build with
+    still unpacks, links and is read (a 262-character path in Event\\EventSetting otherwise stops the build with
     FileNotFoundError). Python takes these everywhere, without Windows' long-paths setting. Elsewhere, or one already: as is."""
     if os.name != "nt" or not p:
         return p
@@ -581,7 +581,7 @@ def file_system(path):
 
 def out_of_space(error, dst, part, rel, size):
     """A full drive said with the member being written and what its drive reports, to tell a full disk from a write the drive
-    refused with room to spare (issue 1388: 196 GB free on NTFS, stopped at 12 GB). None for any other error"""
+    refused with room to spare (a drive can refuse with hundreds of GB free). None for any other error"""
     if not isinstance(error, OSError) or error.errno != errno.ENOSPC:
         return None
     folder = os.path.dirname(dst)
@@ -727,7 +727,7 @@ def zstd_start(head):
 
 def still_in_nup_frame(f, head):
     """Whether a .zs file that starts as zstd (head: its first 18 bytes) is the .nup's own frame round a damaged file, as
-    builders before #456 wrote them (#2361): a frame whose content is as large as the file, and that starts with zeros or
+    older builders wrote them: a frame whose content is as large as the file, and that starts with zeros or
     does not decompress. Only those are decompressed, and only their start: a game .zs file's content is larger than the
     file, and most of them need the game's dictionary to decompress at all"""
     if frame_content_size(head) != os.fstat(f.fileno()).st_size:
@@ -743,7 +743,7 @@ def still_in_nup_frame(f, head):
 def damaged_game_files(romfs, progress=None):
     """The romfs .zs files that do not start as zstd: in the 23.3 GB dumps three of them begin with zeros (the complete
     dump is about 23.8 GB), and the game then leaves out every model that uses one: the Water Temple's walls and floors,
-    the Great Fairy Fountain's floor (#1002, #718, #1259). Also those still in the .nup's zstd frame (still_in_nup_frame).
+    the Great Fairy Fountain's floor. Also those still in the .nup's zstd frame (still_in_nup_frame).
     progress(done, total), when given, after each file: the files are listed first, then opened one by one (about
     100,000, minutes where a virus scanner looks at each one)"""
     root = long_path(romfs)   # (walked and read as long paths; the paths returned are under romfs as given)
@@ -775,7 +775,7 @@ def stand_in_for(path, damaged=(), listings=None):
     (_Nrm.bntx.zs: a normal map for a normal map), the longest common start of the name, then the nearest size. Never
     one of the damaged files, even one already given a stand-in. The files of its kind are ranked by name and size
     first, then opened in that order until a whole one: one or two opens, not one for each file of its kind
-    (PreComputedCulling/RuntimeId holds about 35,000 .bcul.zs; each was opened for each damaged file, #1275).
+    (PreComputedCulling/RuntimeId holds about 35,000 .bcul.zs, too many to open for each damaged file).
     listings: folder -> folder_listing, kept across one pass's calls so a folder is listed once"""
     folder, name = os.path.split(path)
     suffix = re.search(r"(_[A-Za-z]+\d*)?(\.[^_]*)$", name).group(0)
@@ -798,7 +798,7 @@ def stand_in_for(path, damaged=(), listings=None):
 
 
 # An incomplete dump has a few damaged files (three textures in the 23.3 GB dumps). Past this many the dump is damaged
-# throughout: no stand-in is looked for, and the build stops at once (#1275's had 1896, and sat overnight first)
+# throughout: no stand-in is looked for, and the build stops at once (rather than searching for hours)
 MOST_STAND_INS = 100
 
 

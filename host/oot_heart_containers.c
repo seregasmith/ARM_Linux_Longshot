@@ -43,7 +43,7 @@ int heart_sarc_find(const uint8_t *d, size_t n, const char *name, size_t *start,
     for (size_t i = 0; i < count; i++) {
         const uint32_t attr = rd(d, n, nodes + 16 * i + 4, 4, be);
         if (!(attr & 0x01000000)) continue;
-        const size_t at = names + 4 * (size_t)(attr & 0xffff);
+        const size_t at = names + 4 * (size_t)(attr & 0xffffff);
         if (at > n || n - at <= want || memcmp(d + at, name, want) || d[at + want]) continue;
         const size_t s = base + rd(d, n, nodes + 16 * i + 8, 4, be), e = base + rd(d, n, nodes + 16 * i + 12, 4, be);
         if (s > e || e > n) return 0;

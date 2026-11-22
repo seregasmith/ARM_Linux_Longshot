@@ -177,11 +177,11 @@ int main(int argc, char **argv) {
         char *ini = slurp(argv[2]);
         printf("%d\n", hos_crash_auto_send(ini ? ini : ""));
         free(ini);
-    } else if (!strcmp(cmd, "answer")) {   /* status body issue */
-        char out[1000], link[600];
+    } else if (!strcmp(cmd, "answer")) {   /* status body */
+        char out[1000];
         int again = 0;
-        const int sent = hos_crash_answer(out, sizeof out, atoi(argv[2]), argv[3], argv[4], link, sizeof link, &again);
-        printf("%d|%d|%s|%s\n", sent, again, link, out);
+        const int sent = hos_crash_answer(out, sizeof out, atoi(argv[2]), argv[3], &again);
+        printf("%d|%d|%s\n", sent, again, out);
     } else if (!strcmp(cmd, "status")) {   /* curl's --dump-header file */
         char *h = slurp(argv[2]);
         printf("%d\n", hos_crash_http_status(h ? h : ""));
@@ -308,10 +308,15 @@ int main(int argc, char **argv) {
     snprintf(logs, sizeof logs, "%s/logs", dir);
     mkdir(logs, 0700);
     snprintf(log, sizeof log, "%s/longshot_log.txt", logs);
-    hos_crash_record_start(dir, "vtest-1", log);
-    FILE *f = fopen(log, "w");
-    fprintf(f, "[hos host] longshot vtest-1\n[hos host] run_id: %s\n", hos_crash_record_run());
+    hos_crash_record_start(dir, getenv("CRASH_TEST_RECORD_VERSION") ? getenv("CRASH_TEST_RECORD_VERSION") : "vtest-1", log);
+    /* (the exec'd run after a Restart now: stderr and the log are the same open file the run before left; the game
+       does not start its log over, it appends where that run stopped) */
+    FILE *f = getenv("RESTARTED") ? fopen(log, "a") : fopen(log, "w");
+    fprintf(f, "[hos host] longshot %s\n[hos host] run_id: %s\n",
+            getenv("CRASH_TEST_LOG_VERSION") ? getenv("CRASH_TEST_LOG_VERSION") : "vtest-1", hos_crash_record_run());
     for (int i = 3; i < argc; i++) fprintf(f, "%s\n", argv[i]);
+    /* (the restarted run's own lines: only it writes these, the way the real game keeps logging after a restart) */
+    if (getenv("RESTARTED") && getenv("CRASH_TEST_RESTARTED_LOG")) fprintf(f, "%s\n", getenv("CRASH_TEST_RESTARTED_LOG"));
     fclose(f);
     char *prepare[] = {argv[0], (char *)"--prepare-shaders", NULL};
     if (!strcmp(mode, "prepare")) hos_crash_watch_start(2, prepare);
@@ -319,7 +324,9 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "relaunch")) {   /* (Linux's Restart now: the same process again, a new run) */
         hos_crash_quit_asked();
         hos_crash_clean_end();
-        char *again[] = {argv[0], argv[1], (char *)"clean", NULL};
+        const char *to = getenv("CRASH_TEST_RELAUNCH_TO");   /* (what the restarted run does: default "clean") */
+        setenv("RESTARTED", "1", 1);   /* (the exec sees the environment: the restarted run keeps the open log) */
+        char *again[] = {argv[0], argv[1], (char *)(to && *to ? to : "clean"), NULL};
         execv("/proc/self/exe", again);
         return 9;
     }
@@ -413,6 +420,16 @@ def source_checks():
     close = close[:close.index("\n}\n")]
     assert close.index("hos_crash_quit_asked();") < close.index("if (!vk_module) return;"), \
         "a quit is noted first, before the renderer's close that can take seconds"
+    own = dialog[dialog.index("static int log_is_run(const char *path, const char *run_id, uint64_t *at) {"):]
+    own = own[:own.index("\n}\n")]
+    assert "read_text" not in own and "fgets" in own and "*at =" in own and "banner_at" in own, \
+        "the log-ownership probe streams the file for its run_id line AND says where it sits: a head window " \
+        "(read_text) misses the run after a posix Restart now, whose line sits where the run before stopped (issue #1374)"
+    rdl = dialog[dialog.index("static void read_log(RunLog *r, const Who *who) {"):]
+    rdl = rdl[:rdl.index("\n}\n")]
+    assert "line_at >= r->from" in rdl, \
+        "the facts the report reads come from the located run_id line on: a shared log holds the run before too, " \
+        "and its map must not describe the restarted run (issue #1374, review round two)"
     spawn = dialog[dialog.index("static int spawn_exe(const char *exe_path, const char *const *args, int n, int wait_ms, int *code) {"):]
     spawn = spawn[:spawn.index("\n}\n")]
     assert "CREATE_NO_WINDOW" in spawn and re.search(r"CreateProcessW\(program, cmd, NULL, NULL, FALSE,", spawn), \
@@ -498,8 +515,11 @@ def source_checks():
     # (of the back end's module, only the crash window: gpu/vk/vk_crash_window.cpp, SDL's renderer, never the renderer itself)
     assert set(re.findall(r"\bmkwvk_\w+", code)) == {"mkwvk_crash_page", "mkwvk_crash_page_fn", "mkwvk_crash_close",
                                                       "mkwvk_crash_close_fn"}, set(re.findall(r"\bmkwvk_\w+", code))
-    for word in ("HOS_CRASH_WATCH", "HOS_CRASH_TEST", "--crash-watch"):
-        assert word in (ROOT / "docs/development.md").read_text(encoding="utf-8"), word + " is documented"
+    switches = (ROOT / "gpu/vk/switches.def").read_text(encoding="utf-8")
+    for switch in ("HOS_CRASH_WATCH", "HOS_CRASH_TEST"):
+        assert "\nSW(%s," % switch in switches, switch + " has its row in gpu/vk/switches.def"
+    assert "--crash-watch" in (ROOT / "docs/dev/reference/crash-window.md").read_text(encoding="utf-8"), \
+        "--crash-watch is documented in docs/dev/reference/crash-window.md"
     template = (ROOT / ".forgejo/ISSUE_TEMPLATE/1-game-problem.yml").read_text(encoding="utf-8")
     for field in ("version", "track", "kind", "gpu", "system", "where", "what", "settings", "log"):
         assert re.search(r"^\s+id: " + field + r"$", template, re.M), "the form has the field " + field
@@ -598,7 +618,8 @@ def logic_checks(exe, menu, tmp, form):
     stamp = tmp / "stamp.txt"
     for text, key, want in (("version=v3.1.0\ncrash_reports=https://d.example/telemetry/crash\n", "crash_reports",
                              "1|https://d.example/telemetry/crash"),
-                            ("crash_issue=https://g.example/o/r/issues/81\r\n", "crash_issue", "1|https://g.example/o/r/issues/81"),
+                            ("crash_reports=https://d.example/telemetry/crash\r\n", "crash_reports",
+                             "1|https://d.example/telemetry/crash"),
                             ("crash_reports=http://d.example/x\n", "crash_reports", "0|"), ("crash_reports=\n", "crash_reports", "0|"),
                             ("crash_reports=https://a b\n", "crash_reports", "0|"), ("x_crash_reports=https://d/x\n", "crash_reports", "0|"),
                             ("version=v3.1.0\n", "crash_reports", "0|")):
@@ -636,17 +657,15 @@ def logic_checks(exe, menu, tmp, form):
     assert run(exe, "cleancap", "dev éééé", 15, "dev").rstrip("\n") == "ok|<device> éé"
     assert run(exe, "cleancap", "audio in: Mi open (48000 Hz", 20, "zzz").rstrip("\n") == "ok|audio in: <device>"
     assert run(exe, "json", 'a"b\\c\nd\x02').rstrip("\n") == '"a\\"b\\\\c\\nd\\u0002"'
-    issue = "https://g.example/o/r/issues/81"
-    sent, again, link, text = run(exe, "answer", 201, '{"comment": "%s#issuecomment-5", "new": true}' % issue, issue).rstrip("\n").split("|", 3)
-    assert (sent, link) == ("1", issue + "#issuecomment-5") and text.startswith("Sent."), text
-    assert run(exe, "answer", 200, '{"comment": "https://evil.example/x"}', issue).split("|")[2] == issue, \
-        "a comment elsewhere is not opened: the crash issue is"
-    assert run(exe, "answer", 200, '{"comment": "%s#issuecomment-5x"}' % issue, issue).split("|")[2] == issue
-    assert run(exe, "answer", 429, "{}", issue).startswith("0|1||Not sent: the crash server is busy")
-    assert run(exe, "answer", 400, '{"error": "crash is required"}', issue).rstrip("\n") == \
-        "0|0||Not sent: the crash server refused the report (400: crash is required)."
-    assert run(exe, "answer", 502, "", issue).startswith("0|1||"), "a server error: try again"
-    assert run(exe, "answer", 0, "", issue).startswith("0|1||Not sent: couldn't reach"), "no answer: try again"
+    # (sent: the team has it, and the Sent page links nowhere: an older relay's comment link is not shown or opened)
+    for body in ('{"accepted": true}', '{"comment": "https://g.example/o/r/issues/81#issuecomment-5", "new": true}', ""):
+        sent = run(exe, "answer", 201, body).rstrip("\n")
+        assert sent == "1|0|Sent. Thank you: the Longshot team has it. Only the team can read it.", sent
+    assert run(exe, "answer", 429, "{}").startswith("0|1|Not sent: the crash server is busy")
+    assert run(exe, "answer", 400, '{"error": "crash is required"}').rstrip("\n") == \
+        "0|0|Not sent: the crash server refused the report (400: crash is required)."
+    assert run(exe, "answer", 502, "").startswith("0|1|"), "a server error: try again"
+    assert run(exe, "answer", 0, "").startswith("0|1|Not sent: couldn't reach"), "no answer: try again"
     headers = tmp / "headers.txt"
     headers.write_text("HTTP/1.1 301 Moved\r\nLocation: x\r\n\r\nHTTP/2 201 \r\ncontent-type: application/json\r\n", encoding="utf-8")
     assert run(exe, "status", headers).strip() == "201", "the last answer's status"
@@ -725,7 +744,7 @@ def logic_checks(exe, menu, tmp, form):
     assert f["place"] == "Title and intro" and f["crash"] == "", f
     f = facts(*head, "[hos host] vk: device 0: NVIDIA GeForce RTX 3090, Vulkan 1.4, driver 0x9b118180, type 2",
               "[hos host] vk: device 1: llvmpipe (LLVM 23.1.4, 256 bits), Vulkan 1.4, driver 0x6802006, type 4",
-              "[hos host] vk: NVIDIA GeForce RTX 3090, Vulkan 1.4, driver 0x9b118180; mesh shaders yes, host memory import yes",
+              "[hos host] vk: NVIDIA GeForce RTX 3090, Vulkan 1.4, driver 0x9b118180; mesh shaders used, host memory import yes",
               "[hos host] vk: driver: NVIDIA 580.95.05", "[hos host] vk: NVIDIA DLSS: not available: no nvngx_dlss.dll in ~/x",
               "[hos host] [warn] vk: AMD FSR 4: no upscaler on this GPU")
     assert f["gpu"] == "NVIDIA GeForce RTX 3090" and f["driver"] == "NVIDIA 580.95.05"
@@ -880,7 +899,7 @@ def logic_checks(exe, menu, tmp, form):
     q = parse_qs(urlsplit(url).query)
     assert (q["field:track"], q["field:where"], q["field:settings"]) == (["Release"], ["Kokiri Forest"], ["ultrawide=1\n"]), q
     template = (ROOT / ".forgejo/ISSUE_TEMPLATE/1-game-problem.yml").read_text(encoding="utf-8")
-    for option in ("Release", "Release candidate", "Nightly", "Built from source", "Crash, freeze or black screen"):
+    for option in ("Release", "Nightly", "Built from source", "Crash, freeze or black screen"):   # (no release candidates: #1768)
         assert re.search(r"^\s+- " + re.escape(option) + r"$", template, re.M), "the form's dropdowns have " + option
     long_url = run(exe, "url", "T", "v1", "G", "S", "w" * 3000).strip()
     assert len(long_url) <= 2000 and "field:what" not in parse_qs(urlsplit(long_url).query) and "field:version=v1" in long_url, \
@@ -949,6 +968,65 @@ def behaviour(cc, tmp):
     assert boxes(got) == ["Longshot couldn't start"] and "Vulkan 1.3" in got[0][1], got
     _, got = game("relaunch", ends=2)
     assert boxes(got) == [], "a restart in the same process (execve) says nothing, from the old helper or the new"
+    # issue #1374: the run after a Restart now appends to the log the run before left, at that run's offset; any
+    # play session is past 8 KB, and the report searched only the log's first 8192 bytes for its run_id line, so its
+    # own crash said "the game logged to no file" while its lines sat in the file past the window.
+    filler = ["filler line %04d and some more text to reach past the window" % i for i in range(400)]
+    folder, got = game("relaunch", *filler, ends=2, buttons="0",
+                       extra={"CRASH_TEST_RELAUNCH_TO": "crash",
+                              "CRASH_TEST_RESTARTED_LOG": "RESTARTED-TAIL-MARKER"})   # (the restarted run's own line)
+    crash_boxes = [e[1] for e in got if e[0] == "BOX" and e[1].startswith("Longshot closed unexpectedly")]
+    assert len(crash_boxes) == 1, ("the run after a restart still shows its crash once", got)
+    clip = next((e[1] for e in got if e[0] == "CLIP"), "")
+    assert clip.startswith("Longshot crash report"), ("Report manually copies the full report", clip[:120])
+    assert "Not found: the game logged to no file" not in clip, \
+        "the restarted run's report says the game logged to no file: its run_id line sits at %d bytes, past the " \
+        "old 8 KB head window, and find_run_log never looked further (issue #1374)" % sum(len(x) + 1 for x in filler)
+    assert "RESTARTED-TAIL-MARKER" in clip, "the restarted run's report must carry its own log tail"
+    print("PASS: the run after a Restart now: its crash report finds the deep run_id line and carries the log tail")
+    # round two (review): the file holds TWO runs now — the facts the report reads (map, stage) must come from this
+    # run's own lines, not from the run before it. The run before played in Kokiri Forest; the restarted run crashed
+    # at the start, before any map: its report must not blame "while you were playing" with the old run's map.
+    folder, got = game("relaunch", *(filler + ["[hos Main] map: Kokiri Forest (spot 0)"]), ends=2, buttons="0",
+                       extra={"CRASH_TEST_RELAUNCH_TO": "crash",
+                              "CRASH_TEST_RESTARTED_LOG": "RESTARTED-START-MARKER"})
+    box = next(e[1] for e in got if e[0] == "BOX" and e[1].startswith("Longshot closed unexpectedly"))
+    clip = next((e[1] for e in got if e[0] == "CLIP"), "")
+    assert "during the start" in box, \
+        "the restarted run's box names the stage from its own run: the run before loaded a map, this one never did"
+    assert "Map: Kokiri" not in clip and "Map: Title and intro" in clip, \
+        "the restarted run's report keeps the run before's map as its own (issue #1374, review): the facts must be " \
+        "read from the located run_id line on, not from byte zero of the shared log"
+    assert "RESTARTED-START-MARKER" in clip, "the restarted run's own line is still in its tail"
+    print("PASS: the run after a Restart now: facts (map, stage) come from its own lines, not the run before")
+    # round three (review): the gate starts at the run's OWN banner, not at its run_id line: the version line sits
+    # one line before the run_id, and a gate that starts at run_id always drops the version — the report falls back
+    # to the crash record's, or says "not known" (P3). The case makes the two versions distinct on purpose: the
+    # report must name the one in the run's own LOG, not the record's — proving the gate reaches the banner line.
+    folder, got = game("relaunch", *(filler + ["[hos Main] map: Kokiri Forest (spot 0)"]), ends=2, buttons="0",
+                       extra={"CRASH_TEST_RELAUNCH_TO": "crash",
+                              "CRASH_TEST_RESTARTED_LOG": "RESTARTED-START-MARKER",
+                              "CRASH_TEST_LOG_VERSION": "vlog-9",       # (what the restarted run logs)
+                              "CRASH_TEST_RECORD_VERSION": "vrec-7"})   # (what the crash record alone would say)
+    clip = next((e[1] for e in got if e[0] == "CLIP"), "")
+    assert "Version: vlog-9" in clip and "Version: vrec-7" not in clip, \
+        "the restarted run's report lost the version from its own log: the gate started at the run_id line, one " \
+        "line after the version banner, and the report fell back to the crash record (issue #1374, review round " \
+        "three): %s" % [l for l in clip.splitlines() if l.startswith("Version")][:1]
+    assert "Map: Kokiri" not in clip, \
+        "reaching back to this run's banner must not reach back past it: the run before's map is still out " \
+        "(issue #1374, review round three)"
+    print("PASS: the report's version comes from the run's own banner, and the gate still excludes the run before")
+    # round three, P2 (Windows): hos_log batches up to 250 ms, and the startup failures write straight to stderr —
+    # physically BEFORE the queued banner — so a reader gated at the run's boundary would never see the failure.
+    # The shipped game writes its boundary first (hos_log_flush right after run_id). Pinned on the source: Windows
+    # can't be built here, and the flush's own writer machinery is the tested logger, not this file's.
+    main_c = open(os.path.join(ROOT, "host", "hos_main.c"), encoding="utf-8").read()
+    at_banner = main_c.index('hos_log("run_id: %s"')
+    assert "hos_log_flush();" in main_c[at_banner:at_banner + 900], \
+        "the run's banner and run_id are not on disk before the direct-stderr startup diagnostics can write: on " \
+        "Windows the batched logger lands after them and the startup-failure box loses its log (issue #1374, " \
+        "review round three)"
     for mode, extra in (("crash", {"HOS_HEADLESS": "1"}), ("crash", {"HOS_CRASH_WATCH": "0"}), ("prepare", {}),
                         ("crash", {"HOS_PGO": str(tmp / "pgo")}), ("crash", {"GAMESCOPE_WAYLAND_DISPLAY": "gamescope-0"}),
                         ("crash", {"XDG_CURRENT_DESKTOP": "gamescope"})):
@@ -1004,6 +1082,7 @@ refused) printf 'HTTP/1.1 400 Bad Request\\r\\n\\r\\n' > "$head"; printf '{"erro
 esac
 """, encoding="utf-8")
     curl.chmod(0o755)
+    # (crash_issue=: what a build made before the reports went team-only has in its stamp, now ignored)
     stamp = "version=vtest-1\ncrash_reports=https://d.example/telemetry/crash\ncrash_issue=https://g.example/o/r/issues/81\n"
     log = ("[hos host] report: os Arch Linux", "[hos host] report: cpu Ryzen 7 7700 (16 threads), 32 GB",
            "[hos host] vk: NVIDIA GeForce RTX 3090, Vulkan 1.4, driver 0x9b118180; mesh shaders yes, host memory import yes",
@@ -1035,10 +1114,12 @@ esac
             "CRASH: exception 0xc0000005" in got[1][1], got[1]
         assert got[1][1].split("\n")[-1] == "Send|Show all of it|Cancel|", got[1]
         if answer == "sent":
-            assert kinds == ["BOX", "BOX", "OPEN", "BOX", "BOX", "OPEN", "BOX", "END"], kinds
+            # (the stamp's old crash_issue= and the answer's comment link are ignored: the Sent page has Done only, opens nothing)
+            assert kinds == ["BOX", "BOX", "OPEN", "BOX", "BOX", "BOX", "END"], kinds
             assert got[2][1].endswith(".json") and "sending-crash-" in got[2][1], "Show all of it opens the report as it is sent"
-            assert got[4][1].startswith("Longshot: sent\nSent.") and got[5][1] == "https://g.example/o/r/issues/81#issuecomment-5", got[4:6]
-            assert not got[6][1].split("\n")[-1].startswith("Report automatically"), "sent: not offered again"
+            assert got[4][1].startswith("Longshot: sent\nSent.") and got[4][1].split("\n")[-1] == "Done|", got[4]
+            assert "issues/81" not in got[4][1], "no link to the reports: only the team can read them"
+            assert not got[5][1].split("\n")[-1].startswith("Report automatically"), "sent: not offered again"
             assert list((folder / "bug-reports/sent").iterdir()), "the answer kept"
         elif answer == "busy":
             assert kinds == ["BOX", "BOX", "BOX", "BOX", "END"], kinds
@@ -1076,7 +1157,7 @@ esac
             copies = list((folder / "bug-reports/sent").glob("*.json"))
             assert len(copies) == 1 and json.loads(copies[0].read_text(encoding="utf-8")) == report, \
                 "a copy of what was sent kept beside its answer: %s" % copies
-            assert "[hos crash] sent on its own (longshot_crash.ini): https://g.example/o/r/issues/81#issuecomment-5\n" in run_log, \
+            assert "[hos crash] sent on its own (longshot_crash.ini): Sent. Thank you: the Longshot team has it." in run_log, \
                 "the answer in the run's log"
         else:
             assert boxes(got) == ["Longshot closed unexpectedly"], got

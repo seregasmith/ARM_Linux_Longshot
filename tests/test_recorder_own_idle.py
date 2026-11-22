@@ -187,7 +187,7 @@ def build(cxx, headers, out, recorder_text, name, hooks_text=None):
 
 
 SWITCHES = ("RX_VK_RECORDER", "RX_VK_PARALLEL", "RX_VK_RECORDER_OWN", "RX_VK_RECORDER_IDLE", "RX_VK_RECORDER_SPIN_US",
-            "RX_VK_RECORDER_STATS", "RX_VK_RECORDER_RING_MB", "RX_VK_RECORDER_POISON")
+            "RX_VK_RECORDER_STATS", "RX_VK_RECORDER_RING_MB", "RX_VK_RECORDER_POISON", "RX_VK_RECORDER_PARTS")
 
 
 def run(exe, case, env_add):
@@ -204,13 +204,22 @@ def run(exe, case, env_add):
         return None, (e.stdout or "") if isinstance(e.stdout, str) else "TIMEOUT"
 
 
-OWN, IDLE = "RX_VK_RECORDER_OWN", "RX_VK_RECORDER_IDLE"
+OWN, IDLE, PARTS = "RX_VK_RECORDER_OWN", "RX_VK_RECORDER_IDLE", "RX_VK_RECORDER_PARTS"
+
+
+def names_switches(env, out):
+    """the recorder's log line names RX_VK_RECORDER_OWN=1 and the idle wait: by part (the default) the recorder always waits
+    on the ring, which the line says, and RX_VK_RECORDER_IDLE changes nothing; with RX_VK_RECORDER_PARTS=0 it names both"""
+    if env.get(PARTS) == "0":
+        return "(RX_VK_RECORDER_OWN=1)" in out and "(RX_VK_RECORDER_IDLE=wait)" in out
+    return "; RX_VK_RECORDER_OWN=1" in out and "the recorder waits on the ring after" in out
 # (case, its switches, what the env case's line must say)
 CASES = (
     ("env", {}, "mode 3 own 0 idle_wait 0"),
     ("env", {OWN: "1", IDLE: "wait"}, "mode 3 own 1 idle_wait 1"),
     ("env", {OWN: "0", IDLE: "spin"}, "mode 3 own 0 idle_wait 0"),
     ("env", {OWN: "off"}, "mode 3 own 0 idle_wait 0"),
+    ("env", {OWN: "1", IDLE: "wait", PARTS: "0"}, "mode 3 own 1 idle_wait 1"),
     ("own_skip", {OWN: "1"}, None),
     ("own_off", {}, None),
     ("own_off", {OWN: "0"}, None),
@@ -243,7 +252,7 @@ def check(exe, cases=CASES):
             bad.append("%s: exit %s\n%s" % (label, code, out.strip()[-600:]))
         elif line and line not in out:
             bad.append("%s: expected %r\n%s" % (label, line, out.strip()[-600:]))
-        elif case == "env" and env.get(OWN) == "1" and ("RX_VK_RECORDER_OWN=1)" not in out or "RX_VK_RECORDER_IDLE=wait)" not in out):
+        elif case == "env" and env.get(OWN) == "1" and not names_switches(env, out):
             bad.append("%s: the recorder's log line does not name the switches\n%s" % (label, out.strip()[-600:]))
     return bad
 

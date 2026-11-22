@@ -55,6 +55,15 @@ static const nvn_tex *win_tex(const nvn_win *o, int i) { (void)o; (void)i; retur
 static void rx_nvn_present(const nvn_tex *t, const int crop[4]) {
     (void)t; (void)crop; clock_now += renderer_work;
 }
+// The trace fixture uses an ordinary native window with the output preview idle.
+struct detached_window { nvn_win window; };
+int detached_idle_enabled;
+uint64_t detached_boot_addr, detached_published_generation;
+uint64_t detached_received_queue, detached_received_instance;
+uint64_t detached_last_present_window, detached_last_present_generation;
+uint64_t detached_last_present_queue, detached_last_present_instance;
+uint64_t h2g(const void *ptr) { return (uintptr_t)ptr; }
+void rx_nvn_present_trial(const nvn_tex *t, const int crop[4], uint64_t) { rx_nvn_present(t, crop); }
 static void hos_vcore_back(void) { clock_now += back_work; }
 #define G32(a) guest32
 #define G64(a) ((uint64_t)0)
@@ -65,6 +74,7 @@ static void hos_sleep_ns(int64_t ns) { (void)ns; ++sleeps; }
 static void scan_dt(long long frame) { (void)frame; ++scans; }
 static void realtime_step(int64_t now) { (void)now; ++steps; }
 static void hos_log(const char *fmt, ...) { (void)fmt; }
+void hos_cheats_frame(void) {}   /* (host/cheats.c: the mods' cheats, at each present) */
 static uint64_t hos_ticks(void) { return 0; }
 static int fps_max(void) { return 60; }   /* (nn_vi.c's Frame rate cap: the console's 60 here) */
 '''

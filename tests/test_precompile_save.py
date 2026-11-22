@@ -5,7 +5,7 @@ pipelines for 20 minutes under keys the cache did not have, and grew it by 4.3 M
 shaders' hashes; the code was already there): nothing was written, and the next start had only the driver's own folder. This
 checks precompile_save.h (tests/precompile_save_test.cpp) and the wiring in vk_draw.cpp: precompile_run writes the cache when
 it is due, with the start-up screen's saving state on, as precompile_warm (RX_VK_LOAD=create) does, and both log what the save
-did, which pipeline_cache_save records for each way it ends; and docs/development.md's row.
+did, which pipeline_cache_save records for each way it ends; and the switch's row in gpu/vk/switches.def.
 python -I -B tests/test_precompile_save.py [--cxx c++]
 """
 import argparse
@@ -46,6 +46,13 @@ def check_sources():
     if not in_order(run, ["precompile_save::due("] + saving):
         problems.append("precompile_run's save is not inside the start-up screen's saving state, or its log does not say what "
                         "the save did")
+    # (the .built record's word that the file holds them, pcache_stamp.h: from a save that got them there or a cache its file
+    # already matches, never from how long the pass took)
+    if not in_order(run, ["pipeline_cache_save(true)", "saved = precompile_save::in_file(pcache_save_outcome)",
+                          "(saved || pcache_in_file())) precompile_built_whole();"]) or "kDefaultS" in run:
+        problems.append("precompile_run says its pipelines reached the file without a save or a cache that matches it")
+    if "precompile_save::unchanged(sized, n, pcache_saved_size" not in block(draw, "static bool pcache_in_file() {"):
+        problems.append("pcache_in_file does not compare the cache with the size its file was last read or written at")
     warm = block(draw, "void precompile_warm(void (*progress)(size_t done, size_t total)) {")
     if not in_order(warm, saving):
         problems.append("precompile_warm (RX_VK_LOAD=create) does not log what its save did")
@@ -53,9 +60,9 @@ def check_sources():
     for kind in ("kNoCache", "kOff", "kFetchFailed", "kSame", "kWritten", "kWriteFailed", "kError"):
         if "Outcome::" + kind not in save:
             problems.append("pipeline_cache_save never records " + kind)
-    docs = (ROOT / "docs" / "development.md").read_text(encoding="utf-8")
-    if "`RX_VK_PRECOMPILE_SAVE_S" not in docs:
-        problems.append("docs/development.md does not name RX_VK_PRECOMPILE_SAVE_S")
+    table = (ROOT / "gpu" / "vk" / "switches.def").read_text(encoding="utf-8")
+    if "\nSW(RX_VK_PRECOMPILE_SAVE_S," not in table:
+        problems.append("gpu/vk/switches.def has no row for RX_VK_PRECOMPILE_SAVE_S")
     return problems
 
 

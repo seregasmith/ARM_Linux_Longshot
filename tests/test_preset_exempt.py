@@ -7,9 +7,12 @@ table and apply_preset from gpu/vk/vk_menu.cpp and check that the two agree. No 
 """
 import argparse
 import re
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests"))
+from menu_model_fixture import menu_text  # noqa: E402
 
 # Rows no preset sets that still turn the preset to Custom, with the reason
 NOT_EXEMPT = {
@@ -56,13 +59,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=ROOT)
     args = parser.parse_args()
-    menu = (args.source / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
+    # (vk_menu.cpp and its modules' rows as table lines, #1633: rows the feature modules of gpu/vk/menu/ describe too)
+    menu = menu_text(args.source) if (args.source / "gpu" / "vk" / "menu").is_dir() else         (args.source / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
     preset = block(menu, menu.index("void apply_preset(int p)"))
     set_by_preset = set(re.findall(r"opts\.(\w+)\s*=(?!=)", preset))
     if not {"resolution", "pace", "realtime", "handheld"} <= set_by_preset:
         raise SystemExit("apply_preset: the rows it sets were not found (%s)" % sorted(set_by_preset))
 
     table = block(menu, menu.index("Row rows[] = {"))
+    if "Row module_rows[] = {" in menu:
+        table += block(menu, menu.index("Row module_rows[] = {"))
     rows = 0
     wrong = []
     for match in re.finditer(r"\{TAB_\w+,", table):

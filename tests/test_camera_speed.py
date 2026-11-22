@@ -16,6 +16,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
+from menu_model_fixture import menu_text  # noqa: E402
+
 RUN_ALL_ARGS = ["--cc", "gcc"]
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -137,21 +140,25 @@ def source_checks():
     check(users == ["host/nn_vi.c"], "the Camera speed option is read or set outside host/nn_vi.c: %s" % users)
 
     header = (ROOT / "gpu" / "vk" / "vk_menu.h").read_text(encoding="utf-8")
-    menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
+    menu = menu_text()   # (vk_menu.cpp and its modules' rows, #1633)
     check("int camera_speed = 100;" in header, "out of the box the camera does not turn at the game's own speed")
     row = re.search(r'\{TAB_CONTROLS, "Camera speed", &opts\.camera_speed, 50, 400, 25, tx_percent,', menu)
     check(row is not None, "the Controls tab has no Camera speed row (50 to 400%, steps of 25)")
     check(block(menu, '{TAB_CONTROLS, "Camera speed"').rstrip().endswith("nullptr, false, true}"),
           "the Camera speed row takes a restart, or changes the Quality preset")
+    # (a scale: a module's slider (gpu/vk/menu/camera.cpp, #1633), which is_slider and stops_at_ends take by its kind)
+    camera = (ROOT / "gpu" / "vk" / "menu" / "camera.cpp").read_text(encoding="utf-8")
+    check(re.search(r'\.key = "camera_speed",\s*\.label = "Camera speed",[^}]*\.kind = menu::Kind::Slider,', camera),
+          "the Camera speed row is not a slider: a scale")
     for fn in ("bool is_slider(", "bool stops_at_ends("):
         line = menu[menu.index(fn):menu.index("\n", menu.index(fn))]
-        check("&opts.camera_speed" in line, "%s does not take the Camera speed row: a scale" % fn.split("(")[0])
-    # (its line in longshot_options.ini: the name's, as ini_key makes it, and no other row's)
-    keys = [name.lower().replace(" ", "_") for name in re.findall(r'\{TAB_[A-Z]+, "([^"]+)", &opts\.', menu)]
+        check("menu::Kind::Slider" in line, "%s does not take a module's slider: a scale" % fn.split("(")[0])
+    # (its line in longshot_options.ini: the row's own key, camera_speed, and no other row that key)
     ini_key = block(menu, "const char* ini_key(const Row& r) {")
-    check("camera_speed" not in ini_key and keys.count("camera_speed") == 1, "the row is not saved as camera_speed")
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    check("| | Camera speed | 50% to 400%, in steps of 25 | 100% |" in readme, "README.md's option table has no Camera speed row")
+    check('"camera_speed"' not in ini_key and menu.count('.key = "camera_speed"') == 1, "the row is not saved as camera_speed")
+    settings = (ROOT / "docs" / "user" / "graphics-and-controls.md").read_text(encoding="utf-8")
+    check("| | Camera speed | 50% to 400%, in steps of 25 | 100% |" in settings,
+          "docs/user/graphics-and-controls.md's settings table has no Camera speed row")
 
 
 def fixture_checks(cc):

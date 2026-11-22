@@ -106,7 +106,7 @@ class NgxRuntimeTests(unittest.TestCase):
         self.assertEqual(Path(self.place("windows", said=said)), self.out / "ngx" / "nvngx_dlss.dll")
         self.assertEqual([p.name for p in (self.out / "ngx").iterdir()], ["nvngx_dlss.dll"])
         self.assertIn("has no nvngx_dlssg.dll yet", said[0])
-        self.assertIn("scripts/ngx_sdk.py", said[0])
+        self.assertIn("scripts/fetch.py dlss", said[0])
 
     def test_nothing_without_the_sdk_or_its_platform(self):
         self.assertIsNone(self.place("windows", sdk=""))
@@ -120,7 +120,7 @@ class NgxRuntimeTests(unittest.TestCase):
 class FetchGateTests(unittest.TestCase):
     def fetch(self, accept, sdk="sdk"):
         calls = []
-        ngx = SimpleNamespace(NOTICE="notice", fetch=lambda *a, **k: calls.append(a))
+        ngx = SimpleNamespace(notice="notice", fetch=lambda *a, **k: calls.append(a))
         with mock.patch.object(make_game, "ngx_script", return_value=ngx), mock.patch.dict(os.environ, {"LONGSHOT_NGX_SDK": sdk}), \
                 mock.patch("sys.stdout", io.StringIO()) as out:
             try:
@@ -155,7 +155,7 @@ class FetchGateTests(unittest.TestCase):
 
 
 class NoScriptTests(unittest.TestCase):
-    """The AppImage carries no scripts/ (scripts/linux/appimage.sh): with LONGSHOT_NGX_SDK set there, ngx_script() says so and
+    """A builder without scripts/fetch.py (an older AppImage's): with LONGSHOT_NGX_SDK set there, ngx_script() says so and
     stops, not a FileNotFoundError traceback from importlib"""
 
     def test_missing_script_is_said_plainly(self):
@@ -166,18 +166,20 @@ class NoScriptTests(unittest.TestCase):
                 make_game.place_ngx_runtime(os.path.join(root, "game"))
         self.assertEqual(stopped.exception.code, 1)
         self.assertIn("@@error", out.getvalue())
-        self.assertIn("ngx_sdk.py", out.getvalue())
+        self.assertIn("fetch.py", out.getvalue())
         self.assertIn("Unset LONGSHOT_NGX_SDK", out.getvalue())
 
 
 class AppImageDlssTests(unittest.TestCase):
     def test_build_and_appimage_package_dlss_sources(self):
         build_py = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")
-        # (with DLSS or without, the back end is compiled from the sources: no prebuilt one to set aside)
-        self.assertIn("build_vk = a.standalone and vk_headers and spirv_headers and vma_headers", build_py)
+        # (with DLSS or without, the back end is compiled from the sources: no prebuilt one to set aside. RX_GAME_ONLY, a dev
+        # switch, builds the game alone)
+        self.assertIn("build_vk = a.standalone and not game_only and vk_headers and spirv_headers and vma_headers", build_py)
         self.assertIn("NGX_SDK = ngx_sdk(", build_py)
         appimage = (ROOT / "scripts" / "linux" / "appimage.sh").read_text(encoding="utf-8")
-        for piece in ("cp scripts/ngx_sdk.py", "cp -a gpu/vk gpu/compat gpu/third_party", "third_party/imgui"):
+        # (scripts/fetch.py and the helpers it imports come with the whole scripts/ folder: tests/test_appimage_scripts.py)
+        for piece in ("cp -a nx2 host scripts ", "cp -a gpu/vk gpu/compat gpu/third_party", "third_party/imgui"):
             self.assertIn(piece, appimage)
         # (the static C++ runtime the back end links with DLSS: in the sysroot, tools.lock's, which deps.sh tools packs)
         deps = (ROOT / "scripts" / "linux" / "deps.sh").read_text(encoding="utf-8")

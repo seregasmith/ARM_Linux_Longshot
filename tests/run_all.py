@@ -22,7 +22,7 @@ no arguments and its own defaults.
     RUN_ALL_MODULES = ["zstandard"]                                       # Python packages it imports
     RUN_ALL_SKIP = {"windows": "needs spirv-val: checked on Linux"}       # OS ("linux", "windows") -> why it is skipped
 
-{name} in an argument is a tool or folder find_tools looks for (cxx, vulkan_headers, spirv_headers, spirv_val, glslang,
+{name} in an argument is a tool or folder find_tools looks for (cc, cxx, vulkan_headers, spirv_headers, spirv_val, glslang,
 dotnet, dav1d); a check whose tool, compiler (the word after --cc or --cxx) or module is missing here is skipped, or fails
 with --strict. A check skipped on both OSes (a GPU, the game) names both. A declaration that is not a plain literal of
 that shape, names an unknown placeholder or OS, or any other RUN_ALL_ name, stops the run with the file and line; so
@@ -55,6 +55,8 @@ import threading
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "tests"))
+from compiler_command import parse_compiler  # noqa: E402
 WINDOWS = os.name == "nt"
 OS = "windows" if WINDOWS else "linux"
 
@@ -114,6 +116,18 @@ def dav1d_prefix():
     return None
 
 
+def bundled_mingw():
+    """(windows) The clone's llvm-mingw folder as LONGSHOT_MINGW for every check, as nx2/make_game.py's bundled_mingw() gives
+    it to the build (CONTRIBUTING.md: the variable, or that folder). Without it a check that builds with
+    toolchain.native_target() asks that folder's clang, found on PATH, for the MSVC target: "'algorithm' file not found".
+    LONGSHOT_MINGW set already wins; LONGSHOT_MSVC=1 (the Visual Studio route) and a folder without its clang leave it unset"""
+    if not WINDOWS or os.environ.get("LONGSHOT_MINGW") or os.environ.get("LONGSHOT_MSVC") == "1":
+        return
+    here = os.path.join(ROOT, "llvm-mingw")
+    if os.path.isfile(os.path.join(here, "bin", "clang.exe")):
+        os.environ["LONGSHOT_MINGW"] = here
+
+
 def find_tools():
     return {
         "dav1d": None if WINDOWS else dav1d_prefix(),
@@ -122,6 +136,7 @@ def find_tools():
         "spirv_val": which("spirv-val"),
         "glslang": which("glslangValidator", "glslang"),
         "dotnet": which("dotnet"),
+        "cc": os.environ.get("CC") or which("gcc", "clang"),
         "cxx": which(os.environ.get("CXX", ""), "clang++", "g++", "c++"),
     }
 
@@ -249,8 +264,14 @@ def python_check(rel, decl, tools, timeout):
             args.append(a)
     # (a compiler named by the arguments, or the test's own default one, must be on PATH)
     for i, a in enumerate(args[:-1]):
-        if a in ("--cc", "--cxx") and not which(args[i + 1]):
-            missing.append(args[i + 1])
+        if a in ("--cc", "--cxx"):
+            try:
+                command = parse_compiler(args[i + 1]) if a == "--cc" else [args[i + 1]]
+            except ValueError:
+                missing.append("invalid compiler setting: " + args[i + 1])
+                continue
+            if not command or not which(command[0]):
+                missing.append(args[i + 1])
     missing += [m for m in decl["modules"] if importlib.util.find_spec(m) is None]
 
     def run():
@@ -441,13 +462,13 @@ class Result:
 
 # (--changed, the dev-loop proposal's D1) the checks that read what changed: most tests name the files they cut code from or run,
 # by path or by name, so a test whose text names a changed file is picked. A change to this runner, or to a shared .py of tests/
-# that is not a test, picks every check. Before a pull request the whole run is still the one that counts (docs/workflow.md)
+# that is not a test, picks every check. Before a pull request the whole run is still the one that counts (docs/dev/developing.md#from-claim-to-merge)
 LONGSHOT_REMOTE = "git.magicbean.dev/magicbeandev/longshot"   # (forge.py's HOST and REPO, as add_remote matches them)
 
 
 def default_base():
     """--changed's base when none is named: main on the remote that points at Longshot (forge.py, from MagicBeanDev/Tooling,
-    adds one as forge unless one already does: CONTRIBUTING.md's git rebase forge/main), else origin/main"""
+    adds one as forge unless one already does: Tooling's docs/forge.md: git rebase forge/main), else origin/main"""
     r = subprocess.run(["git", "-C", ROOT, "remote", "-v"], capture_output=True, text=True)
     for line in (r.stdout if r.returncode == 0 else "").splitlines():
         parts = line.split()
@@ -540,7 +561,7 @@ def unicode_output():
     "replace" decode). Into a pipe (CI's log, an agent's tool, `| more`) Windows' Python writes the ANSI code page,
     cp1252, which has none of them: the run stopped with a UnicodeEncodeError at the first such failure, before the
     table, the summary and --write-times. A pipe gets UTF-8, as -X utf8 would give it; a console keeps its own encoding.
-    Either way a character it cannot show is replaced instead of ending the run (as scripts/team_chat.py does)."""
+    Either way a character it cannot show is replaced instead of ending the run (as Tooling's scripts/team_chat.py does)."""
     for stream in (sys.stdout, sys.stderr):
         if not hasattr(stream, "reconfigure"):   # (a StringIO)
             continue
@@ -575,6 +596,7 @@ def main():
     if a.changed is not None and (a.names or a.write_times):
         p.error("--changed picks the checks itself: no names, no --write-times")
     times = load_times()
+    bundled_mingw()
     tools = find_tools()
 
     checks = []

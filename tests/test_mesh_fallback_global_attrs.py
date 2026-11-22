@@ -95,7 +95,7 @@ def constants():
     text = (SPIRV / "emit_spirv.h").read_text(encoding="utf-8")
     values = {}
     for name, expr in re.findall(r"constexpr u(?:32|64) (MESH_FALLBACK_\w+) = ([^;]+);", text):
-        expr = re.sub(r"u64\{([^}]*)\}", r"(\1)", expr).replace("16u", "16").replace("1u", "1")
+        expr = re.sub(r"(\d+)u(?:ll)?\b", r"\1", re.sub(r"u64\{([^}]*)\}", r"(\1)", expr))
         try:
             values[name] = eval(expr, {}, dict(values))
         except (NameError, SyntaxError):   # (the push offsets, from names this check does not read)
@@ -107,8 +107,8 @@ def constants():
         raise SystemExit("the pool's slot count is not 1 << its shift: a ticket's slot is its low bits")
     if v["MESH_FALLBACK_POOL_HEADER_BYTES"] < 4 * (1 + v["MESH_FALLBACK_POOL_SLOTS"]):
         raise SystemExit("the pool's header has no room for the counter and a word a slot")
-    if v["MESH_FALLBACK_POOL_OFFSET"] + v["MESH_FALLBACK_POOL_BYTES"] > 128 << 20:
-        raise SystemExit("the records buffer with its pool passes fallback_buffers_of's 128 MB limit")
+    if v["MESH_FALLBACK_POOL_OFFSET"] + v["MESH_FALLBACK_POOL_BYTES"] + 16 > v["MESH_FALLBACK_RECORDS_LIMIT"]:
+        raise SystemExit("the records buffer with its pool and counters passes fallback_buffers_of's limit")
     if v["MESH_FALLBACK_CAPACITY"] >= 1 << 32:   # (the counter is cleared before each draw: a draw's tickets must not wrap it)
         raise SystemExit("a draw's tickets would wrap the pool's counter")
     return v

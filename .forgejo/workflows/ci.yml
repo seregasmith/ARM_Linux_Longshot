@@ -1,12 +1,12 @@
-# The checks of every pull request to main and every push to it (docs/releases.md, "CI"): the pull request's title, and every
+# The checks of every pull request to main and every push to it (docs/dev/developing.md, "Run the checks"): the pull request's title, and every
 # game-free check: tests/run_all.py runs each
 # tests/test_*.py and nx2/test_*.py (all of them, even after a failure), the C++ unit tests under gpu/vk/tests and a
 # byte-compile of every tracked Python file, and writes a table of them to the run's summary. A check that needs a GPU,
 # the game or MSVC says so, and why, in its own file (RUN_ALL_SKIP). No game data is involved.
 # The tests run in two parts at once (run_all.py --shard, split by tests/run_all_times.json): each part is one job, and
 # every check is in exactly one of them. The Windows Builder's checks (its compile, its --cli delivery) are in part 1, on
-# Linux with EnableWindowsTargeting. There is no Windows runner (docs/forgejo-runners.md): what only Windows can check
-# (the suite on Windows' Python, MSVC's compile of the native checks) is in RELEASING.md, "Needs a Windows tester".
+# Linux with EnableWindowsTargeting. There is no Windows runner (docs/dev/reference/ci.md): what only Windows can check
+# (the suite on Windows' Python, MSVC's compile of the native checks) is in docs/dev/reference/releases.md, "Windows tester".
 # On Linux the C and C++ compiles go through ccache (the compilers in its PATH), with the cache main's runs leave
 # (actions/cache: read by every run, written only by a push to main, so a pull request never writes what another reads).
 name: CI
@@ -53,7 +53,7 @@ jobs:
           title = check.strip_wip(os.environ["TITLE"])
           if not check.TITLE.match(title):
               print("::error::the title must be a Conventional Commit, type(scope): description, with the type one of %s "
-                    "(CONTRIBUTING.md, Pull request titles): %r" % (", ".join(check.TYPES), title))
+                    "(docs/dev/standards.md, Titles): %r" % (", ".join(check.TYPES), title))
               sys.exit(1)
           print("ok: %s" % title)
           PY
@@ -88,12 +88,17 @@ jobs:
         with:
           python-version: '3.12'
       # (the packages tests import: nx2/test_nup_codec.py's zstandard; tests/test_prompt_guide_lines.py's Pillow and numpy,
-      # nx2/prompt_assets.py's, pinned as nx2/prompt_requirements.txt and requirements.txt have them. The runner itself needs none)
+      # nx2/prompt_assets.py's; the build's lz4 (tests/test_discover.py, test_walk.py, test_lift_lookups.py) and unicorn
+      # (tests/test_insn_fixed_convert.py), pinned as nx2/prompt_requirements.txt and requirements.txt have them. The runner
+      # itself needs none)
       - name: Python packages for the tests
-        run: python -m pip install --disable-pip-version-check --no-deps zstandard==0.25.0 pillow==13.0.0 numpy==2.5.4
+        run: >-
+          python -m pip install --disable-pip-version-check --no-deps zstandard==0.25.0 pillow==13.0.0 numpy==2.5.4
+          lz4==4.4.5 unicorn==2.1.4
+      # (lld: tests/test_thinlto_tls.py links with -fuse-ld=lld, as the game's build does)
       - name: Compilers and the SPIR-V validator
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y g++ clang spirv-tools ccache libdav1d-dev
+        run: sudo apt-get update && sudo apt-get install -y g++ clang lld spirv-tools ccache libdav1d-dev
       # (the cache's key: the compilers' versions and the shader recompiler's sources, the objects worth keeping: the
       # bake and nx2 checks compile its ~164 files. A key already cached is not saved again)
       - name: Compiler cache
@@ -287,3 +292,17 @@ jobs:
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
       - name: Lint the workflows
         run: '"$RUNNER_TEMP/actionlint" -color -config-file .forgejo/actionlint.yaml .forgejo/workflows/*.yml'
+
+  # (on every change, not only website/ ones: the site reads docs/ and the repository's files, so other changes can break
+  # it. website.yml still builds, previews and deploys only when its sources change. No secrets here)
+  website:
+    name: Website build and checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: https://github.com/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and check
+        run: scripts/website_check.sh

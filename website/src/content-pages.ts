@@ -1,16 +1,18 @@
 // The pages published from the repository's own documents: the site path, then the file it is made from.
 // Only these are published; other notes stay on Forgejo until they are added here.
 export const contentPages: Record<string, string> = {
-  'install': 'docs/getting-started.md',
-  'install/steam-deck': 'docs/steam-deck-playbook.md',
-  'settings': 'docs/graphics-and-controls.md',
-  'tested-configurations': 'docs/tested-configurations.md',
-  'saves': 'docs/updates-and-saves.md',
-  'saves/transfer': 'docs/saves.md',
-  'mods': 'docs/using-mods.md',
-  'help': 'docs/common-issues.md',
-  'help/report': 'docs/reporting-and-contributing.md',
-  'help/performance': 'docs/performance-report.md',
+  'install': 'docs/user/getting-started.md',
+  'install/steam-deck': 'docs/user/steam-deck-playbook.md',
+  'requirements': 'docs/user/requirements.md',
+  'settings': 'docs/user/graphics-and-controls.md',
+  'settings/advanced': 'docs/user/advanced.md',
+  'saves': 'docs/user/updates-and-saves.md',
+  'saves/transfer': 'docs/user/saves.md',
+  'mods': 'docs/user/using-mods.md',
+  'help': 'docs/user/common-issues.md',
+  'help/report': 'docs/user/reporting-and-contributing.md',
+  'help/performance': 'docs/user/performance-report.md',
+  'privacy': 'docs/user/privacy.md',
   'contributing': 'CONTRIBUTING.md',
 };
 

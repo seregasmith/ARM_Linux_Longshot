@@ -5,7 +5,8 @@
 # tools.lock's linux-x64 lines, outside the image: builder/linux/linux_tools.py finds them (the Longshot Launcher's, or the
 # builder's own toolchains folder) and, for --cli, downloads what is missing.
 #   Longshot.AppImage --cli <args>     nx2/make_game.py itself, e.g. --cli --nup game.nup --out ~/Games/Longshot
-#                                      (RecompLauncher's prepare: --cli --prepare --game <copy>)
+#                                      (RecompLauncher's prepare: --cli --prepare --game=<copy> --out <folder>, or with no
+#                                      --game, built again from the game files the folder kept)
 #   Longshot.AppImage --play           start the game in ~/Games/Longshot
 #   Longshot.AppImage --play <folder>  start the game in that folder (RecompLauncher's start)
 #   Longshot.AppImage <folder>         the same

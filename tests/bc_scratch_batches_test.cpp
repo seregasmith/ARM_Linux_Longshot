@@ -67,6 +67,7 @@ static std::vector<std::pair<size_t, uint32_t>> upload_runs(const std::vector<ui
         struct { bool bc = true; uint32_t layers = 0; } tex;
         const bool all = false, repack = false;
         const size_t max_layers = layers.size();
+        const uint32_t bc_run = bc_layers();   // (the scratch the level's runs go through: capacity stands for either)
         /* RUN */
         out.push_back({k0, n});
         k0 = k1;

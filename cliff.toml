@@ -1,4 +1,4 @@
-# git-cliff's settings for the release notes (docs/releases.md, RELEASING.md): scripts/release.py notes runs it over the
+# git-cliff's settings for the release notes (docs/dev/reference/releases.md, "Release notes"): scripts/release.py notes runs it over the
 # commits since the previous tag, and the release workflow puts the result on the release page. Nothing is written back to
 # the repository. A squash-merged pull request's title is its commit's subject, a Conventional Commit (CONTRIBUTING.md).
 
@@ -22,7 +22,7 @@ filter_unconventional = true
 split_commits = false
 protect_breaking_commits = true
 filter_commits = false
-tag_pattern = "v[0-9]+\\.[0-9]+\\.[0-9]+.*"
+tag_pattern = "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
 topo_order = false
 sort_commits = "oldest"
 commit_parsers = [

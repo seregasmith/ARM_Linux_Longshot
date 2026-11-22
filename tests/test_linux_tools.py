@@ -186,7 +186,8 @@ class AppRun(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.dir, True)
         app = self.app = self.dir / "AppDir"
         share = app / "usr/share/longshot"
-        for rel in ("builder/linux/linux_tools.py", "builder/linux/longshot-launch", "scripts/tools.py"):
+        for rel in ("builder/linux/linux_tools.py", "builder/linux/longshot-launch", "scripts/tools.py",
+                    "scripts/helpers.py"):   # (appimage.sh carries the whole of scripts/: tools.py imports helpers)
             (share / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / rel, share / rel)
         shutil.copy2(ROOT / "builder/linux/AppRun", app / "AppRun")

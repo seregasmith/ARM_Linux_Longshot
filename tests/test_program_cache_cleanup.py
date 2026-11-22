@@ -83,8 +83,11 @@ class CacheModuleCleanupTests(unittest.TestCase):
             raise AssertionError(result.stdout + result.stderr)
 
     def run_case(self, name):
-        result = subprocess.run([str(self.executable), name], capture_output=True, text=True, timeout=30)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # (each case twice: each stage's SPIR-V in its record, and in the shader store, gpu/vk/spirv_pack.h)
+        with tempfile.TemporaryDirectory(prefix='longshot-cache-store-') as store:
+            for extra in ([], [store]):
+                result = subprocess.run([str(self.executable), name, *extra], capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, ' '.join([name, *extra]) + ': ' + result.stdout + result.stderr)
 
     def test_second_module_failure(self):
         self.run_case('second')

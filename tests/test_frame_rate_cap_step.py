@@ -20,6 +20,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
+from menu_model_fixture import menu_text  # noqa: E402
+
 RUN_ALL_ARGS = ["--cc", "gcc"]
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -255,7 +258,7 @@ def main():
               "a second run left one divide's hook from the first")
 
     # (the menu's row: Uncapped is its 6, after the six caps, so a saved 0 to 5 means what it did)
-    menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
+    menu = menu_text()   # (vk_menu.cpp and its modules' rows, #1633)
     check('"60 (the console\'s)", "90", "120", "144", "165", "240", "Uncapped"}' in menu, "tx_fps_cap does not end with Uncapped")
     row = menu[menu.index('{TAB_GRAPHICS, "Game frame rate cap"'):]
     row = row[:row.index("},") + 2]

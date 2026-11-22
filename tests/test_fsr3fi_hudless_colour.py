@@ -6,7 +6,7 @@ FSR 3.1's HUD-less mode lays the presented frame over each made frame wherever t
 light and the frame is presented sRGB-encoded, so given the copy whole (as main did) they differed everywhere and every made
 frame came out as the game's frame: at 4x each game frame was shown four times. Left linear under the HUD, it put a dark ring
 around the HUD's see-through parts. The shader's own hudless_colour, compiled as C++, is checked for both; the inpainting
-pass takes the presented pixel whole where they differ (scripts/fsr3_shaders.py FI_PATCHES, its own check:
+pass takes the presented pixel whole where they differ (scripts/shaders.py FI_PATCHES, its own check:
 test_fsr3_shaders.py); hud_source tells the shader whether the picture is the native HDR one.
 
 fg_hud_comp_spv.h names the hash of the fg_hud.comp it was made from (its first line), checked with or without glslang; with

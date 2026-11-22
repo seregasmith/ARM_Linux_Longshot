@@ -6,7 +6,6 @@ repos:
     hooks:
       - id: check-yaml
       - id: check-json
-        exclude: ^scripts/(cpu_candidates|cpu_functions)\.json$
       - id: end-of-file-fixer
         exclude: ^(third_party/|gpu/third_party/|gpu/vk/sirit/|website/public/fonts/)
       - id: trailing-whitespace
@@ -32,6 +31,11 @@ repos:
           - build
           - chore
           - revert
+  # ruff with ruff.toml's rules, on changed Python files; pinned here so any runner has it (same version as mise.toml)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.12.0
+    hooks:
+      - id: ruff   # (the hook's entry passes --force-exclude itself; given again, ruff refuses to run)
   - repo: local
     hooks:
       # manual until magicbeandev/ci@0.1.0 is published (hook needs the registry orb).
@@ -41,9 +45,9 @@ repos:
         entry: bash -c 'MB_ORB_DIR="${MB_ORB_DIR:?}"; bash "$MB_ORB_DIR/tools/validate.sh" "$(git rev-parse --show-toplevel)"'
         language: system
         pass_filenames: false
-      - id: shellcheck-ci-scripts
-        name: ShellCheck (ci and packaging scripts)
+      - id: shellcheck-scripts
+        name: ShellCheck (packaging scripts)
         entry: bash -c 'shellcheck -x -S error "$@"' --
         language: system
         types: [shell]
-        files: ^(ci/|scripts/(linux|windows)/).*\.sh$
+        files: ^scripts/(linux|windows)/.*\.sh$

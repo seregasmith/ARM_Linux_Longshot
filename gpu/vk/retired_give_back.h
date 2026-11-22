@@ -46,7 +46,7 @@ constexpr uint64_t want(uint64_t used, uint64_t budget, int high, int low) {
 }
 
 /// The system-heap budget imports_give_back measures against:
-/// - Under 12 GB (16 GB PCs and the Steam Deck), the heap's own budget as before (#479), unless RX_VK_IMPORT_CAP_MB > 0.
+/// - Under 12 GB (16 GB PCs and the Steam Deck), the heap's own budget, unless RX_VK_IMPORT_CAP_MB > 0.
 /// - At 12 GB and above (32 GB+ PCs, where imports_give_back was off), capped at kLiveBudgetCap (4500 MB) by default so
 ///   idle unmirrored pools do not pile up in amdgpu's per-submit BO list and capture ranges over a multi-hour session.
 /// - RX_VK_IMPORT_CAP_MB=<MB> sets the cap in MB (> 0: capped on any budget; 0: off at >= 12 GB unless a watermark switch

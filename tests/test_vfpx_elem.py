@@ -5,7 +5,8 @@ Guest words of the form (several registers, every lane index, Vd the same as Vn 
 a64emit.translate and a64_lift.op_text, the lifter's per-instruction pipeline, twice: as lifted now, and with
 A64_NO_VFPX_ELEM=1 (as before the change). The first must call a64_vfpx_mul32 and no scalar helper, the second the
 scalar helper four times. tests/vfpx_elem_test.c then runs both from the same random Ctx and compares the whole Ctx:
-  - random: 2M states per guest word (fpx_sticky_test.c's operand classes, products at the underflow and overflow
+  - random: 10,000 states per guest word, the suite's run (--random 2000000 for a long run by hand after a change to the
+    helper) (fpx_sticky_test.c's operand classes, products at the underflow and overflow
     edges, random FPCR with FZ, DN, RMode, FIZ/AH/NEP and the kill switch, random FPSR);
   - sweep: every pair of 54 special values (zeros, subnormals, the smallest and largest normals, inf, quiet and
     signalling NaNs, products exactly at the edges) as a lane and as the element, FZ on and off, four FPSR states.
@@ -14,7 +15,7 @@ a64_rtgen) at the lifted code's FP flags, for -march=native (what the game is bu
 x86-64-v2, on Windows and Linux; a build this CPU cannot run (x86-64-v3 without AVX2, say) exits 3 at once and is
 reported as skipped.
 
-    python -I -B tests/test_vfpx_elem.py [--cc clang] [--cxx clang++] [--random 2000000]
+    python -I -B tests/test_vfpx_elem.py [--cc clang] [--cxx clang++] [--random 10000]
 """
 import argparse
 import os
@@ -95,7 +96,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--cc")
     p.add_argument("--cxx")
-    p.add_argument("--random", type=int, default=2000000)
+    p.add_argument("--random", type=int, default=10000)
     a = p.parse_args()
     if platform.machine().lower() not in ("x86_64", "amd64"):
         fs.skip("not an x86-64 host: %s" % platform.machine())

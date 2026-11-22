@@ -1,17 +1,16 @@
-# Longshot's releases (docs/releases.md; how to make one: RELEASING.md). The same workflow as MagicBeanDev/LongshotLauncher's,
+# Longshot's releases (docs/dev/reference/releases.md; how to make one: "Making a release" there). The same workflow as MagicBeanDev/LongshotLauncher's,
 # but for what is built: here the two builders.
 #
 #   a push to main       the nightly: nightly-<commits since the fork>-<commit>, a pre-release, 5 minutes after the last of a few
 #                        merges in a row (and at least once an hour while they keep coming)
 #                        and none when the commits since the nightly before put nothing on its page (ci:, chore:)
-#   a tag vX.Y.Z-rc.N    a release candidate, a pre-release (the rc channel)
-#   a tag vX.Y.Z         a stable (the stable channel, and rc too). Longshot's first is v3.0.0
+#   a tag vX.Y.Z         a stable (the stable channel), on a tested nightly's commit. Longshot's first is v3.0.0
 #
 # 1. version: tools.lock is checked first (scripts/tools.py check --require: every tool the Windows and the Linux builder
-#    need is in Longshot's packages), then the version's name; a tag is checked too (scripts/release.py check-tag: its form, on main, above
+#    need is in Longshot's packages), then the version's name; a tag is checked too (Tooling's scripts/release.py check-tag: its form, on main, above
 #    every release, and as high as the commits since the last stable call for). Either refused builds nothing.
-#    A tag whose commit CI has released already (its nightly; for a stable, its release candidate) names that release in
-#    `checked` (scripts/release.py released-as: published, its SHA256SUMS signed by a key the launcher trusts and naming its
+#    A tag whose commit CI has released already (for a stable, the nightly of its commit) names that release in
+#    `checked` (Tooling's scripts/release.py released-as: published, its SHA256SUMS signed by a key the launcher trusts and naming its
 #    every file; one that is not stops the run). Its run passed every check of the commit, so the build checks that ship
 #    no file are not run again. Its files are not reused: each carries its version (the AppImage's VERSION, the zip's
 #    VERSION and builder), and a release never ships a file that names another version.
@@ -20,11 +19,15 @@
 #    then a draft release with every file, published last: until then no launcher sees it. A nightly also prunes the
 #    nightlies past the newest 5. Nothing is committed back to the repository.
 #
-# Secret (RELEASING.md, One-time setup): RELEASE_SIGNING_KEY (the release key's private PEM). Releases are made with the job's
-# own token (forgejo.token, passed to scripts/release.py as RELEASE_TOKEN; no secret, no bot account): on a push to this repository Forgejo gives it write access to this repository's every
+# Secret (docs/dev/reference/releases.md, One-time setup): RELEASE_SIGNING_KEY_SEALED (the release key's private PEM, sealed:
+# scripts/ci_secret.sh). version and publish run only on the runner kept for them (runs-on: deploy), which alone has the
+# seal.key that opens it; the builds run on the release runners (docs/dev/reference/ci.md, Runners). Releases are made with the job's
+# own token (forgejo.token, passed to Tooling's scripts/release.py as RELEASE_TOKEN; no secret, no bot account): on a push to this repository Forgejo gives it write access to this repository's every
 # unit (routers/api/v1/permissions/repo_access.go), so it may make, upload to, publish and delete releases and delete tags
 # here, and nowhere else. No `permissions:` key: Forgejo 17 ignores it (with a warning). Variable: RELEASE_UPLOAD_API (passed to release.py as FORGEJO_UPLOAD_API; Forgejo reserves the FORGEJO_ prefix for variables), the
 # API's address without Cloudflare in front, when a file is larger than its 100 MB upload limit.
+# release.py is Tooling's (MagicBeanDev/Tooling, scripts/release.py), cloned at the commit .tooling-rev names: a change to the
+# release is a Tooling pull request, then a pull request here that moves .tooling-rev to it.
 name: Release
 on:
   push:
@@ -42,7 +45,7 @@ defaults:
 jobs:
   version:
     name: The version
-    runs-on: quick  # (a quick job: the runner kept free for these takes it, or any runner with room)
+    runs-on: deploy  # (only the runner kept for deploys and releases: the version and commit it names are what is built and signed)
     timeout-minutes: 10
     outputs:
       tag: ${{ steps.name.outputs.tag }}
@@ -54,12 +57,17 @@ jobs:
           fetch-depth: 0
           filter: blob:none   # (history without file contents: the server sends commits and trees only; files come when read)
           persist-credentials: false
+      - name: Tooling's release.py, at the commit .tooling-rev names
+        run: |
+          git clone -q https://git.magicbean.dev/MagicBeanDev/Tooling.git "$RUNNER_TEMP/tooling"
+          git -C "$RUNNER_TEMP/tooling" checkout -q --detach "$(cat .tooling-rev)"
+          echo "RELEASE_PY=$RUNNER_TEMP/tooling/scripts/release.py" >> "$GITHUB_ENV"
       - name: The tools
         run: |
           # (every tool the Windows and the Linux builder need is in tools.lock and its packages: before any build, not
           # after both. Neither builder carries its tools: they download them by tools.lock)
           if ! python3 -I scripts/tools.py check --require; then
-            echo "::error::tools.lock or its packages lack a tool a builder needs; RELEASING.md, Bump a tool"
+            echo "::error::tools.lock or its packages lack a tool a builder needs; docs/dev/reference/releases.md, Bumping a tool"
             exit 1
           fi
       - id: name
@@ -71,10 +79,10 @@ jobs:
           ref=$(git rev-parse HEAD)
           if [[ $GITHUB_REF == refs/tags/* ]]; then
             tag=${GITHUB_REF#refs/tags/}
-            python3 -I scripts/release.py check-tag "$tag" --main origin/main
+            python3 -I "$RELEASE_PY" check-tag "$tag" --main origin/main
             # (the release CI made of this commit already, checked: its build checks are not run again; it stops here when
             # a release of this commit is not signed or not whole)
-            checked=$(python3 -I scripts/release.py released-as "$ref" --not "$tag")
+            checked=$(python3 -I "$RELEASE_PY" released-as "$ref" --not "$tag")
             echo "checked=$checked" >> "$GITHUB_OUTPUT"
             [[ -z $checked ]] || echo "::notice::$checked is this commit's release: its build checks are not run again"
           else
@@ -89,7 +97,7 @@ jobs:
               fi
               head=$(git rev-parse origin/main)
               if [[ $head != "$ref" ]]; then
-                age=$(python3 -I scripts/release.py nightly-age) || age=none   # (no answer: it builds)
+                age=$(python3 -I "$RELEASE_PY" nightly-age) || age=none   # (no answer: it builds)
                 if [[ $age != none ]] && (( age < 3600 )); then
                   echo "::notice::main has moved on to ${head:0:8}: this nightly skips, the newer one builds"
                   echo "tag=" >> "$GITHUB_OUTPUT"
@@ -103,8 +111,8 @@ jobs:
             # made: the next one comes with what follows. git-cliff decides, as for the notes; no answer: it builds)
             if [[ $GITHUB_EVENT_NAME == push ]]; then
               news=yes
-              if cliff=$(python3 -I scripts/release.py git-cliff "$RUNNER_TEMP/cliff"); then
-                news=$(GIT_CLIFF=$cliff python3 -I scripts/release.py nightly-news) || news=yes
+              if cliff=$(python3 -I "$RELEASE_PY" git-cliff "$RUNNER_TEMP/cliff"); then
+                news=$(GIT_CLIFF=$cliff python3 -I "$RELEASE_PY" nightly-news) || news=yes
               fi
               if [[ $news == no ]]; then
                 echo "::notice::nothing for the notes since the newest nightly (ci: or chore: commits only): no nightly"
@@ -113,7 +121,7 @@ jobs:
                 exit 0
               fi
             fi
-            tag=$(python3 -I scripts/release.py nightly-name)
+            tag=$(python3 -I "$RELEASE_PY" nightly-name)
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
@@ -143,7 +151,10 @@ jobs:
     name: Sign and publish
     needs: [version, linux, windows]
     if: needs.version.outputs.tag != ''
-    runs-on: quick  # (a short job: it starts as the builds end, never behind them; the same machine and secrets)
+    runs-on: deploy  # (only the runner kept for deploys and releases: it alone has seal.key, docs/dev/reference/ci.md)
+    container:
+      image: ghcr.io/catthehacker/ubuntu:act-24.04
+      volumes: ['/magicbean-secrets:/run/magicbean-secrets:ro']   # (seal.key; a runner that doesn't allow it mounts nothing)
     timeout-minutes: 60
     env:
       TAG: ${{ needs.version.outputs.tag }}
@@ -157,6 +168,11 @@ jobs:
           fetch-depth: 0
           filter: blob:none   # (history without file contents: the server sends commits and trees only; files come when read)
           persist-credentials: false
+      - name: Tooling's release.py, at the commit .tooling-rev names
+        run: |
+          git clone -q https://git.magicbean.dev/MagicBeanDev/Tooling.git "$RUNNER_TEMP/tooling"
+          git -C "$RUNNER_TEMP/tooling" checkout -q --detach "$(cat .tooling-rev)"
+          echo "RELEASE_PY=$RUNNER_TEMP/tooling/scripts/release.py" >> "$GITHUB_ENV"
       # (the builders from Forgejo's own address, RELEASE_UPLOAD_API on this runner's network, where the artifacts are on its
       # disk: through its public address behind Cloudflare, as download-artifact fetches them, they came at about 1 MB/s,
       # two of this job's three minutes (nightly-325). When that fails (no variable, an API that answers otherwise), the
@@ -164,7 +180,7 @@ jobs:
       - id: artifacts
         name: The builders, from Forgejo's own address
         continue-on-error: true
-        run: python3 -I scripts/release.py artifacts files --run "$GITHUB_RUN_ID" Longshot-linux-x86_64 LongshotBuilder-windows
+        run: python3 -I "$RELEASE_PY" artifacts files --run "$GITHUB_RUN_ID" Longshot-linux-x86_64 LongshotBuilder-windows
       # (from Forgejo's public address behind Cloudflare, as the build jobs' upload: fetched once more when it failed)
       - id: download_1
         if: steps.artifacts.outcome == 'failure'
@@ -199,25 +215,25 @@ jobs:
           test -f "files/Longshot-$TAG-x86_64.AppImage" && test -f "files/LongshotBuilder-$TAG-windows-x64.zip"
       - name: SHA256SUMS, signed
         env:
-          KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+          SEALED: ${{ secrets.RELEASE_SIGNING_KEY_SEALED }}
         run: |
-          [[ -n $KEY ]] || { echo "::error::no RELEASE_SIGNING_KEY secret (RELEASING.md, One-time setup)"; exit 1; }
-          python3 -I scripts/release.py sums files/* --out files/SHA256SUMS
+          python3 -I "$RELEASE_PY" sums files/* --out files/SHA256SUMS
           umask 077
-          printf '%s\n' "$KEY" > "$RUNNER_TEMP/key.pem"
-          python3 -I scripts/release.py sign files/SHA256SUMS --key "$RUNNER_TEMP/key.pem" --out files/SHA256SUMS.sig
+          # (the key is sealed: only this runner's seal.key opens it, scripts/ci_secret.sh)
+          printf '%s' "$SEALED" | scripts/ci_secret.sh unseal > "$RUNNER_TEMP/key.pem"
+          python3 -I "$RELEASE_PY" sign files/SHA256SUMS --key "$RUNNER_TEMP/key.pem" --out files/SHA256SUMS.sig
           rm -f "$RUNNER_TEMP/key.pem"
           # (checked with the key the launcher is built with, not the one just used: a key it does not trust stops here)
-          python3 -I scripts/release.py verify files/SHA256SUMS --files files
+          python3 -I "$RELEASE_PY" verify files/SHA256SUMS --files files
           cat files/SHA256SUMS
       - name: The notes
         run: |
-          GIT_CLIFF=$(python3 -I scripts/release.py git-cliff "$RUNNER_TEMP/cliff")
+          GIT_CLIFF=$(python3 -I "$RELEASE_PY" git-cliff "$RUNNER_TEMP/cliff")
           export GIT_CLIFF
-          python3 -I scripts/release.py notes "$TAG" --out notes.md
+          python3 -I "$RELEASE_PY" notes "$TAG" --out notes.md
           cat notes.md
       - name: Publish
-        run: python3 -I scripts/release.py publish "$TAG" --target "$REF" --notes notes.md files/*
+        run: python3 -I "$RELEASE_PY" publish "$TAG" --target "$REF" --notes notes.md files/*
       - name: Prune the nightlies
         if: startsWith(needs.version.outputs.tag, 'nightly-')
-        run: python3 -I scripts/release.py prune --keep 5
+        run: python3 -I "$RELEASE_PY" prune --keep 5

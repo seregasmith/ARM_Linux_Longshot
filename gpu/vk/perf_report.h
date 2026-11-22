@@ -401,7 +401,7 @@ inline int http_status(const std::string& headers) {
 }
 
 /// What the relay's answer means for a summary waiting in perf_pending/. Only a definite refusal (the relay says this
-/// summary will never do) drops it: a 404 during a deploy, a redirect, 408 or 425 keep it for next time (issue 1265)
+/// summary will never do) drops it: a 404 during a deploy, a redirect, 408 or 425 keep it for next time
 enum class SendResult { None, Sent, Busy, Refused };
 inline SendResult send_result(int http) {
     if (http >= 200 && http < 300) return SendResult::Sent;

@@ -18,6 +18,12 @@ static void hos_log(const char *format, ...) { (void)format; }
 static void *hos_guest_range(uint64_t a, uint64_t n) { (void)n; return GP(a); }   /* (host/hos.h's: here the guest's addresses are the host's) */
 #define G64(value) (*(uint64_t *)GP(value))
 #define G32(value) (*(uint32_t *)GP(value))
+/* The controller speaker (host/pad_speaker.c stands behind these in the game): the mode the test names for every class. */
+#include "../host/audio_source.h"
+#include "../host/pad_speaker.h"
+static int speaker_mode_answer, speaker_mode_asked;
+int hos_pad_speaker_mode(int cls) { speaker_mode_asked = cls; return speaker_mode_answer; }
+void hos_pad_speaker_ocarina_seen(void) {}
 #include "audio_biquad.inc"
 
 #define VOICE_FLOAT imp__ZN2nn5audio29SetVoiceBiquadFilterParameterEPNS0_9VoiceTypeEiRKNS0_22TBiquadFilterParameterIfEE
@@ -158,6 +164,25 @@ int main(void) {
     setup(); voice_filter(-1, &low); voice_filter(2, &low);
     c = (Ctx){0}; c.x[0] = (uintptr_t)&sp; c.x[1] = 32; c.x[2] = (uintptr_t)&mo[0]; c.x[4] = (uintptr_t)&low; SPLIT_SUB(&c);
     CHECK(ncmds == 0); frame(); near(mixes[0].buf[0][0], 1);
+    /* The controller speaker: a classed voice's frame goes to the pad as the mean of its channels at the loudest
+       volume it has to a destination; "the pad alone" leaves it out of the game's mixes, "both" keeps it there. */
+    setup(); mixes[0].volume = mixes[1].volume = 1;
+    voices[0].source = AUDIO_SOURCE_NAVI_VOICE;
+    speaker_on = 0; speaker_mode_answer = HOS_PAD_SPEAKER_ONLY; speaker_mode_asked = -1;
+    memset(speaker_frame, 0, sizeof speaker_frame); frame();
+    CHECK(speaker_mode_asked == -1); near(speaker_frame[0], 0); near(mixes[0].buf[0][0], 1);   /* (no pad: the game as ever) */
+    speaker_on = 1; source(0); frame();
+    CHECK(speaker_mode_asked == AUDIO_SOURCE_NAVI_VOICE);
+    for (int i = 0; i < FRAME; i++) { near(speaker_frame[i], 0.75); near(mixes[0].buf[0][i], 0); near(mixes[1].buf[1][i], 0); }
+    speaker_mode_answer = HOS_PAD_SPEAKER_BOTH; memset(speaker_frame, 0, sizeof speaker_frame); source(0); frame();
+    near(speaker_frame[FRAME - 1], 0.75); near(mixes[0].buf[0][FRAME - 1], 1); near(mixes[1].buf[1][FRAME - 1], 0.5);
+    speaker_mode_answer = HOS_PAD_SPEAKER_OFF; memset(speaker_frame, 0, sizeof speaker_frame); source(0); frame();
+    near(speaker_frame[0], 0); near(mixes[0].buf[0][0], 1);
+    speaker_mode_answer = HOS_PAD_SPEAKER_ONLY; voices[0].source = AUDIO_SOURCE_NONE; speaker_mode_asked = -1; source(0); frame();
+    CHECK(speaker_mode_asked == -1); near(speaker_frame[0], 0); near(mixes[0].buf[0][0], 1);   /* (an unclassed sound: the game's) */
+    voices[0].source = AUDIO_SOURCE_NAVI_VOICE; mixes[0].volume = 0.5f; mixes[1].volume = 0.25f; source(0); frame();
+    near(speaker_frame[0], 0.375);   /* (the louder destination's mix volume) */
+    puts("audio speaker: the pad alone, both, off, unclassed sounds and the mean of the channels passed");
     puts("audio biquad: queued float/Q14 parameters, response/history, stereo/routes and reuse passed");
     free(cmds);
     return 0;

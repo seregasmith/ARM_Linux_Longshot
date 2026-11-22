@@ -1,8 +1,7 @@
 // The Insert menu's Bug report (vk_menu.cpp, the Gameplay tab): one press writes what an issue needs into a folder of its
 // own, bug-reports/<date>_<time> in the game folder, and nothing else. report.txt holds the answers the issue form asks for
 // (.forgejo/ISSUE_TEMPLATE/1-game-problem.yml: the version, where the player is, the GPU and its driver, CPU, RAM and system,
-// the options and switches changed from their defaults) under the form's own headings, so scripts/hardware_report.py reads
-// them as it reads an issue; beside it this run's log and the last run's, the home folder and the user's name taken out of
+// the options and switches changed from their defaults) under the form's own headings, so they read as an issue's answers do; beside it this run's log and the last run's, the home folder and the user's name taken out of
 // their paths, and a picture of the game's frame without the menu (vk_replay.cpp's shot_ask takes it at its next present). Nothing is
 // sent anywhere: the player attaches the files to an issue. What is read and how it is written is here, apart from Vulkan
 // and the menu, for tests/test_bug_report.py.
@@ -43,7 +42,7 @@ std::string cpu_name();
 /// CPU (and its threads), RAM and system, as the form asks: "13th Gen Intel(R) Core(TM) i9-13900K (32 threads), 94 GB,
 /// Arch Linux (Linux 7.2.15)"
 std::string system_text();
-/// Its two halves, for the crash report's report: lines (docs/crash-report-window.md): the CPU, its threads and the RAM
+/// Its two halves, for the crash report's report: lines (docs/dev/reference/crash-window.md): the CPU, its threads and the RAM
 /// ("13th Gen Intel(R) Core(TM) i9-13900K (32 threads), 94 GB"), and the system ("Arch Linux (Linux 7.2.15)")
 std::string cpu_text();
 std::string os_text();

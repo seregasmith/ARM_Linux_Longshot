@@ -275,24 +275,24 @@ class MarkGroupsTests(unittest.TestCase):
         self.assertLess(call, src.find("L.report()"))
 
 
-# The output-size edits' places (nx2/oot_patches.py OUT_EDITS) in small functions, no game code: [0] and [3] each followed by
+# The output-size edits' places (nx2/oot_patches.py OUT_EDITS) in small functions, no game code: [1] and [4] each followed by
 # another store through the same base, so that a group taken before the patches would change the text they match.
 GEN_000 = ('#include "a64.h"\n'
            "void f_81222ce0(Ctx *__restrict A64_NOESC c) {\n"
            "    recomp_store64(c,c->x[21] + 4,c->x[1]);\n"
-           + oot_patches.OUT_EDITS[0][0] + "\n"
+           + oot_patches.OUT_EDITS[1][0] + "\n"
            "    recomp_store32(c,c->x[21] + 28,c->x[9]);\n"
-           + oot_patches.OUT_EDITS[3][0] +
+           + oot_patches.OUT_EDITS[4][0] +
            "    recomp_store32(c,c->x[19] + 3672,c->x[8]);\n"
            "    return;\n"
            "}\n")
 GEN_001 = ('#include "a64.h"\n'
            "void f_80000000(Ctx *__restrict A64_NOESC c) {\n"
-           + "".join(old for old, _ in oot_patches.OUT_EDITS[1:3]) + "    return;\n" + "".join(
+           + "".join(old for old, _ in oot_patches.OUT_EDITS[2:4]) + "    return;\n" + "".join(
                old + "    recomp_store32(c,c->x[19] + 0,c->x[1]);\n    recomp_store32(c,c->x[19] + 4,c->x[1]);\n"
-               for old, _ in oot_patches.OUT_EDITS[4:]) +
+               for old, _ in oot_patches.OUT_EDITS[5:]) +
            "    return;\n"
-           "}\n")
+           "}\n" + oot_patches.OUT_EDITS[0][0] + "}\n")
 
 
 def make_gen(d):
@@ -404,21 +404,21 @@ class OutputSizeOrderTests(unittest.TestCase):
                     self.assertEqual(st["groups"], 5, build)
 
     def test_groups_before_the_patches_fail_the_lift(self):
-        """the order before this change (sabotage control): the groups break OUT_EDITS[0] and [3], and the supported build's
+        """the order before this change (sabotage control): the groups break OUT_EDITS[1] and [4], and the supported build's
         lift stops instead of ignoring the Output resolution"""
         with tempfile.TemporaryDirectory() as d:
             files = make_gen(d)
             a64_lift.group_marks(files)
             with self.assertRaises(SystemExit) as e:
                 quiet(oot_patches.apply_output_size, d, required=True)
-            self.assertIn("OUT_EDITS [0, 3]", str(e.exception))
+            self.assertIn("OUT_EDITS [1, 4]", str(e.exception))
         with tempfile.TemporaryDirectory() as d:   # (another build or part of a lift: a warning, as before)
             files = make_gen(d)
             a64_lift.group_marks(files)
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 oot_patches.apply_output_size(d, required=False)
-            self.assertIn("WARNING: the output size places were found [0, 1, 1, 0, 1, 1, 1, 1] times", out.getvalue())
+            self.assertIn("WARNING: the output size places were found [1, 0, 1, 1, 0, 1, 1, 1, 1] times", out.getvalue())
 
     def test_processes_make_the_one_process_edits(self):
         """edit_c's two passes, a process per file, write the files, print the lines and count the stats of the edits made one
@@ -471,10 +471,10 @@ class OutputSizeOrderTests(unittest.TestCase):
                     if fails:
                         with self.assertRaises(SystemExit) as e:
                             chunks.edit_c(d, Counter(), supported, whole)
-                        self.assertIn("OUT_EDITS [4]", str(e.exception))
+                        self.assertIn("OUT_EDITS [5]", str(e.exception))
                     else:
                         chunks.edit_c(d, Counter(), supported, whole)
-                        self.assertIn("WARNING: the output size places were found [1, 1, 1, 1, 0, 1, 1, 1] times", out.getvalue())
+                        self.assertIn("WARNING: the output size places were found [1, 1, 1, 1, 1, 0, 1, 1, 1] times", out.getvalue())
 
     @unittest.skipUnless(os.path.isfile(os.path.join(os.environ.get("EMSDK", r"C:\emsdk"), "upstream", "bin", "clang.exe"))
                          or os.name != "nt" and shutil.which("clang"), "no clang")

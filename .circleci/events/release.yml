@@ -1,4 +1,4 @@
-# Release tag v* workflow: the core checks and the Windows checks (Wine/PE files, Vulkan back end) pass before anything is built, signed or published. Docs: docs/ci.md.
+# Release tag v* workflow: the core checks and the Windows checks (Wine/PE files, Vulkan back end) pass before anything is built, signed or published. Docs: docs/dev/reference/ci.md.
 workflows:
   release:
     jobs:

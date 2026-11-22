@@ -73,7 +73,7 @@ int hos_game_is_mkw(void);
 #define HOS_GAME_TITLE "Longshot"
 uint64_t hos_used_memory(uint64_t base);   /* (hos_mem.c) base + heap + the game's mapped pages: the used memory it is told */
 int hos_commit(uint64_t addr, uint64_t size);          /* (mkw_glue.c) guest pages made usable by host APIs: 1, or 0 if refused */
-/* (mkw_glue.c, issue 333) host memory the game cannot go on without: never NULL (but for 0 bytes). At the commit limit a failed
+/* (mkw_glue.c) host memory the game cannot go on without: never NULL (but for 0 bytes). At the commit limit a failed
    allocation is tried again for up to 5 s, as a guest commit is; then the out-of-memory line and notice, and the game stops.
    what names it in the log. hos_out_of_memory: that line and notice, once a run (wait: shown here, or waited for, before the
    caller stops the game) */
@@ -81,7 +81,7 @@ void *hos_xmalloc(size_t size, const char *what);
 void *hos_xcalloc(size_t count, size_t size, const char *what);
 void *hos_xrealloc(void *old, size_t size, const char *what);
 void hos_out_of_memory(int wait);
-/* (mkw_glue.c, issue 1280) the end of hos_alloc_failed's wait: the line, the notice and the stop (n 0: the size not known, as for
+/* (mkw_glue.c) the end of hos_alloc_failed's wait: the line, the notice and the stop (n 0: the size not known, as for
    the renderer's C++ allocations, MkwVkHost out_of_memory). Does not return */
 void hos_alloc_gave_up(size_t n, const char *what);
 int hos_mem_region(uint64_t addr, uint64_t size);      /* (hos_mem.c) the control bridge: 0 if not wholly in mapped guest memory */
@@ -128,7 +128,7 @@ static inline void hos_guest_copy(uint64_t a, const void *src, uint64_t n) {
 #define HOS_TICK_HZ 31250000ULL   /* (mkw-recomp: the Switch 2 counter; the SDK checks it at init) */
 
 /* ---- logging: HOS_TRACE=1 logs every HLE call that uses HOS_TRACE_CALL. hos_log is info; hos_log_at gives a line another level,
-   written after the thread's tag ("[hos host] [trace] vk: ..."), for the launcher's log to show or leave out (docs/development.md) */
+   written after the thread's tag ("[hos host] [trace] vk: ..."), for the launcher's log to show or leave out (docs/dev/developing.md, "Read the log") */
 enum { HOS_LOG_ERROR, HOS_LOG_WARN, HOS_LOG_INFO, HOS_LOG_DEBUG, HOS_LOG_TRACE };
 extern int hos_trace;
 void hos_log(const char *fmt, ...);
@@ -177,6 +177,9 @@ uint64_t hos_region_alloc(uint64_t size, uint64_t align);  /* address space abov
 void hos_region_free(uint64_t addr);
 int hos_regions(uint64_t (*out)[2], int cap);   /* the regions: {start, end}, at most cap; how many */
 void hos_mem_init(uint64_t image_end);
+int hos_output_page_change_begin(uint64_t addr, uint64_t size);
+void hos_output_page_change_end(void);
+void hos_output_boot_region(uint64_t *addr, uint64_t *size);
 extern uint64_t hos_heap_size, hos_heap_used, hos_total_memory, hos_program_size;
 
 /* ---- threads (hos_thread.c) */
@@ -210,7 +213,7 @@ int hos_vcore_away(void);
 void hos_vcore_back(void);
 void hos_vcore_checkpoint(void);
 /* HOS_CHAIN=<path> (hos_chain.c, diagnostic): blocks, wake-ups, sleeps and presents of the guest threads for
-   scripts/chain.py's critical path. kind: a wait that blocks begins / ends, a signal that can end one, a sleep begins /
+   scripts/perf.py chain's critical path. kind: a wait that blocks begins / ends, a signal that can end one, a sleep begins /
    ends, a present. lr 0: the current guest context's. */
 enum { HOS_CHAIN_WAIT = 1, HOS_CHAIN_WOKE, HOS_CHAIN_SIGNAL, HOS_CHAIN_SLEEP, HOS_CHAIN_AWAKE, HOS_CHAIN_PRESENT };
 extern volatile int hos_chain_on;

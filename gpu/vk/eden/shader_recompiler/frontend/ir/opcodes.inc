@@ -101,6 +101,7 @@ OPCODE(WriteGlobal64,                                       Void,           Opaq
 OPCODE(WriteGlobal128,                                      Void,           Opaque,         U32x4,                                                          )
 
 // Storage buffer operations
+OPCODE(StorageBufferLength,                                  U32,            U32,                                                                            )
 OPCODE(LoadStorageU8,                                       U32,            U32,            U32,                                                            )
 OPCODE(LoadStorageS8,                                       U32,            U32,            U32,                                                            )
 OPCODE(LoadStorageU16,                                      U32,            U32,            U32,                                                            )

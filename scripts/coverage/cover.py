@@ -1,5 +1,5 @@
 """Which lifted functions run in a play session, and when each first ran: the data for sizing a hot list (what must be
-compiled at full speed before Play, and what could wait or take a cheaper path; #362).
+compiled at full speed before Play, and what could wait or take a cheaper path).
 
     python -I scripts/coverage/cover.py run <game folder> [--out DIR] [--seconds N] [--env K=V ...] [--nm llvm-nm.exe]
     python -I scripts/coverage/cover.py report <run folder> [--gen DIR | --csize FILE] [--hot LIST ...] [--json]
@@ -11,9 +11,9 @@ again: the lifted functions are found in the exe's own symbol table (f_<guest ad
 cover_dll.c with the launcher's clang (llvm-mingw). Marks: press Ctrl+Alt+M (in the game too; Windows' default sound says it
 was taken) or type a note and Enter here. The first two hotkey marks are named "title screen" and "in play (file loaded)",
 later ones "mark 3", ...; each is kept with its time, and the report says how many functions had run by then. Windows
-only (run); report and compare read a run folder anywhere. The run folder (default
-%LOCALAPPDATA%\\LongshotCover\\<date-time>) gets: fns.txt (each function's offset in the exe, its name(s) and host code
-bytes), cover.bin (the DLL's: first-run time per function, rewritten every 5 s), marks.txt, cover.bin.log, report.txt.
+only (run); report and compare read a run folder anywhere. The run folder (default runs\\cover-<date-time> in the
+development folder, `dev.py paths runs`) gets: fns.txt (each function's offset in the exe, its name(s) and host code bytes),
+cover.bin (the DLL's: first-run time per function, rewritten every 5 s), marks.txt, cover.bin.log, report.txt.
 What it holds is offsets, names (guest addresses) and times: no game code or data. The cost in the game: one breakpoint
 exception per function, the first time it runs, and ~400 MB more committed memory (the code pages become private copies).
 
@@ -40,6 +40,8 @@ import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))   # (scripts/: python -I leaves it off the path)
+from devtools import common  # noqa: E402
 FN = re.compile(r"^([0-9a-fA-F]+) [Tt] (f_[0-9a-f]{8})$")
 HEAD = re.compile(rb"^void (f_[0-9a-f]+)\(Ctx \*__restrict A64_NOESC c\) \{", re.M)
 COMPILER_S = 6478.0   # (the lifted C's -O1 compiler-seconds: nightly-34's first build, Ryzen 5 5600, 4 compilers at once)
@@ -184,8 +186,8 @@ def run(a):
     exe = os.path.join(folder, "bin", "longshot.exe")
     if not os.path.exists(exe):
         sys.exit("cover: %s has no bin\\longshot.exe" % folder)
-    out = os.path.abspath(a.out or os.path.join(os.environ["LOCALAPPDATA"], "LongshotCover",
-                                                datetime.datetime.now().strftime("%Y%m%d-%H%M%S")))
+    out = os.path.abspath(a.out or os.path.join(common.dev_home(), "runs",
+                                                "cover-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")))
     os.makedirs(out, exist_ok=True)
     busy = subprocess.run(["tasklist", "/FI", "IMAGENAME eq longshot.exe", "/NH"], capture_output=True, text=True).stdout
     if "longshot.exe" in busy.lower() and not a.force:
@@ -344,7 +346,7 @@ def report(a):
         say("Busiest %d ms windows (start s: new functions / host KB%s): %s" % (
             win, " / est. -O1 compiler-s" if cs else "",
             "; ".join("%.1f: %d / %d%s" % (b * win / 1000, e[0], e[1] >> 10, (" / %.1f" % e[2]) if cs else "") for b, e in top)))
-        if cs and win == 100:
+        if cs and win == 100 and buckets:
             loads = sorted(e[2] for e in buckets.values())
             say("  100 ms windows with new functions: %d; their est. -O1 compile time: median %.2f s, 99th pct %.1f s, max %.1f s; "
                 "windows over 0.1 s of compiling: %d" % (len(loads), loads[len(loads) // 2], loads[int(len(loads) * 0.99)], loads[-1],

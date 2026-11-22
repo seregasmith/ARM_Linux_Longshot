@@ -1,4 +1,4 @@
-"""The x86-64 level this PC's CPU runs (nx2/build.py's -march; issue 363). The game is built on the PC it runs on, so a
+"""The x86-64 level this PC's CPU runs (nx2/build.py's -march). The game is built on the PC it runs on, so a
 CPU without x86-64-v3's features (AVX2, FMA, BMI2, MOVBE) gets x86-64-v2, or the x86-64 baseline. RX_MARCH, read by
 build.py, still chooses."""
 import os
@@ -25,7 +25,7 @@ def host_march():
 
 
 def native_cpu(cc, flags):
-    """(issue 182) What clang makes of -march=native here, from `clang -###`: its -target-cpu, -tune-cpu and
+    """What clang makes of -march=native here, from `clang -###`: its -target-cpu, -tune-cpu and
     -target-feature list, as "<cpu>_<tune>_<sha1 of the features>" (e.g. "znver4_znver4_3f1c09a2b4"). The flag itself names
     no CPU, so an object key made from it would stay the same when the CPU changes (a new CPU, the disk in another PC);
     build.py puts this name in the flags instead. None if clang doesn't say."""

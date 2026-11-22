@@ -1,4 +1,4 @@
-# Scheduled website_refresh workflow. Docs: docs/ci.md.
+# Scheduled website_refresh workflow. Docs: docs/dev/reference/ci.md.
 workflows:
   website-hourly:
     jobs:

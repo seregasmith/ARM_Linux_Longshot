@@ -54,6 +54,9 @@ FIXTURE = r'''#include <algorithm>
 #if __has_include("guest_holes.h")
 #include "guest_holes.h"
 #endif
+#if __has_include("cxx_escape.h")
+#include "cxx_escape.h"   /* (the check's helper threads: fork_join) */
+#endif
 /* (the renderer around upload_all_zero, stood in for) */
 typedef uint32_t VkFlags;
 enum VkImageType { VK_IMAGE_TYPE_2D = 1, VK_IMAGE_TYPE_3D = 2 };

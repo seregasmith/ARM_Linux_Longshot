@@ -72,7 +72,7 @@ def check_source():
         raise SystemExit("vk_memory.cpp: big_scan() reads a placement outside placed_mu")
     need("vk_memory.cpp: big_stop()", block(mem, "void big_stop() {"), ["std::lock_guard lk(placed_mu);", "big_quit = true;"])
     need("switches.def", (ROOT / "gpu/vk/switches.def").read_text(encoding="utf-8"), ["SW(RX_VK_LOG_BIG_POOLS, diag, bool,"])
-    need("docs/development.md", (ROOT / "docs/development.md").read_text(encoding="utf-8"), ["| `RX_VK_LOG_BIG_POOLS=1` |"])
+    need("docs/dev/reference/profiling.md", (ROOT / "docs/dev/reference/profiling.md").read_text(encoding="utf-8"), ["| `RX_VK_LOG_BIG_POOLS=1` |"])
 
 
 def main():

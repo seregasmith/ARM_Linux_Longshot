@@ -29,7 +29,7 @@
    (f_838ceb80 and f_838cfc10, into the solver's +712; 8 a 60 fps frame in the places seen). A step under 1 cuts that short,
    and as the measured step wanders around its mean the count changes from frame to frame (8 x 0.49 is 3, 8 x 0.5 is 4 at 120
    fps); 4 steps a 60 fps frame would be 0 above 240. A moving platform (the stone one under the spikes in the Deku Tree)
-   then slides out from under Link (issue 1798). While the step is under 1 the count is rounded up instead, so a solver step
+   then slides out from under Link. While the step is under 1 the count is rounded up instead, so a solver step
    never covers more time than at 60 fps, give or take 10% (the frame time's jitter, so a steady rate keeps a steady count),
    and it is at least 1 and never under the game's. A step of 1 or more (a frame slower than 60 fps) keeps the game's count.
 
@@ -47,10 +47,42 @@
    moving floor is carried by the floor's velocity, but each module first tests the physics time object's 1/dt (+0x28) and,
    above 100 (a frame under 10 ms: at 60 fps, time slowed below 0.6 of real time), carries the character by a tenth of it.
    Above 100 fps every frame is under 10 ms: on the Shadow Temple's barge Link and the enemies kept a tenth of its velocity and
-   slid to its back (issue 439; the share moved from all to a tenth at 1/dt 100, at any step either side of it). Above a
+   slid to its back (the share moves from all to a tenth at 1/dt 100, at any step either side of it). Above a
    cap of 60, on a frame shorter than a 60 fps one, 1/dt times the frame's step (the game's time object, +0x10: 0.5 at 120 fps)
    is tested instead: the game's test as it would be at 60 fps, so time slowed below 0.6 still takes the tenth. At a cap of
    60, and on a frame of a 60 fps one or longer, the game's own test decides.
+
+   A driven body's target (f_804f5030, a rigid body's update before the physics step, on its path for a body driven to a target:
+   the controller's flags +0x100 have 0x80, the game's gate to the path, and 0x100, its gate to handing the velocity to the
+   world): while Link pulls himself up a ledge, his animation drives his body. Each update the game sets the
+   controller's target (+0x3c) to the body's position plus this frame's move and asks the physics for the velocity that reaches
+   it, (target - position) x 1/dt. At 60 fps the body lands on the target; above it Havok's constraint solve (f_8177b2a0)
+   delivers only part of the move (1.00 at 60, 0.94 at 90, 0.86 at 120, 0.82 at 144, 0.78 at 170, whatever the solver's
+   substep count), and the next target starts from where the body ended up, so the shortfall is never made up: the pull-up
+   lifted Link 2.5 m instead of 2.8 at 140 fps, and he slid back on the lip until he got over, falling back to the hang when
+   forward was let go. Above a cap of 60, on a frame shorter than a 60 fps one, Link's driven body is given last
+   update's target plus this frame's move instead (its target plus what the physics left of the last one), at most three
+   frames' moves more, so it follows the animation's path. A climb starts from the game's own target (the carry needs the
+   update before). At a cap of 60 nothing is carried: the body lands on its target there. (The physics' share is tuned in
+   Havok's solve to 60 fps frames; changing it there would change every constraint and contact in the game.)
+
+   A jump's takeoff (f_80b97d10 computes the takeoff speed of a jump of a given height, sqrt(2 g h) - g dt / 2 along the
+   character's up; Link's jumps go through it, the speed kept in his character at +0x2d0): f_804f5030 hands Havok his body's
+   velocity with the world's set-velocity call (its vtable +0x190), that speed on the takeoff's update, 0.2 ms after
+   f_80b97d10. On a side hop the next updates hand the takeoff speed less each step's gravity, so the variable step already
+   raises the body as at 60. On a backflip the next update hands no vertical speed, the fall starting from rest (the jump's
+   height is the animation's), so the body hops by one step of the takeoff speed: 6.4 cm at 60 fps, 4.2 cm at 94 (measured
+   in the game: 3.84 and 3.93 m/s for one update, then 0). Lower, it met a slope about 0.1 s into a backflip above 60 fps,
+   the controller landed and the backflip took off a second time: down the slope behind the Hyrule Field teleport spot it
+   carried Link 2.8 m in 0.43 s, against 2.25 m in 0.34 s at 60 (one takeoff). Above a cap of 60, on a frame shorter than a
+   60 fps one, a body handed an upward speed within 2% of the takeoff speed in the takeoff's own update (within half its
+   frame of f_80b97d10: the bodies f_804f5030 drives to targets at Link's position follow his body a step later) is
+   watched for one update: when the game then asks it for no vertical speed (at most 10% of the takeoff speed either way),
+   that update gets the rest of a 60 fps step's rise, so the two updates raise it as the takeoff's 60 fps step does. A body
+   still rising is left as it is: raising the takeoff's own update instead left a side hop a step's rise high for the whole
+   hop, and on the slope it landed 0.3 m from where it lands at 60 (measured). A speed that is not the takeoff's (a step up a
+   stair, the ledge climb, a slope, the fall) is left as it is. At a cap of 60, on a frame of a 60 fps one or longer, and
+   with HOS_FPS_TAKEOFF=0, the game's speed.
 
    Below 60 fps, the game's Havok cloth (Link's cap, the .bphcl files in romfs Phive/Cloth): the simulate operator's per-frame
    setup (f_81b3aa48, the instance's frame-time mode: its fixed 1/60 mode, f_81b3a964, is left as it is) takes the frame's time
@@ -69,12 +101,12 @@
    as a job on the game's job workers (f_81b47080, under the job runner f_8016b620), once a frame for each cloth near the camera,
    and each solve steps a 60th: at 240 fps four solves where the console makes one, so the cloth ran four times too fast and cost
    four times the CPU. Near King Zora in Zora's Domain (his robe) that held the frame at about 55 fps under a cap of 240, the
-   main thread waiting for the workers (issue #1485: the solve 45.7 % of the workers' game code there, about 10.5 ms of CPU a
+   main thread waiting for the workers (the solve 45.7 % of the workers' game code there, about 10.5 ms of CPU a
    frame, against 15 % and about 2 ms on the path below). On a frame whose step is under 1, the job solves only when the game
    clock (the double f_80706be0 adds each frame's step to, in 60ths: hos_step_probe + 0xd58) has crossed a whole 60th since the
    frame before (oot_cloth_gate); otherwise it returns at once with its own result, 0, before it saves anything, and the cloth
    keeps its last pose. Every job that sees one clock value makes the same choice, so the cloth of one frame solves or holds
-   together. A clock that went back (a load) solves and starts again. At a step of 1 or more (60 fps and below, #1384's case),
+   together. A clock that went back (a load) solves and starts again. At a step of 1 or more (60 fps and below),
    at a cap of 60 and for a step that is not a number, every frame solves, as the game has it. The solve job calls only the
    cloth's own code, timer scopes (nn::os::GetSystemTick), thread-local lookups and a scratch buffer of its own: no job is
    started or signalled from it and no memory the setup made is freed in it (read from the lift).
@@ -181,6 +213,67 @@ static inline int oot_floor_carry_slow(uint32_t inv_dt_bits, uint32_t frame_step
     const float inv_dt = oot_bits_float(inv_dt_bits), step = oot_bits_float(frame_step_bits);
     if (!timed || !(step > 0.0f)) return 1;   /* (the game's own test decides) */
     return inv_dt * step > 100.0f;
+}
+
+/* Whether a body's vertical speed on a jump's takeoff update is the takeoff's: vy (the speed f_804f5030 hands Havok for this
+   update), jump (the takeoff speed f_80b97d10 computed just before), step (this frame's). 1 when it is upward and within 2% of
+   the jump's on a frame under a 60 fps one: the body is then watched for its next update (oot_takeoff_rest_speed) */
+static inline int oot_takeoff_match(float vy, float jump, float step) {
+    if (!(step > 0.0f && step < 1.0f) || !(jump > 0.5f && jump < 1000.0f) || !(vy > 0.0f)) return 0;
+    return fabsf(vy - jump) <= 0.02f * jump;
+}
+
+/* A body's vertical speed on the update after a jump's takeoff: vy (the speed f_804f5030 hands Havok now), vy0 and step0 (the
+   speed it was handed on the takeoff's update and that frame's step: oot_takeoff_match was 1), step (this frame's). When the
+   game asks for no vertical speed now (at most 10% of vy0 either way: a backflip's fall starts from rest), the rest of the
+   takeoff's 60 fps step, vy0 (1 - step0) / 60 m, over this frame's time, step / 60 s, added: the two updates then raise the body
+   as a 60 fps takeoff step does. A body still rising (a side hop: vy0 less this step's gravity) already rises as at 60 under the
+   variable step: vy */
+static inline float oot_takeoff_rest_speed(float vy, float vy0, float step0, float step) {
+    if (!(step0 > 0.0f && step0 < 1.0f) || !(step > 0.0f && step < 4.0f) || !(vy0 > 0.5f && vy0 < 1000.0f)) return vy;
+    if (!(fabsf(vy) <= 0.1f * vy0)) return vy;
+    return vy + vy0 * (1.0f - step0) / step;
+}
+
+/* A driven body's target with last update's shortfall carried. st: the last target given, the game's then, its body and Link's
+   update count then; body: the body (its guest address); update: Link's update count now (host/hos_main.c counts them);
+   driven: 1 for Link's body driven to a target above a 60 fps cap on a frame under a 60 fps one (0: the game's target is left
+   as it is; the next driven call then comes after a gap); at: the body's position now; target: the game's (the position plus
+   this frame's move), changed in place.
+   - A carry needs the same body and its last driven call in this update or the one before: the path is not reached on the
+     updates between two climbs, so a climb starts from the game's own target (the lag carried then, about (1/share - 1) of a
+     move, is lost on any gap). The count only finds gaps: a wrong count drops a carry, it never holds a target back.
+   - A target bit for bit the game's last (the body update run again before the physics) or the last one given (not renewed)
+     gets the last target given, so nothing is carried twice.
+   - The carry is at most three of this frame's moves (the physics' share down to a quarter, about 400 fps; above that it
+     falls behind), so a body the physics held back (a wall) is not flung when it frees. */
+typedef struct { float target[3], game[3]; uint64_t body; uint32_t update; int held; } OotDriveCarry;
+static inline void oot_drive_carry(OotDriveCarry *st, uint64_t body, uint32_t update, int driven, const float at[3],
+                                   float target[3]) {
+    for (int i = 0; i < 3 && driven; i++)
+        if (!(target[i] == target[i]) || !(at[i] == at[i]) || fabsf(target[i]) > 1e30f || fabsf(at[i]) > 1e30f) driven = 0;
+    if (!driven)
+        return;   /* (st->update stays behind: the next driven call is a gap) */
+    const int same = st->held && st->body == body && update - st->update <= 1u;
+    st->update = update;
+    if (same && (!memcmp(st->game, target, sizeof st->game) || !memcmp(st->target, target, sizeof st->target))) {
+        memcpy(target, st->target, sizeof st->target);   /* (run again, or not renewed: the target given) */
+        return;
+    }
+    memcpy(st->game, target, sizeof st->game);
+    if (same) {
+        float carry[3], carried = 0.0f, move = 0.0f;
+        for (int i = 0; i < 3; i++) {
+            carry[i] = st->target[i] - at[i];
+            carried += carry[i] * carry[i];
+            move += (target[i] - at[i]) * (target[i] - at[i]);
+        }
+        const float scale = carried > 9.0f * move ? 3.0f * sqrtf(move / carried) : 1.0f;   /* (at most three moves) */
+        for (int i = 0; i < 3 && carried > 0.0f; i++) target[i] += carry[i] * scale;
+    }
+    memcpy(st->target, target, sizeof st->target);
+    st->body = body;
+    st->held = 1;
 }
 
 /* The cloth's time: seconds_bits (the step context's time, a float), step_bits (the game's frame step, a float), on (HOS_FPS_CLOTH:

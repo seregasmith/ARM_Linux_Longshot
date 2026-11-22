@@ -96,7 +96,7 @@ converted to the new format (or recorded again) in place, and the layout stays t
 
 ## The tour's list
 
-The pipeline tour (`scripts/pipeline_tour.py`, [docs/development.md](../../docs/development.md#the-pipeline-tour)) plays a
+The pipeline tour (`scripts/pipeline_tour.py`, [pipeline state lists](../../docs/dev/reference/pipeline-states.md#the-pipeline-tour)) plays a
 fixed route on its own, through the game's control bridge, and records the pipelines it makes. With `--publish` it then
 replaces `tour.bin.xz` and `tour.md` with that list, filling the note in from its runs:
 

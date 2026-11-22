@@ -1,7 +1,9 @@
 /* (longshot) The sound manager's job at 60 Hz, the physics solver's steps rounded up, a horse's jump blend, a moving
-   floor's carry and a song playback's note flag once a note, under a Frame rate cap above 60, the cloth's time below 60
-   fps and its solves above 60: the lifted f_80435300, f_83373400, f_838ceb80, f_838cfc10, f_82c59eb0, f_80159dc0,
-   f_8015d490, f_838baa40, f_81b3aa48, f_81b47080, f_832b2af0 and f_832b2dc0 call these (nx2/oot_patches.py);
+   floor's carry, a song playback's note flag once a note, the target of Link's driven body and a jump's takeoff, under a
+   Frame rate cap above 60, the cloth's time below 60 fps and its solves above 60: the lifted f_80435300, f_83373400,
+   f_838ceb80, f_838cfc10, f_82c59eb0, f_80159dc0, f_8015d490, f_838baa40, f_81b3aa48, f_81b47080, f_832b2af0, f_832b2dc0,
+   f_804f5030 and f_80b97d10 call these
+   (nx2/oot_patches.py; host/hos_main.c gives Link's body);
    host/oot_high_fps.h has why and the logic.
    HOS_FPS_LOG (on, by the switches' rule: =0 is off): what they do, every 600 calls. */
 #include "hos.h"
@@ -157,6 +159,128 @@ int hos_oot_floor_carry_slow(uint32_t inv_dt_bits, uint64_t slot) {
                     (long long)k, (long long)n, oot_bits_float(inv_dt_bits), oot_bits_float(frame));
     }
     return slow;
+}
+
+/* A jump's takeoff speed (host/oot_high_fps.h oot_takeoff_rest_speed): f_80b97d10's end hands the velocity it wrote (vec: x, y,
+   z); its vertical part, when (host time) and which takeoff it is are kept for the bodies' velocities in the next 50 ms */
+static volatile uint32_t jump_bits;
+static volatile int64_t jump_ns;       /* (0: none waiting) */
+static volatile uint32_t jump_count;   /* (the takeoffs so far: a body is watched once a takeoff) */
+void hos_oot_jump_speed(uint64_t vec) {
+    if (!vec || !hos_guest_range(vec, 12)) return;
+    __atomic_store_n(&jump_bits, *(const uint32_t *)GP(vec + 4), __ATOMIC_RELAXED);
+    __atomic_add_fetch(&jump_count, 1, __ATOMIC_RELAXED);
+    __atomic_store_n(&jump_ns, hos_now_ns(), __ATOMIC_RELEASE);
+}
+
+/* The bodies handed a takeoff's speed on its update (under takeoff_lock: the physics' workers hand Havok the bodies' velocities):
+   the speed and that frame's step, and whether the next update is still to come */
+typedef struct { uint64_t object; uint32_t count; float vy0, step0; int waiting; } OotTakeoffBody;
+static OotTakeoffBody takeoff_bodies[8];
+static unsigned takeoff_next;
+static SRWLOCK takeoff_lock = SRWLOCK_INIT;
+
+/* f_804f5030, before its set-velocity call for a body (the world's vtable +0x190): object (the body's object, x19), velocity
+   (the guest address of the linear velocity the call reads: x, y, z), slot (the guest address of the pointer to the game's time
+   object, its +0x10 the frame's step). A body handed the takeoff's speed in the takeoff's own update (within half that frame of
+   f_80b97d10) is kept; on its next call, the vertical speed oot_takeoff_rest_speed gives. It returns at once while no takeoff
+   is waiting. HOS_FPS_TAKEOFF=0 (or off, false, no): the game's speed */
+void hos_oot_takeoff_velocity(uint64_t object, uint64_t velocity, uint64_t slot) {
+    int64_t when = __atomic_load_n(&jump_ns, __ATOMIC_ACQUIRE);
+    if (!when) return;
+    static int on = -1;   /* (read by the game's threads) */
+    int v = __atomic_load_n(&on, __ATOMIC_RELAXED);
+    if (v < 0) {
+        const char *e = getenv("HOS_FPS_TAKEOFF");
+        v = !(e && *e && env_value_off(e));
+        __atomic_store_n(&on, v, __ATOMIC_RELAXED);
+    }
+    if (!v) return;
+    const int64_t since = hos_now_ns() - when;
+    if (since > 50000000) {   /* (that takeoff is over: the calls return at once again) */
+        __atomic_compare_exchange_n(&jump_ns, &when, 0, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+        return;
+    }
+    if (!timed() || !hos_guest_range(velocity, 12) || !hos_guest_range(slot, 8)) return;
+    const uint64_t time_object = G64(slot);
+    const uint64_t time = time_object && hos_guest_range(time_object, 8) ? G64(time_object) : 0;
+    const float step = time && hos_guest_range(time + 0x10, 4) ? oot_bits_float(*(const uint32_t *)GP(time + 0x10)) : 0.0f;
+    const float vy = oot_bits_float(*(const uint32_t *)GP(velocity + 4));
+    const float jump = oot_bits_float(__atomic_load_n(&jump_bits, __ATOMIC_RELAXED));
+    const uint32_t count = __atomic_load_n(&jump_count, __ATOMIC_RELAXED);
+    float vy0 = 0.0f, step0 = 0.0f;
+    int next = 0;
+    AcquireSRWLockExclusive(&takeoff_lock);
+    OotTakeoffBody *seen = NULL;
+    for (unsigned k = 0; k < sizeof takeoff_bodies / sizeof takeoff_bodies[0]; k++)
+        if (takeoff_bodies[k].object == object && takeoff_bodies[k].count == count) seen = &takeoff_bodies[k];
+    if (!seen) {
+        /* (the takeoff's own update: a 60 fps frame is 16.7 ms, this one step times that; a body handed the speed later follows
+           Link's a step behind) */
+        if (oot_takeoff_match(vy, jump, step) && (double)since < step * (1e9 / 120.0))
+            takeoff_bodies[takeoff_next++ % (sizeof takeoff_bodies / sizeof takeoff_bodies[0])] =
+                (OotTakeoffBody){object, count, vy, step, 1};
+    } else if (seen->waiting && (double)since >= seen->step0 * (1e9 / 120.0)) {   /* (its next update) */
+        seen->waiting = 0;
+        vy0 = seen->vy0, step0 = seen->step0, next = 1;
+    }
+    ReleaseSRWLockExclusive(&takeoff_lock);
+    if (!next) return;
+    const float speed = oot_takeoff_rest_speed(vy, vy0, step0, step);
+    if (speed == vy) return;   /* (still rising: a side hop) */
+    hos_guest_copy(velocity + 4, &speed, 4);
+    if (fps_log()) {
+        static volatile LONG64 lifts;
+        const LONG64 n = InterlockedIncrement64(&lifts);
+        if (n % 20 == 1)
+            hos_log("oot: a jump's takeoff: a body rises %.1f cm more on the update after it (%.3f m/s, the game's %.3f; steps "
+                    "%.3f, %.3f; %lld lifts)", 100.0 * (speed - vy) * step / 60.0, speed, vy, step0, step, (long long)n);
+    }
+}
+
+static volatile uint64_t link_body;      /* (Link's rigid body: hos_oot_note_link, from his update) */
+static volatile uint32_t link_updates;   /* (Link's updates, counted there: a carry needs the update before) */
+static OotDriveCarry drive_carry;        /* (under drive_lock) */
+static SRWLOCK drive_lock = SRWLOCK_INIT;
+
+/* Link's update (host/hos_main.c, hos_oot_lift_player): his components (actor +624); their +0x50, +0x20, +0x10, +8 is his
+   physics character, whose +0x20 is his rigid body. Each pointer is checked to be in guest memory. The count of his updates
+   goes first, whatever the walk finds */
+void hos_oot_note_link(uint64_t components) {
+    __atomic_add_fetch(&link_updates, 1, __ATOMIC_RELAXED);
+    uint64_t p = components;
+    static const uint32_t walk[5] = {0x50, 0x20, 0x10, 8, 0x20};
+    for (int i = 0; i < 5; i++) p = p >= HOS_HEAP_BASE && hos_guest_range(p + walk[i], 8) ? G64(p + walk[i]) : 0;
+    if (p >= HOS_HEAP_BASE && hos_guest_range(p + 0x8c, 0x24)) __atomic_store_n(&link_body, p, __ATOMIC_RELAXED);
+}
+
+/* f_804f5030, on its path for a body driven to a target, before it reads the target: controller x20 (its target at +0x3c, its
+   flags at +0x100), body x23 or x24 (its position at +0x8c, +0x9c, +0xac), slot the guest address of the pointer to the
+   game's time object (its +0x10 the frame's step) */
+void hos_oot_drive_target(uint64_t controller, uint64_t body, uint64_t slot) {
+    if (!body || body != __atomic_load_n(&link_body, __ATOMIC_RELAXED)) return;
+    const uint64_t object = G64(slot);
+    const uint64_t time = object ? G64(object) : 0;
+    const float step = time ? oot_bits_float(*(const uint32_t *)GP(time + 0x10)) : 0.0f;
+    const int driven = timed() && step > 0.0f && step < 1.0f && (G64(controller + 0x100) & 0x180) == 0x180;
+    float at[3], target[3], game[3];
+    memcpy(&at[0], GP(body + 0x8c), 4);
+    memcpy(&at[1], GP(body + 0x9c), 4);
+    memcpy(&at[2], GP(body + 0xac), 4);
+    memcpy(target, GP(controller + 0x3c), sizeof target);
+    memcpy(game, target, sizeof game);
+    AcquireSRWLockExclusive(&drive_lock);
+    oot_drive_carry(&drive_carry, body, __atomic_load_n(&link_updates, __ATOMIC_RELAXED), driven, at, target);
+    ReleaseSRWLockExclusive(&drive_lock);
+    if (!driven || !memcmp(game, target, sizeof game)) return;
+    memcpy(GP(controller + 0x3c), target, sizeof target);
+    if (fps_log()) {
+        static volatile LONG64 calls;
+        if (InterlockedIncrement64(&calls) % 600 == 0)
+            hos_log("oot: Link's driven body: its target carried %.4f m more than the game's (step %.3f)",
+                    sqrtf((target[0] - game[0]) * (target[0] - game[0]) + (target[1] - game[1]) * (target[1] - game[1]) +
+                          (target[2] - game[2]) * (target[2] - game[2])), step);
+    }
 }
 
 /* The time f_81b3aa48 loads from the cloth's step context, times the game's frame step below 60 fps (floats' bits). HOS_FPS_CLOTH=0

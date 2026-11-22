@@ -252,6 +252,12 @@ static void hos_log(const char *f, ...) { (void)f; }
 static int env_on(const char *name) { (void)name; return 0; }
 static int env_value_off(const char *v) { (void)v; return 0; }
 volatile uint32_t hos_frame_seconds_bits;
+volatile uint64_t hos_step_probe;   /* (host/nn_vi.c's: the game clock's object, none here) */
+/* (host/hos.h's, for the takeoff and ledge steps beside the music manager's: their guest memory is this mem) */
+#define HOS_HEAP_BASE 0x1000000000ULL
+static void *hos_guest_range(uint64_t a, uint64_t n) { return a + n <= sizeof mem ? mem + a : NULL; }
+static void hos_guest_copy(uint64_t a, const void *src, uint64_t n) { memcpy(guest(a), src, n); }
+static int64_t hos_now_ns(void) { return 0; }
 static uint64_t recomp_load64(Ctx *c, uint64_t a) { (void)c; return G64(a); }
 static uint64_t recomp_load32(Ctx *c, uint64_t a) { uint32_t v; (void)c; memcpy(&v, guest(a), 4); return v; }
 static uint64_t recomp_load8(Ctx *c, uint64_t a) { (void)c; return *guest(a); }

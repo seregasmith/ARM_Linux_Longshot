@@ -2,8 +2,8 @@
 # linux-x64 for the Linux one (its AppImage carries only the builder and its Python). The Windows builder's setup, the Linux
 # AppImage's first start (builder/linux/linux_tools.py) and the Longshot Launcher download each one they lack, check its
 # SHA-256 and size, and unpack it into the install; a tool another installed version has is taken from it, not downloaded
-# again (docs/releases.md, "tools.lock"). A change is a pull request that edits this file; scripts/tools.py checks it,
-# mirrors an upstream archive, and assembles and uploads ours (RELEASING.md, "Bump a tool"). The Linux lines are ours,
+# again (docs/dev/reference/releases.md, "tools.lock"). A change is a pull request that edits this file; scripts/tools.py checks it,
+# mirrors an upstream archive, and assembles and uploads ours (docs/dev/reference/releases.md, "Bumping a tool"). The Linux lines are ours,
 # made by scripts/linux/deps.sh tools from its pinned downloads.
 #
 #   tool <name> <version> <system> <sha256> <size> <dest> <prefix> <url> [<url> ...]

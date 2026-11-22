@@ -30,8 +30,8 @@ std::deque<Entry> queue;
 std::atomic<int> pending{0};
 bool started = false;
 
-// (a job that throws: the game ended at once ("approach Malon, crash": an exception escaped a worker, KERNELBASE's RaiseException
-// with no handler, 2026-11-08). Resource jobs publish failure before the exception is logged, so their waiters finish.)
+// (a job that throws: an exception escaping a worker ends the game at once (KERNELBASE's RaiseException with no handler).
+// Resource jobs publish failure before the exception is logged, so their waiters finish.)
 void run_guarded(std::function<void()>& fn) {
     try {
         fn();
@@ -102,8 +102,8 @@ void jobs_push(std::function<void()> fn, bool urgent, const std::atomic<bool>* f
     else queue.push_back({std::move(fn), flag});
     work_cv.notify_one();
 }
-// (issue 496) Intel A750: four of the game's big compute pipelines built at once by Intel's compiler (up to 58 s each) froze
-// the whole PC. One thread builds them one at a time there, below normal priority, beside the shared workers.
+// Intel's Windows driver: four of the game's big compute pipelines built at once by Intel's compiler (up to 58 s each) can
+// freeze the whole PC. One thread builds them one at a time there, below normal priority, beside the shared workers.
 // (longshot) Between two of its builds no compute build is under way: the moment Intel's pipeline cache fetch waits for
 // (pipeline_cache_between_builds). first: the front lane, in order among its own
 void jobs_push_serial(std::function<void()> fn, std::function<void()> on_failure, bool first) {

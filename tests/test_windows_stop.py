@@ -42,15 +42,17 @@ def main():
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
-static int relaunch_asked, order, exited, restarted, window_logs, clean_ends;
+static int relaunch_asked, order, exited, restarted, window_logs, clean_ends, speaker_closed;
 static void rx_close_asked(void) { assert(order == 0); order = 1; }
 static void hos_log(const char *fmt, ...) {
     if (strstr(fmt, "close work done")) { assert(order == 1); order = 2; }
     if (strstr(fmt, "display: window closed")) window_logs++;
 }
+void hos_pad_speaker_shutdown(void) { assert(order == 1); speaker_closed++; }   /* (before the last log lines) */
 static void hos_log_flush(void) { assert(order == 2); order = 3; }
 void hos_crash_clean_end(void) { assert(order == 3); order = 4; clean_ends++; }
 void hos_fs_wait_writes(void) { assert(order == 1); }
+void hos_input_movie_close(void) { assert(order == 1); }   /* (an input recording's end, before the log's flush) */
 void hos_ab_end(void) { assert(order == 2); }   /* (host/hos_ab.c: the A/B's sums after the close work, before the flush) */
 static void relaunch(void) { assert(order == 4); restarted++; }
 static void ExitProcess(unsigned code) { assert(order == 4 && code == 0); exited++; }
@@ -60,7 +62,7 @@ static void ExitProcess(unsigned code) { assert(order == 4 && code == 0); exited
 int main(void) {
     order = 1;
     hos_close_finish();
-    assert(order == 4 && clean_ends == 1 && exited == 0 && restarted == 0);   /* returning after flush and clean-end */
+    assert(order == 4 && clean_ends == 1 && speaker_closed == 1 && exited == 0 && restarted == 0);   /* returning after flush and clean-end */
     order = 0; relaunch_asked = 1;
     game_quit();
     assert(exited == 1 && restarted == 0 && window_logs == 0 && clean_ends == 2);

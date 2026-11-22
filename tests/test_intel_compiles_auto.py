@@ -17,6 +17,9 @@ import tempfile
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 ROOT = Path(__file__).resolve().parents[1]
+import sys  # noqa: E402
+sys.path.insert(0, str(ROOT / "tests"))
+from menu_model_fixture import menu_text  # noqa: E402
 VK = ROOT / "gpu" / "vk"
 
 MEASURED = 101 << 14 | 9154   # (Intel's Windows driverVersion: 32.0.101.9154)
@@ -78,12 +81,13 @@ def main():
         if r.returncode:
             raise SystemExit(r.stdout.strip() or "FAIL: the fixture ended with %d" % r.returncode)
 
-    menu = (VK / "vk_menu.cpp").read_text(encoding="utf-8")
+    # (vk_menu.cpp and its modules, their rows as table lines: menu_text, #1633)
+    menu = menu_text(ROOT)
     need('{TAB_DEBUG, "Intel shader compiles", &opts.intel_compiles, 0, 2, 1, tx_intel_compiles,' in menu,
          "the row no longer has three values with Auto, 0, the default")
     need('const char* tx_intel_compiles(int v) { return v == 1 ? "Side by side" : v == 2 ? "One at a time" : "Auto"; }' in menu,
          "the row's texts moved: a saved 1 must stay Side by side, and 0, what every saved file has, is Auto")
-    need("return hint_in(t, 3, 0, v, variant);" in block(menu, "const char* hn_intel_compiles(int v, int variant) {"),
+    need("return menu_text::hint_in(t, 3, 0, v, variant);" in block(menu, "const char* hn_intel_compiles(int v, int variant) {"),
          "the row's hints are not one a value")
     need("int intel_compiles = 0;" in (VK / "vk_menu.h").read_text(encoding="utf-8"), "the row's default is not Auto")
     need("env_override(&opts.intel_compiles, env_value_off(e) ? 2 : 1);" in block(menu, "void menu_init() {"),

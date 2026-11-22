@@ -47,9 +47,9 @@ def check_source():
     if make.index("if (p->sparse) {   // (the blocks with memory)") > make.index("vkCmdCopyBuffer(upload_command_buffer(), p->buffer, p->mirror, 1, &all)"):
         raise SystemExit("vk_memory.cpp: mirror_make() copies the whole pool before it looks whether the mirror is sparse")
     bind = block(mem, "BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {")
-    fast = bind[:bind.index("ParLock plk;")]
+    fast = bind[:bind.index("std::lock_guard lk(pools_mu);")]
     need(fast, ["sparse_has(*p, off, size)", "sparse_touch(*p, off, size);"], "gpu_buffer_bind()'s path without the lock")
-    slow = bind[bind.index("ParLock plk;"):]
+    slow = bind[bind.index("std::lock_guard lk(pools_mu);"):]
     at = slow.index("if (p->sparse && !sparse_has(*p, off, size)) {")
     if not at < slow.index("mirror_sync(*p);") < slow.index("return remember({p->mirror, off, size, 0});"):
         raise SystemExit("vk_memory.cpp: gpu_buffer_bind() can hand out a sparse mirror's block with no memory")
@@ -101,8 +101,10 @@ def check_source():
     # (the binds are not waited for on the CPU: every submission of recordings waits for them on the GPU, and unbound memory is
     # freed once the binds' timeline has passed it)
     replay = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
-    if replay.count("if (memory_sparse_wait(&sparse_wait)) si.waitSemaphoreInfoCount = 1, si.pWaitSemaphoreInfos = &sparse_wait;") != 3:
-        raise SystemExit("vk_replay.cpp: a submission of recordings (the flush, a submit, a parallel segment) does not wait for the sparse binds")
+    # (four: the held submits' flush, an upload chunk, a recording's submit, and a part's on the recorder thread, #1866)
+    if replay.count("if (memory_sparse_wait(&sparse_wait)) si.waitSemaphoreInfoCount = 1, si.pWaitSemaphoreInfos = &sparse_wait;") != 4:
+        raise SystemExit("vk_replay.cpp: a submission of recordings (the flush, an upload chunk, a submit, a recorder's part) does "
+                         "not wait for the sparse binds")
     binds = block(mem, "bool sparse_bind_infos(")
     need(binds, ["si.pSignalSemaphores = &sparse_tl;", "vkQueueBindSparse(dev.queue, 1, &si, VK_NULL_HANDLE)"], "sparse_bind_infos()")
     if "vkWaitSemaphores(" in binds:

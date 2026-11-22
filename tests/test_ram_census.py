@@ -64,8 +64,8 @@ def check_source():
         raise SystemExit("ram_census_start no longer logs the driver every tick and the census every kRamEvery seconds")
     if 'SW(RX_VK_LOG_RAM, diag, enum,' not in (ROOT / "gpu/vk/switches.def").read_text(encoding="utf-8"):
         raise SystemExit("switches.def has no RX_VK_LOG_RAM row")
-    if "| `RX_VK_LOG_RAM=1` or `=2` |" not in (ROOT / "docs/development.md").read_text(encoding="utf-8"):
-        raise SystemExit("docs/development.md has no RX_VK_LOG_RAM row")
+    if "| `RX_VK_LOG_RAM=1` or `=2` |" not in (ROOT / "docs/dev/reference/profiling.md").read_text(encoding="utf-8"):
+        raise SystemExit("docs/dev/reference/profiling.md has no RX_VK_LOG_RAM row")
 
 
 def main():

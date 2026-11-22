@@ -71,7 +71,8 @@ int main() {
     CHECK("nine: given back", target_pool::idle_out(109, 100, target_pool::kIdlePresents));
     CHECK("RX_VK_POOL_IDLE=120 keeps it for 120", !target_pool::idle_out(220, 100, 120) && target_pool::idle_out(221, 100, 120));
 
-    if (!fails) std::puts("PASS: the dead targets are looked for at every present; the pool's idle images go after 8");
+    if (!fails) std::puts("PASS: the dead targets are looked for at every present; the pool's idle images go after 8 presents by default "
+                          "(64 on an integrated GPU while the take by size is on: test_target_reuse_memory)");
     return fails ? 1 : 0;
 }
 '''
@@ -112,14 +113,25 @@ def wiring():
     erases = tex.count("textures.erase(")
     guarded = tex.count("    rendered_forget(gone);\n    for (auto it = textures.begin(); it != textures.end() && !gone.empty();) {\n"
                         "        if (gone.erase(it->second.get())) it = textures.erase(it);")
+    release = block(tex, "void texture_released(const nvn_tex* t)")
+    if "if (t->output_preview)" in release:
+        branch = block(release, "if (t->output_preview)")
+        remove_target = branch.find("std::erase(rendered_targets, &texture);")
+        destroy = branch.find("destroy_later(texture, completed_value);")
+        forget = branch.find("forget_gpu(&texture);")
+        erase = branch.find("textures.erase(it)")
+        need(branch.count("textures.erase(") == 1 and 0 <= remove_target < destroy < forget < erase,
+             "preview release removes tracking and defers destruction before erasing the texture")
+        guarded += 1
     need(erases > 0 and erases == guarded and "textures.clear(" not in tex,
-         "every erase from the texture table (%d) is right after rendered_forget(gone) (%d are)" % (erases, guarded))
+         "every texture erase (%d) must remove the rendered target first (%d are guarded)" % (erases, guarded))
     for part in ("flush_textures", "flush_texture(", "readback"):
         need(part not in sweep, "the sweep writes nothing back (%s)" % part)
     every = block(tex, "uint64_t dead_every_presents()")
     need('getenv("RX_VK_DEAD_EVERY")' in every and ": 1;" in every, "RX_VK_DEAD_EVERY defaults to 1")
     trim = block(tex, "size_t pool_trim()")
-    need('getenv("RX_VK_POOL_IDLE")' in trim and "target_pool::kIdlePresents" in trim, "RX_VK_POOL_IDLE defaults to target_pool.h's")
+    need('target_pool::idle_presents(getenv("RX_VK_POOL_IDLE"), reuse_memory_level(),' in trim,
+         "RX_VK_POOL_IDLE defaults to target_pool.h's (idle_presents: kIdlePresents, or kIdlePresentsReuse with the take by size)")
     need("!target_pool::idle_out(frame_no, oldest.since, idle)" in trim, "the trim uses target_pool::idle_out")
     return fails
 

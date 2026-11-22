@@ -9,7 +9,12 @@ python -I scripts/validate_spirv.py "D:\\Games\\Longshot\\cache\\longshot_progra
 python -I scripts/validate_spirv.py <file> --all                                        (every program)
 python -I scripts/validate_spirv.py <file> --key a5da9f84b72d1471                       (the programs whose key starts so)
 
-The exit status is 1 when a stage failed, 0 when none did.
+A stage whose SPIR-V is in the shader store (gpu/vk/spirv_pack.h) is read from it: --store names its folder, else the
+player's (LONGSHOT_SHADER_STORE, then %LOCALAPPDATA%\\Longshot\\shaders or ~/.cache/longshot/shaders). The store must be
+the one the cache's head names, and each stage the store does not give (another blob at its place, or none) is a failure:
+a run that could not read the stages it found does not pass.
+
+The exit status is 1 when a stage failed or was not read, 0 when none did.
 """
 import argparse
 import collections
@@ -22,15 +27,22 @@ import subprocess
 import sys
 
 CACHE_MAGIC = 0x31505348   # (gpu/vk/vk_shader.cpp kDiskMagic)
-FALLBACK = 4               # (a record's kind: a task or mesh program run as compute, issue 640)
+FALLBACK = 4               # (a record's kind: a task or mesh program run as compute)
 SPV_MAGIC = b"\x03\x02\x23\x07"
+TARGET_ENV = "vulkan1.3"   # (the Vulkan Longshot asks for)
+MAX_SHARED = 65536         # (maxComputeSharedMemorySize: RDNA1's)
+MAX_INVOCATIONS = 1024     # (maxComputeWorkGroupInvocations: RDNA1's)
+STORE_WORDS = 1 << 63      # (a stage's word count with this bit: its SPIR-V is in the shader store, at the i64 after it,
+                           # with the two u64 of its hash after that)
+MOST_WORDS = 1 << 24       # (gpu/vk/spirv_pack.h kMostWords)
+NEEDLE = b"\x00\x00\x00\x80"   # (the top four bytes of a word count with STORE_WORDS: no stage has 2^32 words)
 STAGES = {0x1: "vertex", 0x2: "tesscontrol", 0x4: "tesseval", 0x8: "geometry", 0x10: "fragment", 0x20: "compute",
           0x40: "task", 0x80: "mesh"}
 
 
 def records(path, want):
     """(key, kind, bytes) of each record want(key, kind) takes, in file order. The layout is disk_init's: a 16-byte head
-    (magic, 0, stamp), then records of a u64 key, a u64 size and that many bytes, which start with the u32 kind. A record
+    (magic, the shader store's id or 0, stamp), then records of a u64 key, a u64 size and that many bytes, which start with the u32 kind. A record
     cut short ends the walk, as it does there"""
     with open(path, "rb") as f:
         head = f.read(16)
@@ -55,11 +67,85 @@ def records(path, want):
             f.seek(at + size)
 
 
-def stages(data):
+def store_dir():
+    """The player's shader store folder, as gpu/vk/spirv_pack.h default_dir finds it ("" for none)"""
+    s = os.environ.get("LONGSHOT_SHADER_STORE")
+    if s:
+        return "" if s == "0" else s
+    if os.name == "nt":
+        return os.path.join(os.environ["LOCALAPPDATA"], "Longshot", "shaders") if os.environ.get("LOCALAPPDATA") else ""
+    x = os.environ.get("XDG_CACHE_HOME", "")
+    return os.path.join(x if x.startswith("/") else os.path.expanduser("~/.cache"), "longshot", "shaders")
+
+
+def cache_store(path):
+    """The shader store id a program cache's head names (0: none)"""
+    with open(path, "rb") as f:
+        head = f.read(16)
+    return struct.unpack_from("<I", head, 4)[0] if len(head) == 16 else 0
+
+
+class Store:
+    """The shader store's spirv.pack, read by place: a 16-byte head ('LSPK', version, the store's id), then blobs of a
+    24-byte head (two u64 hashes, the u64 word count) and the words; a record names the words' offset and their hash"""
+
+    def __init__(self, folder):
+        path = os.path.join(folder, "spirv.pack") if folder else ""
+        self.f = open(path, "rb") if path and os.path.isfile(path) else None
+        self.id = 0
+        if self.f:
+            head = self.f.read(16)
+            if len(head) == 16 and struct.unpack_from("<2I", head) == (0x4B50534C, 1):
+                self.id = struct.unpack_from("<I", head, 8)[0]
+
+    def read(self, at, words, hash_a, hash_b):
+        """The words at at, when the blob there has this hash and count in its head; None otherwise"""
+        if not self.f or at < 40:
+            return None
+        self.f.seek(at - 24)
+        head = self.f.read(24)
+        if len(head) < 24 or struct.unpack("<3Q", head) != (hash_a, hash_b, words):
+            return None
+        data = self.f.read(4 * words)
+        return data if len(data) == 4 * words else None
+
+
+def stages(data, store=None):
+    """(nvn stage, vk stage, SPIR-V bytes) of each stage of a record that could be read (stages_read's)"""
+    return stages_read(data, store)[0]
+
+
+def stages_read(data, store=None):
     """(nvn stage, vk stage, SPIR-V bytes) of each stage of a record. program_cache_save writes a stage as int nvn_stage,
     VkShaderStageFlagBits vk_stage, then the SPIR-V as a list (a u64 word count, the words): each is found by its magic
     word and kept when the three fields before it agree, so the record's other fields (the answers, Shader::Info) need no
-    layout of their own here"""
+    layout of their own here. A stage in the shader store has, after the two, its word count with STORE_WORDS, the
+    words' place in the store (an i64) and their hash (two u64): found by that count's top byte, its words read from store.
+    Returns (those stages, how many stages in the store were found but not read: no store, or not those words there)"""
+    out = [(i, nvn, vk, spirv) for i, nvn, vk, spirv in in_record(data)]
+    spans = [(i, i + len(spirv)) for i, _, _, spirv in out]   # (a record's own SPIR-V: not read for references)
+    missing = 0
+    i = data.find(NEEDLE)
+    while i != -1:
+        at = i - 4   # (the count's first byte)
+        if at >= 8 and at + 32 <= len(data) and not any(lo <= at < hi for lo, hi in spans):
+            nvn, vk = struct.unpack_from("<iI", data, at - 8)
+            n, place, hash_a, hash_b = struct.unpack_from("<QqQQ", data, at)
+            words = n & ~STORE_WORDS
+            if n & STORE_WORDS and 0 <= nvn <= 7 and vk in STAGES and 5 <= words < MOST_WORDS and place > 0:
+                spirv = store.read(place, words, hash_a, hash_b) if store else None
+                if spirv and spirv[:4] == SPV_MAGIC:
+                    out.append((at, nvn, vk, spirv))
+                else:
+                    missing += 1
+                i = data.find(NEEDLE, at + 32)
+                continue
+        i = data.find(NEEDLE, i + 1)
+    return [(nvn, vk, spirv) for _, nvn, vk, spirv in sorted(out, key=lambda e: e[0])], missing
+
+
+def in_record(data):
+    """(place, nvn stage, vk stage, SPIR-V bytes) of each stage whose SPIR-V the record holds"""
     out = []
     i = data.find(SPV_MAGIC)
     while i != -1:
@@ -67,7 +153,7 @@ def stages(data):
             nvn, vk = struct.unpack_from("<iI", data, i - 16)
             n = struct.unpack_from("<Q", data, i - 8)[0]
             if 0 <= nvn <= 7 and vk in STAGES and 5 <= n and i + 4 * n <= len(data):
-                out.append((nvn, vk, data[i:i + 4 * n]))
+                out.append((i, nvn, vk, data[i:i + 4 * n]))
                 i = data.find(SPV_MAGIC, i + 4 * n)
                 continue
         i = data.find(SPV_MAGIC, i + 1)
@@ -121,21 +207,21 @@ def find_tool(name):
     return found
 
 
-def check(job, a, val):
+def check(job, val):
     """The reasons a stage fails ([] when it passes): spirv-val's errors (on stdin), then the device limits"""
     key, nvn, vk, spirv = job
     reasons = []
-    r = subprocess.run([val, "--target-env", a.target_env, *a.val_arg, "-"], input=spirv, capture_output=True)
+    r = subprocess.run([val, "--target-env", TARGET_ENV, "-"], input=spirv, capture_output=True)
     if r.returncode:
         text = (r.stdout + r.stderr).decode("utf-8", "replace").strip()
         reasons.append(("spirv-val", text or "spirv-val exit status %d" % r.returncode))
     local, shared = reflect(spirv)
-    if local and local[0] * local[1] * local[2] > a.max_invocations:
+    if local and local[0] * local[1] * local[2] > MAX_INVOCATIONS:
         reasons.append(("limit", "workgroup %dx%dx%d is %d invocations, over maxComputeWorkGroupInvocations %d"
-                        % (*local, local[0] * local[1] * local[2], a.max_invocations)))
-    if shared > a.max_shared:
+                        % (*local, local[0] * local[1] * local[2], MAX_INVOCATIONS)))
+    if shared > MAX_SHARED:
         reasons.append(("limit", "workgroup memory at least %d bytes, over maxComputeSharedMemorySize %d"
-                        % (shared, a.max_shared)))
+                        % (shared, MAX_SHARED)))
     return reasons, local, shared
 
 
@@ -166,11 +252,8 @@ def main(argv=None):
     p.add_argument("--all", action="store_true", help="every program, not only the mesh-as-compute ones")
     p.add_argument("--key", action="append", default=[], help="a program key (hex) or its start; may be given again")
     p.add_argument("--out", help="where failing stages are written (default: spirv_failures beside the cache)")
-    p.add_argument("--target-env", default="vulkan1.3", help="spirv-val's target (Longshot asks for Vulkan 1.3)")
-    p.add_argument("--val-arg", action="append", default=[], help="an argument passed on to spirv-val")
-    p.add_argument("--max-shared", type=int, default=65536, help="maxComputeSharedMemorySize (RDNA1: 65536)")
-    p.add_argument("--max-invocations", type=int, default=1024, help="maxComputeWorkGroupInvocations (RDNA1: 1024)")
     p.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
+    p.add_argument("--store", default=None, help="the shader store's folder (default: the player's)")
     a = p.parse_args(argv)
     val, dis = find_tool("spirv-val"), find_tool("spirv-dis")
     if not val:
@@ -183,7 +266,14 @@ def main(argv=None):
             return any(("%016x" % key).startswith(k) for k in keys)
         return a.all or bool(kind & FALLBACK)
 
-    programs, failed, groups = 0, [], collections.defaultdict(list)
+    programs, checked_stages, missing, failed, groups = 0, 0, 0, [], collections.defaultdict(list)
+    store = Store(store_dir() if a.store is None else a.store)
+    named = cache_store(a.cache)
+    if named and store.id != named:
+        # (its stages in the store are not checked against another's blobs: each counts as not read)
+        print("%s: its stages in the shader store are in store %08x, and %s" % (
+            a.cache, named, "no store was found" if not store.f else "the store found is %08x" % store.id))
+        store = None
     with concurrent.futures.ThreadPoolExecutor(a.jobs) as pool:
         pending = collections.deque()
 
@@ -200,9 +290,12 @@ def main(argv=None):
 
         for key, kind, data in records(a.cache, want):
             programs += 1
-            for nvn, vk, spirv in stages(data):
+            found, unread = stages_read(data, store)
+            missing += unread
+            checked_stages += len(found)
+            for nvn, vk, spirv in found:
                 job = (key, nvn, vk, spirv)
-                future = pool.submit(check, job, a, val)
+                future = pool.submit(check, job, val)
                 future.job = job
                 pending.append(future)
                 while len(pending) > 4 * a.jobs:   # (a few batches in flight: --all reads gigabytes)
@@ -211,7 +304,9 @@ def main(argv=None):
             settle(pending.popleft())
 
     checked = "programs" if a.all or keys else "mesh-as-compute programs"
-    print("%s: %d %s, %d stages failed" % (a.cache, programs, checked, len(failed)))
+    print("%s: %d %s, %d stages checked, %d failed" % (a.cache, programs, checked, checked_stages, len(failed)))
+    if missing:
+        print("  %d stages in the shader store not read (no store, another store, or not those words at their place)" % missing)
     for message, where in sorted(groups.items(), key=lambda g: -len(g[1])):
         print("  %4dx  %s" % (len(where), message))
         print("         e.g. %s" % ", ".join(where[:3]))
@@ -219,7 +314,7 @@ def main(argv=None):
         print("written to %s (.spv, .spvasm, .txt)" % out)
     if not programs:
         print("  (no records matched%s)" % (": is the key right?" if keys else ""))
-    return 1 if failed else 0
+    return 1 if failed or missing else 0
 
 
 if __name__ == "__main__":

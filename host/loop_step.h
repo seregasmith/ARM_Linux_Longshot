@@ -2,7 +2,7 @@
    adult Zora's Domain (start 0, end 1) are drawn from it and stand still. At the console's 60 fps the step is 1, every update of
    the clock lands on the same phase and the pose never changes. Under a Frame rate cap above 60 the step is the frame's own time
    (host/nn_vi.c, hos_frame_seconds_bits: 0.36 at 165 fps), the phase moves by it each frame and wraps, so each frame draws a
-   different phase of the loop: the Zoras twitched (issue 988).
+   different phase of the loop: the Zoras twitch.
    Two places make the time a skeleton is drawn at (nx2/oot_patches.py, patch_loop_steps and patch_loop_pose):
    - loop_step: the clock's step. The loop of one frame or less takes whole frames of it, the fractions carried per animation
      entry, so it moves as often as at 60 fps and by the same whole steps;

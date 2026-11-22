@@ -1,5 +1,5 @@
-"""gpu/vk/menu_i18n.h, the Insert menu's translations: every table's texts are the menu's own (vk_menu.cpp writes each
-English text), every translation keeps its text's printf conversions in order and its leading and trailing spaces (the menu
+"""gpu/vk/menu_i18n.h, the Insert menu's translations: every table's texts are the menu's own (vk_menu.cpp and its modules,
+gpu/vk/menu/, write each English text), every translation keeps its text's printf conversions in order and its leading and trailing spaces (the menu
 joins pieces), and the language list holds what vk_menu_i18n.cpp expects. The controls and Automatic prompt hints
 must remain present in every translated table. No game, no compiler.
 
@@ -7,7 +7,11 @@ Run with: python -I tests/test_menu_i18n.py
 """
 from pathlib import Path
 import re
+import sys
 import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
+from menu_model_fixture import menu_sources  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 VK = ROOT / "gpu" / "vk"
@@ -25,6 +29,14 @@ def conversions(s):
     return re.findall(r'%[-+#0]*\d*(?:\.\d+)?[lhz]*[sducxgf%]', s)
 
 
+# These status strings reach the ReShade menu from the renderer at run time.
+RESHADE_STATUS = (
+    "Waiting for the gameplay scene", "Preparing ReShade preset", "Ready for linear HDR gameplay",
+    "Ready for SDR gameplay", "Use Expanded HDR for imported SDR presets.",
+    "This preset requires active Native HDR", "Could not read the ReShade preset",
+)
+
+
 def tables():
     src = (VK / "menu_i18n.h").read_text(encoding="utf-8")
     out = {}
@@ -39,8 +51,11 @@ def tables():
 class MenuI18nTests(unittest.TestCase):
     def setUp(self):
         self.tables, self.langs = tables()
-        menu = (VK / "vk_menu.cpp").read_text(encoding="utf-8")
-        self.menu = set(c_strings(menu))
+        self.menu = set(c_strings(menu_sources()))   # (vk_menu.cpp's texts and its modules', gpu/vk/menu/: #1633)
+        runtime = set()
+        for name in ("fx_runtime.cpp", "fx_preset.cpp"):
+            runtime.update(c_strings((VK / "reshade" / name).read_text(encoding="utf-8")))
+        self.menu.update(text for text in RESHADE_STATUS if text in runtime)
 
     def test_languages(self):
         self.assertEqual(self.langs[0], ("en", "English", "nullptr", "0"))
@@ -65,7 +80,7 @@ class MenuI18nTests(unittest.TestCase):
                 "the ocarina waits for one; away from it they do their other jobs."
             ),
             "automatic button prompts": (
-                "Those of the first controller, from its name (SDL's). With none, the keyboard's (the Switch's with XInput "
+                "Those of the first controller, from its type and name (SDL's). With none, the keyboard's (the Switch's with XInput "
                 "alone)."
             ),
         }
@@ -75,6 +90,23 @@ class MenuI18nTests(unittest.TestCase):
             keys = {en for en, _ in pairs}
             for name, hint in hints.items():
                 self.assertTrue(hint in keys, "%s: missing current %s hint" % (table, name))
+
+    def test_reshade_texts_are_translated(self):
+        texts = (
+            "Post-processing", "ReShade preset", "Compare ReShade Preset", "User preset file",
+            "Rescan ReShade presets", "Enabled · On", "Enabled · Off", "No user presets", "Choose a preset",
+            "Warm", "Cool", "User", "HDR Vibrance", "Depth View", "Depth Haze",
+            "Native HDR supports built-in and LinearHDR presets. Use Expanded HDR for imported SDR presets.",
+            "Preview presets. Back restores your saved selection.",
+            "Copy INI files to reshade/presets and FX and FXH files to reshade/shaders, then rescan.",
+            *RESHADE_STATUS,
+        )
+        for text in texts:
+            self.assertIn(text, self.menu)
+        for table, pairs in self.tables.items():
+            for text in texts:
+                with self.subTest(table=table, text=text):
+                    self.assertIn(text, dict(pairs))
 
     def test_speaker_layout_texts_are_translated(self):
         texts = ("Speaker layout",
@@ -109,7 +141,7 @@ class MenuI18nTests(unittest.TestCase):
                 with self.subTest(table=table, text=text):
                     self.assertIn(text, translated)
                     self.assertNotEqual(translated[text], text)
-        source = (VK / "vk_menu.cpp").read_text(encoding="utf-8")
+        source = (VK / "menu" / "audio.cpp").read_text(encoding="utf-8")   # (the Audio module's, #1633)
         self.assertIn('std::string(i18n::tr("Selected output"))', source)
         self.assertIn('+ i18n::tr(" (not connected)")', source)
 
@@ -186,6 +218,27 @@ class MenuI18nTests(unittest.TestCase):
             self.assertIn('code == "%s"' % code, cpp)
             self.assertIn(" settings (many)", dict(self.tables[table]), table)
             self.assertIn(" settings", dict(self.tables[table]), table)
+
+    def test_colour_vision_modes_translated(self):
+        texts = ("Accessibility", "Colour vision correction", "Protan (red-green)",
+                 "Deutan (red-green)", "Tritan (blue-yellow)",
+                 "Recolours the picture for red-green or blue-yellow colour vision deficiency. Changes apply immediately.")
+        self.assertTrue(set(texts) <= self.menu)
+        for table, pairs in self.tables.items():
+            translated = dict(pairs)
+            with self.subTest(table=table):
+                self.assertTrue(set(texts) <= translated.keys())
+
+    def test_sprint_help(self):
+        for prefix in ("Enable Sprint in the Controls tab", "Toggle for Sprint: On,", "With Sprint On, by default",
+                       "L3 is assigned to Sprint.", "Left stick press", "Right stick press"):
+            texts = [text for text in self.menu if text.startswith(prefix)]
+            self.assertEqual(len(texts), 1)
+            for table, pairs in self.tables.items():
+                with self.subTest(table=table, text=texts[0]):
+                    translated = dict(pairs)
+                    self.assertIn(texts[0], translated)
+                    self.assertNotEqual(translated[texts[0]], texts[0])
 
     def test_conversions_and_spaces(self):
         for table, pairs in self.tables.items():

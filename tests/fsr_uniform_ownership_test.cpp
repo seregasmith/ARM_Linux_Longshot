@@ -29,15 +29,17 @@ uintptr_t serial=100;
 template<class T> T handle() { return reinterpret_cast<T>(++serial); }
 bool coherent=false,fail_buffer=false;
 unsigned flushed=0,queued=0;
-std::mutex par_mutex;
-struct ParLock { std::lock_guard<std::mutex> lock{par_mutex}; };
 namespace rec {   // (vk_recorder.h's RX_VK_RECORDER_OWN marks, as they are with the recorder off)
 inline void slot_begin(uint64_t) {}
 inline void slot_done() {}
 inline uint64_t produced() { return 0; }
 struct OwnSlot { OwnSlot() {} ~OwnSlot() {} };   // (a scope, as the real one)
+inline bool wait_part(uint64_t) { return true; }   // (RX_VK_RECORDER_PARTS: no recorder thread here, every part submitted by the replay)
+[[noreturn]] inline void recorder_fatal(const char*) { std::abort(); }
+struct Settled { Settled() {} ~Settled() {} };   // (a scope, as the real one)
 }   // namespace rec
 uint64_t rec_end_pos[64];   // (vk_replay.cpp: each slot's end in the recorder's ring)
+uint64_t rec_ticket[64];    // (vk_replay.cpp, RX_VK_RECORDER_PARTS: each slot's last part handed to the recorder: none here)
 void logf(const char*,...) {}
 bool create_buffer(uint64_t size,VkBufferUsageFlags,bool,VkBuffer& buffer,VmaAllocation& allocation,void** mapped,bool=false) {
     if(fail_buffer) return false;
@@ -65,7 +67,10 @@ std::atomic<uint64_t> stream_extra{0},stream_grown{0},stream_peak{0},pools_extra
 VkCommandBuffer rec_cmd{};
 uint64_t rec_value=0,targets_serial=0;
 VkBuffer zero_buffer{}; VmaAllocation zero_alloc{};
-VkDescriptorPool make_pool() { return handle<VkDescriptorPool>(); }
+VkDescriptorPool make_pool(uint32_t=0) { return handle<VkDescriptorPool>(); }
+uint32_t pool_shift_first() { return 1; }   // (RX_VK_DESC_POOL_GROW: a slot's first pool half size)
+std::atomic<uint64_t> pools_grown{0};
+void mesh_conv_begin_recording() {}   // (vk_draw.cpp: RX_VK_MESH_CONV read for the recording)
 VKAPI_ATTR VkResult VKAPI_CALL vkResetDescriptorPool(VkDevice,VkDescriptorPool,VkDescriptorPoolResetFlags) { return VK_SUCCESS; }
 VKAPI_ATTR void VKAPI_CALL vkDestroyDescriptorPool(VkDevice,VkDescriptorPool,const VkAllocationCallbacks*) {}
 struct Pass {}; Pass& pass() { static Pass p;return p; }
@@ -93,6 +98,9 @@ void queue_flush_locked(){batch_flushed=1;}
 void gpu_time_collect(Recording&){} void gprof_collect(int){} void gpu_time_begin(Recording&){}
 void occ_collect(){}   // (vk_replay.cpp: the occlusion counts' harvest, RX_VK_OCC_QUERIES)
 void gprof_begin_recording(int,VkCommandBuffer,VkCommandBuffer){}
+void texture_complete_writes(uint64_t){}   // (vk_texture.cpp: the finished writes' bookkeeping)
+namespace fps_stats { enum RenderPart { kRtWork, kRtGpu, kRtIdle }; }
+struct FpsRtWait { explicit FpsRtWait(int) {} ~FpsRtWait() {} };   // (vk_fps.h: the FPS counter's render lane, a scope)
 uint64_t completed(){return 0;}
 void memory_recording_value(uint64_t,uint64_t){} void memory_recording_part(uint64_t){} void texture_begin_recording(VkCommandBuffer,uint64_t){}
 VKAPI_ATTR VkResult VKAPI_CALL vkWaitForFences(VkDevice,uint32_t,const VkFence*,VkBool32,uint64_t){read_pending();pending.clear();return VK_SUCCESS;}

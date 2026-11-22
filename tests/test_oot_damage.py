@@ -7,6 +7,9 @@ import tempfile
 
 RUN_ALL_ARGS = ["--cc", "gcc"]
 ROOT = Path(__file__).resolve().parents[1]
+import sys  # noqa: E402
+sys.path.insert(0, str(ROOT / "tests"))
+from menu_model_fixture import menu_text  # noqa: E402
 sys.path.insert(0, str(ROOT / "nx2"))
 import oot_patches as patches
 
@@ -16,7 +19,7 @@ def main():
     parser.add_argument("--cc", default="gcc")
     args = parser.parse_args()
     api = (ROOT / "gpu/vk/vk_api.h").read_text(encoding="utf-8")
-    menu = (ROOT / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8")
+    menu = menu_text(ROOT)   # (vk_menu.cpp and its modules, their rows as table lines, #1633)
     options = (ROOT / "gpu/vk/vk_menu.h").read_text(encoding="utf-8")
     replay = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
     assert "HOS_OPT_DAMAGE_TAKEN = 55" in api

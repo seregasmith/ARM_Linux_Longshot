@@ -43,6 +43,7 @@ HOS_H = r'''
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+extern const char hos_main_build_id[];
 typedef struct { uint64_t x[32]; } Ctx;
 #define HLE(sym) void imp_##sym(Ctx *c)
 #define ARG(n) (c->x[n])
@@ -70,6 +71,8 @@ int hos_commit(uint64_t addr, uint64_t size);
 void hos_log(const char *fmt, ...);
 void hos_fatal(Ctx *c, const char *fmt, ...);
 int64_t hos_now_ns(void);
+int hos_vcore_away(void);
+void hos_vcore_back(void);
 #define HOS_TRACE_CALL(name) ((void)0)
 '''
 
@@ -143,6 +146,12 @@ void hos_fatal(Ctx *c, const char *fmt, ...) {
     exit(1);
 }
 int64_t hos_now_ns(void) { return 0; }
+/* (the virtual core a region's discard gives up, tests/test_vcore_region_free.py's subject: here only given back) */
+static int cores_away;
+int hos_vcore_away(void) { cores_away++; return 1; }
+void hos_vcore_back(void) { cores_away--; }
+const char hos_main_build_id[] = "test";
+uint32_t hos_output_size(int height) { return height ? 720 : 1280; }
 #include "hos_mem.c"
 int main(void) {
     Ctx c = {{0}};
@@ -185,6 +194,7 @@ int main(void) {
     CHECK(marked_in_all() == 32);
     CHECK(!marked_before_write);
     CHECK(discards == 0);                 /* (no hole punched under the import) */
+    CHECK(cores_away == 0);               /* (the core given up for the discard is taken again) */
 
     /* and not imported: discarded, not marked */
     const uint64_t r2 = hos_region_alloc(size, 0x10000);
@@ -197,6 +207,7 @@ int main(void) {
     CHECK(discards == 1);
     CHECK(bytes_are(r2, size, 0xAB));
 #endif
+    CHECK(cores_away == 0);
     printf("PASS: FreeMemoryPages and a freed region zero imported pages in place and mark them written\n");
     return 0;
 }
@@ -208,7 +219,18 @@ SVC_FIXTURE = r'''
 typedef size_t SIZE_T;
 #define MEM_DECOMMIT 0x4000
 #define R_OK 0
-static int decommits;
+static int decommits, page_change_active, block_page_change;
+static int hos_output_page_change_begin(uint64_t a, uint64_t n) {
+    (void)a, (void)n;
+    if (page_change_active) abort();
+    if (block_page_change) return 0;
+    page_change_active = 1;
+    return 1;
+}
+static void hos_output_page_change_end(void) {
+    if (!page_change_active) abort();
+    page_change_active = 0;
+}
 static int VirtualFree(void *p, SIZE_T n, int how) {
     (void)p, (void)n, (void)how;
     decommits++;
@@ -243,6 +265,21 @@ int main(void) {
     CHECK(decommits == 1);
     CHECK(bytes_are(a, n, 0xAB));
     CHECK(marked_in_all() == 0);
+
+    CHECK(!page_change_active);
+    block_page_change = 1;
+    c.x[0] = a, c.x[1] = n;
+    svc(&c, 0x2D);
+    CHECK(c.x[0] == 0xCA01);
+    CHECK(decommits == 1 && !page_change_active);
+    CHECK(bytes_are(a, n, 0xAB));
+    CHECK(marked_in_all() == 0);
+    block_page_change = 0;
+
+    c.x[0] = a, c.x[1] = 0;
+    svc(&c, 0x2D);
+    CHECK(c.x[0] == 0xCA01);
+    CHECK(decommits == 1 && !page_change_active);
 
     c.x[0] = 0x1000, c.x[1] = n;          /* (outside the guest window: refused, nothing touched) */
     svc(&c, 0x2D);

@@ -117,6 +117,10 @@ int driver_faults() { return faults.load(); }
 void prepare_left_workers_note() { left_noted = true; }
 void prepare_progress_log(const char*, size_t, size_t, std::chrono::steady_clock::time_point, std::chrono::steady_clock::time_point&) {}
 void ub_thread_off() {}
+// (vk_internal.h and vk_draw.cpp: Intel's compiler side by side on the preparation's threads; not Intel graphics here, the
+// threads asked for)
+struct IntelPrepareLane { explicit IntelPrepareLane(bool = true) {} };
+unsigned prepare_pipeline_threads(unsigned want, const char*) { return want; }
 void Sleep(unsigned ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
 std::vector<std::unique_ptr<PipeNote>> pipe_notes_read() {
     std::vector<std::unique_ptr<PipeNote>> v;
@@ -275,12 +279,16 @@ int main(int argc, char** argv) {
     if (c == "busy-compile" || c == "busy-compile-intel") {
         // (a compile with a CPU at work: three times the limit before a stop on most drivers, past it and twelve times the limit
         // on Mesa's Intel driver)
+        // (two threads at work: the watchdog's busy is half a CPU in its window, and one thread alone fell below that when the
+        // checks run 24 at once on a loaded PC, which stopped the compile at 4 s)
         std::atomic<bool> done{false};
-        std::thread burn([&] { volatile uint64_t x = 0; while (!done.load(std::memory_order_relaxed)) x = x + 1; });
+        auto spin = [&] { volatile uint64_t x = 0; while (!done.load(std::memory_order_relaxed)) x = x + 1; };
+        std::thread burn(spin), burn2(spin);
         prepare_moved(0, 5, 100);
         Sleep(c == "busy-compile" ? 25000 : 15000);   // (busy-compile: the watchdog ends the process before this does)
         done = true;
         burn.join();
+        burn2.join();
         return c == "busy-compile" ? 8 : 0;
     }
     if (c == "save") {   // (a long save, nothing left in the driver: reported, then silent, never stopped)

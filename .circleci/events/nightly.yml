@@ -1,4 +1,4 @@
-# Nightly schedule (third-party upstream check). Docs: docs/ci.md.
+# Nightly schedule (third-party upstream check). Docs: docs/dev/reference/ci.md.
 workflows:
   upstream:
     jobs:

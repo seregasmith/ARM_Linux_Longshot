@@ -67,9 +67,12 @@ def wiring():
         fails.append("the picks not dropped when the tone mapper changes")
     if "bool scene_tonemap_on() { return dev.hdr && opts.hdr == 2 && opts.hdr_tonemap == 1; }" not in menu:
         fails.append("scene_tonemap_on is not Native HDR with the row on")
-    if not re.search(r'\{TAB_GRAPHICS, "HDR tone mapper", &opts\.hdr_tonemap, 0, 1, 1, tx_tonemap,', menu):
+    # (the row is the HDR module's, gpu/vk/menu/hdr.cpp (#1633): Vanilla and PsychoV35, shown with Native HDR alone)
+    hdr = (VK / "menu" / "hdr.cpp").read_text(encoding="utf-8")
+    row = re.search(r'\.key = "hdr_tone_mapper",.*?\}\)', hdr, re.S)
+    if not row or ".value = &opts.hdr_tonemap, .lo = 0, .hi = 1, .choices = {\"Vanilla\", \"PsychoV35\"}" not in row.group(0):
         fails.append("the HDR tone mapper row")
-    if "(v != &opts.hdr_tonemap || opts.hdr == 2)" not in menu:
+    if not row or ".shown = [] { return opts.hdr == 2; }" not in row.group(0):
         fails.append("the tone mapper row shown without Native HDR")
     if "int hdr_tonemap = 0;" not in (VK / "vk_menu.h").read_text(encoding="utf-8"):
         fails.append("the tone mapper not Vanilla out of the box")

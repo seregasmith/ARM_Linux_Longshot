@@ -1,7 +1,7 @@
 """A compute program's pipeline is read and published atomically in vk_draw.cpp.
 
 The dispatch's build worker, the dispatch itself and the precompile's threads write Program::compute_pipeline while other
-recording threads read it (dispatch() reads it before taking ParLock). Plain reads and writes of it there were a data
+recording threads read it. Plain reads and writes of it there were a data
 race. Every use of it in vk_draw.cpp now goes through std::atomic_ref (release stores, acquire loads), and the
 synchronous build makes the pipeline into a local and publishes it only once made.
 

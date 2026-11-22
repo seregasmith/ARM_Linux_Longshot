@@ -1,4 +1,4 @@
-/* (longshot) OoT's read-only samples for the control bridge (docs/control.md).
+/* (longshot) OoT's read-only samples for the control bridge (docs/dev/reference/control-bridge.md).
    status.game holds the last snapshot; subscribe events:["oot"] samples every n presents, with an optional watch list
    and changed flags. There is no file channel. HOS_CONTROL unset costs one early return. With the bridge on, a cheap
    atomic deadline skips capture unless a status request is pending or a subscriber without a pending sample is due.

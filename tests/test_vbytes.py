@@ -9,7 +9,10 @@ compares all 32 vector registers. Built for -march=native, x86-64-v3, x86-64-v2 
 (SSE2 only: the fallback), on Windows and Linux; a build this CPU cannot run (x86-64-v3 without AVX2, say) exits 3 at
 once and is reported as skipped. Then timed at the game's -O1 -march=native.
 
-    python -I -B tests/test_vbytes.py [--cc clang] [--cxx clang++] [--random 1000000]
+    python -I -B tests/test_vbytes.py [--cc clang] [--cxx clang++] [--random 10000]
+
+--random: the random states a guest word and build (10,000: the suite's run; 1,000,000 for a long run by hand after a change to
+the helpers).
 """
 import argparse
 import os
@@ -139,7 +142,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--cc")
     p.add_argument("--cxx")
-    p.add_argument("--random", type=int, default=1000000)
+    p.add_argument("--random", type=int, default=10000)
     a = p.parse_args()
     if platform.machine().lower() not in ("x86_64", "amd64"):
         fs.skip("not an x86-64 host: %s" % platform.machine())

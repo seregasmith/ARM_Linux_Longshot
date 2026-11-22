@@ -481,6 +481,45 @@ Id CasLoop(EmitContext& ctx, Operation operation, Id array_pointer, Id element_p
     return func;
 }
 
+// Admit one active invocation per subgroup to the CAS loop at a time. Each invocation
+// still adds its own value and receives its own old value, including on overflow.
+Id SubgroupCasLoop(EmitContext& ctx, Id cas_func, Id array_pointer) {
+    const Id subgroup{ctx.Const(static_cast<u32>(spv::Scope::Subgroup))};
+    const Id func_type{ctx.TypeFunction(ctx.F32[1], ctx.U32[1], ctx.F32[1], array_pointer)};
+    const Id func{ctx.OpFunction(ctx.F32[1], spv::FunctionControlMask::MaskNone, func_type)};
+    const Id index{ctx.OpFunctionParameter(ctx.U32[1])};
+    const Id value{ctx.OpFunctionParameter(ctx.F32[1])};
+    const Id base{ctx.OpFunctionParameter(array_pointer)};
+    ctx.AddLabel();
+    const Id result{ctx.AddLocalVariable(ctx.TypePointer(spv::StorageClass::Function, ctx.F32[1]),
+                                         spv::StorageClass::Function)};
+    const Id header{ctx.OpLabel()};
+    const Id selected{ctx.OpLabel()};
+    const Id selection_end{ctx.OpLabel()};
+    const Id next{ctx.OpLabel()};
+    const Id merge{ctx.OpLabel()};
+    ctx.OpBranch(header);
+    ctx.AddLabel(header);
+    ctx.OpLoopMerge(merge, next, spv::LoopControlMask::MaskNone);
+    const Id elect_block{ctx.OpLabel()};
+    ctx.OpBranch(elect_block);
+    ctx.AddLabel(elect_block);
+    const Id elected{ctx.OpGroupNonUniformElect(ctx.U1, subgroup)};
+    ctx.OpSelectionMerge(selection_end, spv::SelectionControlMask::MaskNone);
+    ctx.OpBranchConditional(elected, selected, selection_end);
+    ctx.AddLabel(selected);
+    ctx.OpStore(result, ctx.OpFunctionCall(ctx.F32[1], cas_func, index, value, base));
+    ctx.OpBranch(selection_end);
+    ctx.AddLabel(selection_end);
+    ctx.OpBranch(next);
+    ctx.AddLabel(next);
+    ctx.OpBranchConditional(elected, merge, header);
+    ctx.AddLabel(merge);
+    ctx.OpReturnValue(ctx.OpLoad(ctx.F32[1], result));
+    ctx.OpFunctionEnd();
+    return func;
+}
+
 template <typename Desc>
 std::string NameOf(Stage stage, const Desc& desc, std::string_view prefix) {
     if (desc.count > 1) {
@@ -1071,10 +1110,14 @@ void EmitContext::DefineWriteStorageCasLoopFunction(const Info& info) {
 // (longshot) The page table of guest memory for pointers no bound buffer holds: 4 KB pages from this base, a device address each
 constexpr unsigned long long kGuestPagesBase = 0x1000000000ull;
 constexpr unsigned long long kGuestPagesBytes = 8ull << 30;
-// (a second window, its entries after the first's: the pools the game's GPU allocator puts at 0x7fxxxxxxxx, where its storage
-// buffers are. Pointers there read 0 with the first alone)
-constexpr unsigned long long kGuestPagesBase2 = 0x7f00000000ull;
-constexpr unsigned long long kGuestPagesBytes2 = 4ull << 30;
+// (a second window, its entries after the first's: the pools the game's GPU allocator puts below 512 GB, where its storage
+// buffers are. Pointers there read 0 with the first alone. 16 GB from 496 GB: the pool census saw some at 506 GB)
+constexpr unsigned long long kGuestPagesBase2 = 0x7c00000000ull;
+constexpr unsigned long long kGuestPagesBytes2 = 16ull << 30;
+// (and a third, after the second's: NVN's virtual pools from 1 TB (nvn_native.c VBASE), their entries the memory behind each
+// virtual page, written where a storage buffer there is bound (vk_memory.cpp memory_table_cover))
+constexpr unsigned long long kGuestPagesBase3 = 0x10000000000ull;
+constexpr unsigned long long kGuestPagesBytes3 = 4ull << 30;
 
 void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
     if (!info.uses_global_memory || !profile.support_int64) {
@@ -1131,23 +1174,42 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
     // and must end that block (a return). Falls through after it)
     // (RX_VK_FOLLOW_STORES=1: writes and atomics through the table too; off by default, see the storage buffer pass)
     static const bool follow_stores{env_on("RX_VK_FOLLOW_STORES")};
+    // (longshot, mma_layout.h graphics_table_loads) a vertex, fragment or compute stage that has the table, and the mesh fallback's
+    // task and mesh stages: its loads through it alone (1), or the search kept and checked against it (2, not the task and mesh
+    // stages: the miss log's buffer is not theirs). Not where the render area's push block leaves no table (follow_pointers)
+    const bool table_stage{graphics_stage || stage == Stage::Compute ||
+                           (mesh_fallback && (stage == Stage::Task || stage == Stage::Mesh))};
+    const bool graphics_table{graphics_table_loads != 0 && table_stage && wants_guest_pages &&
+                              rescaling_push_constants.value != 0 && profile.supported_spirv >= 0x00010400};
+    const bool table_alone{graphics_table && graphics_table_loads == 1};
+    const bool table_check{graphics_table && graphics_table_loads == 2 && stage != Stage::Task && stage != Stage::Mesh};
     // (longshot) size: the access's bytes. An access that runs past its 4 KB page is left to the miss path: the table maps pages one
     // by one, the next page may be another allocation's or none, and a 16-byte read at a page's end faulted the device (the culling
     // passes 53caac5f, b6122162 at a save's load)
+    // (longshot) where an address's entry is in the table: inside one of its windows (page_table_census.h kPageWindows), its page
+    // numbered after the windows before it
+    const auto table_window = [&](Id addr) {
+        const Id offset_a{OpISub(U64, addr, Constant(U64, u64{kGuestPagesBase}))};
+        const Id offset_b{OpISub(U64, addr, Constant(U64, u64{kGuestPagesBase2}))};
+        const Id offset_c{OpISub(U64, addr, Constant(U64, u64{kGuestPagesBase3}))};
+        const Id in_a{OpULessThan(U1, offset_a, Constant(U64, u64{kGuestPagesBytes}))};
+        const Id in_b{OpULessThan(U1, offset_b, Constant(U64, u64{kGuestPagesBytes2}))};
+        const Id in_c{OpULessThan(U1, offset_c, Constant(U64, u64{kGuestPagesBytes3}))};
+        const Id page_c{OpIAdd(U64, OpShiftRightLogical(U64, offset_c, Const(12U)),
+                               Constant(U64, u64{(kGuestPagesBytes + kGuestPagesBytes2) >> 12}))};
+        const Id page_b{OpIAdd(U64, OpShiftRightLogical(U64, offset_b, Const(12U)), Constant(U64, u64{kGuestPagesBytes >> 12}))};
+        const Id page_index{OpSelect(U64, in_a, OpShiftRightLogical(U64, offset_a, Const(12U)), OpSelect(U64, in_b, page_b, page_c))};
+        return std::pair{OpLogicalOr(U1, in_a, OpLogicalOr(U1, in_b, in_c)), page_index};
+    };
     const auto guest_lookup = [&](Id addr, u32 size, auto&& hit) {
         if (!follow_pointers || gp_level < 2) return;
         const Id table{wants_guest_pages && rescaling_push_constants.value != 0
                            ? OpLoad(U64, OpAccessChain(TypePointer(spv::StorageClass::PushConstant, U64), rescaling_push_constants,
                                                        Const(guest_pages_member_index)))
                            : Constant(U64, u64{0})};   // (pushed: the table's device address, 0 for none)
-        const Id offset_a{OpISub(U64, addr, Constant(U64, u64{kGuestPagesBase}))};
-        const Id offset_b{OpISub(U64, addr, Constant(U64, u64{kGuestPagesBase2}))};
-        const Id in_a{OpULessThan(U1, offset_a, Constant(U64, u64{kGuestPagesBytes}))};
-        const Id in_b{OpULessThan(U1, offset_b, Constant(U64, u64{kGuestPagesBytes2}))};
-        const Id page_index{OpSelect(U64, in_a, OpShiftRightLogical(U64, offset_a, Const(12U)),
-                                     OpIAdd(U64, OpShiftRightLogical(U64, offset_b, Const(12U)), Constant(U64, u64{kGuestPagesBytes >> 12})))};
+        const auto [in_window, page_index] = table_window(addr);
         const Id fits{OpULessThanEqual(U1, OpBitwiseAnd(U64, addr, Constant(U64, u64{0xfff})), Constant(U64, u64{0x1000 - size}))};
-        const Id inside{OpLogicalAnd(U1, OpLogicalAnd(U1, OpLogicalOr(U1, in_a, in_b), OpINotEqual(U1, table, Constant(U64, u64{0}))), fits)};
+        const Id inside{OpLogicalAnd(U1, OpLogicalAnd(U1, in_window, OpINotEqual(U1, table, Constant(U64, u64{0}))), fits)};
         const Id then_label{OpLabel()};
         const Id else_label{OpLabel()};
         OpSelectionMerge(else_label, spv::SelectionControlMask::MaskNone);
@@ -1274,7 +1336,9 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
             // nvn_buffer_used[index], took a descriptor's place in the list for an NVN slot number: with the tracked
             // buffers first, the slots' own descriptors past them were skipped and their reads gave 0. A match is exact,
             // so searching a buffer the access never falls in costs a comparison and nothing else.
-            if (info.storage_buffers_descriptors[index].count > 1) {
+            // (longshot) nor a simulated-turf private one (ir_opt/sim_turf_pool_pass.h): no constant-bank word describes it, and the
+            // accesses that go to it name it
+            if (info.storage_buffers_descriptors[index].count > 1 || IsSimTurfStorage(info.storage_buffers_descriptors[index])) {
                 continue;
             }
             const auto& ssbo{info.storage_buffers_descriptors[index]};
@@ -1403,7 +1467,8 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
                 AddLabel(else_label);
             }
         }
-        record_miss(addr);   // (EvilOOT, RX_VK_MISS_LOG: here no buffer held the address)
+        if (!table_check) record_miss(addr);   // (EvilOOT, RX_VK_MISS_LOG: here no buffer held the address. Checking, the buffer
+                                                // records the loads the table answers otherwise instead)
     }};
     // (longshot, mma_layout.h mesh_fallback_pages) the mesh fallback's task and mesh stages: a load is the guest page table's word,
     // 0 where it maps nothing, as the console's GPU reads memory. No branch and no search: a storage buffer bound below 1 TB is in a
@@ -1420,13 +1485,8 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         const Id table{OpLoad(U64, OpAccessChain(TypePointer(spv::StorageClass::PushConstant, U64), rescaling_push_constants,
                                                  Const(guest_pages_member_index)))};
         const Id u64_zero{Constant(U64, u64{0})};
-        const Id offset_a{OpISub(U64, addr, Constant(U64, u64{kGuestPagesBase}))};
-        const Id offset_b{OpISub(U64, addr, Constant(U64, u64{kGuestPagesBase2}))};
-        const Id in_a{OpULessThan(U1, offset_a, Constant(U64, u64{kGuestPagesBytes}))};
-        const Id in_b{OpULessThan(U1, offset_b, Constant(U64, u64{kGuestPagesBytes2}))};
-        const Id page_index{OpSelect(U64, in_a, OpShiftRightLogical(U64, offset_a, Const(12U)),
-                                     OpIAdd(U64, OpShiftRightLogical(U64, offset_b, Const(12U)), Constant(U64, u64{kGuestPagesBytes >> 12})))};
-        const Id inside{OpLogicalAnd(U1, OpLogicalOr(U1, in_a, in_b), OpINotEqual(U1, table, u64_zero))};
+        const auto [in_window, page_index] = table_window(addr);
+        const Id inside{OpLogicalAnd(U1, in_window, OpINotEqual(U1, table, u64_zero))};
         // (outside the table's windows the table's own first word is read, and the answer is 0 all the same)
         const Id slot{OpSelect(U64, inside, OpIAdd(U64, table, OpShiftLeftLogical(U64, page_index, Const(3U))), table)};
         const Id page{psb_load(U64, slot, 8U)};
@@ -1452,14 +1512,37 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         const Id func_id{OpFunction(type, inline_here ? spv::FunctionControlMask::Inline : spv::FunctionControlMask::DontInline,
                                     function_type)};
         const Id addr{OpFunctionParameter(U64)};
-        if (fallback_pages) {
+        if (fallback_pages || table_alone) {
             AddLabel();
             OpReturnValue(page_load(type, addr));
             OpFunctionEnd();
             return func_id;
         }
-        define_body(ssbo_member, addr, element_pointer, shift,
-                    [&](Id ssbo_pointer) { OpReturnValue(OpLoad(type, ssbo_pointer)); });
+        define_body(ssbo_member, addr, element_pointer, shift, [&](Id ssbo_pointer) {
+            const Id value{OpLoad(type, ssbo_pointer)};
+            if (table_check) {   // (the bound buffer's words against the table's, every component)
+                const Id from_table{page_load(type, addr)};
+                Id differ{};
+                const u32 components{shift == 2 ? 1U : shift == 3 ? 2U : 4U};
+                for (u32 i = 0; i < components; ++i) {
+                    const Id a{components == 1 ? value : OpCompositeExtract(U32[1], value, i)};
+                    const Id b{components == 1 ? from_table : OpCompositeExtract(U32[1], from_table, i)};
+                    const Id x{OpBitwiseXor(U32[1], a, b)};
+                    differ = i == 0 ? x : OpBitwiseOr(U32[1], differ, x);
+                }
+                // (the condition before the merge: OpSelectionMerge must come right before its branch, or RADV crashes)
+                const Id differs{OpINotEqual(U1, differ, zero)};
+                const Id then_label{OpLabel()};
+                const Id end_label{OpLabel()};
+                OpSelectionMerge(end_label, spv::SelectionControlMask::MaskNone);
+                OpBranchConditional(differs, then_label, end_label);
+                AddLabel(then_label);
+                record_miss(addr);
+                OpBranch(end_label);
+                AddLabel(end_label);
+            }
+            OpReturnValue(value);
+        });
         guest_lookup(addr, 1U << shift, [&](Id target) {
             if (gp_level >= 3) OpReturnValue(psb_load(type, target, 4U));
             else OpReturnValue(ConstantNull(type));
@@ -1993,6 +2076,11 @@ void EmitContext::DefineStorageBuffers(const Info& info, u32& binding) {
     if (info.uses_atomic_f32_add && !native_f32_add) {
         f32_add_cas = CasLoop(*this, Operation::FPAdd, storage_types.U32.array,
                               storage_types.U32.element, F32[1], spv::Scope::Device);
+        if (stage == Stage::Compute && !mesh_fallback && profile.supported_spirv >= 0x00010300 &&
+            profile.SupportsSubgroupStage(stage)) {
+            AddCapability(spv::Capability::GroupNonUniform);
+            f32_add_cas = SubgroupCasLoop(*this, f32_add_cas, storage_types.U32.array);
+        }
     }
     if (info.uses_atomic_f16x2_add) {
         f16x2_add_cas = CasLoop(*this, Operation::FPAdd, storage_types.U32.array,

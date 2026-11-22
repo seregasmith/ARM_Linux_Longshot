@@ -26,8 +26,8 @@
 
 namespace wb_learn {
 
-// The cap from RX_VK_WB_MAX_KB=<KB>: unset or 0, none (every written binding written back, the default). Off by default until
-// it shows a gain on more than one machine: on an RTX 3060 Ti and an RX 580 it wrote back 50 MB a frame less at the same fps
+// The cap from a set RX_VK_WB_MAX_KB=<KB>: empty or 0, none (every written binding written back). With the switch unset,
+// vk_memory.cpp uses 1024 KB.
 inline uint64_t max_bytes(const char* env) {
     if (!env || !*env) return 0;
     unsigned long long kb = 0;

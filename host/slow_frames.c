@@ -2,8 +2,8 @@
    sample_all_thread) samples every guest thread and the renderer's every HOS_SLOW_FRAMES_EVERY_MS (4 ms) for the whole run, into
    a ring in memory (the last several seconds), and nothing is written while the frames are on time. When a present comes
    HOS_SLOW_FRAME_MS (50 ms) or more after the one before it, the samples of that frame and of the 250 ms before it are written
-   to <path>-<n>.txt in HOS_SAMPLE_ALL's format ("<ms> <thread>|<frames>", after "# t0_ns"), which scripts/hotlist.py,
-   scripts/crit.py and scripts/cpu_report.py read: a stutter is caught as it happens, without sampling the whole run to a file
+   to <path>-<n>.txt in HOS_SAMPLE_ALL's format ("<ms> <thread>|<frames>", after "# t0_ns"), which scripts/perf.py's
+   threads, hotlist and cpu read: a stutter is caught as it happens, without sampling the whole run to a file
    and finding it afterwards. At most HOS_SLOW_FRAMES_MAX (40) files a run, at least a second apart. The sampling costs frame
    rate (a signal or a suspension per thread per sweep): a diagnostic, off by default, and not with HOS_SAMPLE_ALL (one
    sampler at a time). The log says each file written, with the frame's time. */
@@ -61,7 +61,7 @@ void hos_slow_frame_present(void) {
 }
 
 /* (the sampler) one thread's sample, "<thread>|<frames>", of the sweep that began at sweep_ns: all of a sweep's samples share its
-   time, as HOS_SAMPLE_ALL's lines share their millisecond (scripts/crit.py takes a time as one instant of every thread). A sample
+   time, as HOS_SAMPLE_ALL's lines share their millisecond (scripts/perf.py threads takes a time as one instant of every thread). A sample
    too long for the ring ends at its last whole frame */
 void hos_slow_sample(int64_t sweep_ns, const char *text) {
     if (!slow_ring) return;

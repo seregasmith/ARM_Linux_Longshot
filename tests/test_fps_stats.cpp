@@ -1,10 +1,12 @@
 // tests/test_fps_stats.py: gpu/vk/fps_stats.h, the FPS counter's levels, its ring of frames, the averages, the 1% low, the
-// graph's columns and scale
+// graph's columns and scale; and gpu/vk/upscale_route.h, the footer's render lines for each way the gameplay upscale is drawn
 #include "../gpu/vk/fps_stats.h"
+#include "../gpu/vk/upscale_route.h"
 
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #define CHECK(name, condition) do { if (!(condition)) { std::fprintf(stderr, "FAIL %s at line %d\n", name, __LINE__); return 1; } } while (0)
@@ -165,5 +167,57 @@ int main() {
     CHECK("long ms text", !std::strcmp(b, "250 ms"));
     fs::low_text(b, sizeof b, 52.4);
     CHECK("low text: a frame time, beside the frame time", !std::strcmp(b, "1% low 19.1 ms"));
+    {   // the footer's render lines: what drew (upscale_route::Sample), and the rows as set only for what was asked for
+        namespace ur = mkwvk::upscaler_rows;
+        namespace route = mkwvk::upscale_route;
+        std::string l[2];
+        const auto lines = [&](route::Route r, int engine, unsigned iw, unsigned ih, unsigned ow, unsigned oh, int upscaler,
+                               int resolution, bool fxaa = false) {
+            route::Sample smp;
+            smp.route = r, smp.engine = engine, smp.fxaa = fxaa, smp.in_w = iw, smp.in_h = ih, smp.out_w = ow, smp.out_h = oh;
+            route::footer_lines(&smp, upscaler, resolution, l);
+        };
+        route::footer_lines(nullptr, ur::GAME, 0, l);
+        CHECK("none lately: not in gameplay", l[0] == "Resolution: not in gameplay" && l[1] == "Upscaling: Built-in (chosen)");
+        lines(route::Route::Network, ur::GAME, 1920, 1080, 2560, 1440, ur::GAME, 2);
+        CHECK("the game's network at 75%", l[0] == "Resolution 1920x1080 to 2560x1440 (75%)" && l[1] == "Upscaling: Built-in");
+        lines(route::Route::Network, ur::GAME, 1707, 960, 2560, 1440, ur::GAME, 0);
+        CHECK("the game's network at Auto: the size it drew", l[0] == "Resolution 1707x960 to 2560x1440 (67%)");
+        lines(route::Route::Network, ur::GAME, 1920, 1080, 2560, 1440, ur::DLSS, 3);
+        CHECK("DLSS asked for, the network drew", l[1] == "Upscaling: Built-in (DLSS not running)");
+        lines(route::Route::StandIn, ur::GAME, 1920, 1080, 2560, 1440, ur::GAME, 2, true);
+        CHECK("the TAAU stand-in: FXAA", l[1] == "Upscaling: Built-in fallback, FXAA");
+        lines(route::Route::StandIn, ur::GAME, 1280, 720, 2560, 1440, ur::GAME, 4);
+        CHECK("the typed fallback: no AA", l[1] == "Upscaling: Built-in fallback, no AA");
+        lines(route::Route::Blit, ur::GAME, 1280, 720, 2560, 1440, ur::GAME, 4);
+        CHECK("the blit", l[1] == "Upscaling: linear blit, no AA");
+        lines(route::Route::Engine, ur::DLSS, 1707, 960, 2560, 1440, ur::DLSS, 3);
+        CHECK("DLSS Quality, by the share it drew", l[1] == "Upscaling: DLSS Quality");
+        lines(route::Route::Engine, ur::DLSS, 1280, 720, 2560, 1440, ur::DLSS, 0);
+        CHECK("DLSS at Auto: the stop it drew at, Auto as set", l[1] == "Upscaling: DLSS Performance (Auto)");
+        lines(route::Route::Engine, ur::FSR3, 2134, 1200, 2560, 1440, ur::FSR3, 8);
+        CHECK("FSR 3.1 between stops: the share", l[0] == "Resolution 2134x1200 to 2560x1440 (83%)" && l[1] == "Upscaling: FSR 3.1 83%");
+        lines(route::Route::Engine, ur::FSR3, 2560, 1440, 2560, 1440, ur::FSR3, 0);
+        CHECK("FSR 3.1 at Auto drawing at full size: native", l[0] == "Resolution 2560x1440 (100%)" &&
+                                                               l[1] == "AA: FSR 3.1");
+        lines(route::Route::Engine, ur::DLAA, 2560, 1440, 2560, 1440, ur::DLAA, 1);
+        CHECK("DLAA", l[1] == "AA: DLAA");
+        lines(route::Route::Engine, ur::DLSS, 1707, 960, 2560, 1440, ur::DLAA, 1);
+        CHECK("switching to DLAA: a queued DLSS frame says DLSS", l[1] == "Upscaling: DLSS Quality");
+        lines(route::Route::Engine, ur::XESS, 1280, 720, 2560, 1440, ur::XESS, 4);
+        CHECK("XeSS's own preset names", l[1] == "Upscaling: XeSS Balanced");
+        lines(route::Route::Stretch, ur::OFF, 1280, 720, 2560, 1440, ur::OFF, 4);
+        CHECK("Off at 50%", l[1] == "Upscaling: off (stretched)");
+        lines(route::Route::Stretch, ur::OFF, 2560, 1440, 2560, 1440, ur::OFF, 1);
+        CHECK("Off at 100%", l[0] == "Resolution 2560x1440 (100%)" && l[1] == "Upscaling: off, no AA");
+        lines(route::Route::Network, ur::GAME, 1920, 1080, 2560, 1440, ur::FSR4, 3);
+        CHECK("the longest line fits the footer's 40 characters", l[1].size() <= 40 && l[0].size() <= 40);
+        lines(route::Route::Engine, ur::XESS, 1280, 720, 3840, 2160, ur::XESS, 6);
+        CHECK("XeSS Ultra Performance at 4K fits", l[0].size() <= 40 && l[1].size() <= 40);
+        lines(route::Route::Network, ur::GAME, 2560, 1440, 2560, 1440, ur::GAME, 1);
+        CHECK("the built-in pass at 100%: anti-aliasing only", l[0] == "Resolution 2560x1440 (100%)" && l[1] == "AA: Built-in");
+        lines(route::Route::Engine, ur::FSR4_AA, 2560, 1440, 2560, 1440, ur::FSR4_AA, 1);
+        CHECK("FSR 4 Native AA", l[1] == "AA: FSR 4");
+    }
     std::puts("fps stats: all checks passed");
 }

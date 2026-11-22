@@ -58,7 +58,9 @@ static bool prepare_stopped() { return false; }
 static void pcache_init() {}
 static void ensure_layout(Program&) {}
 static bool taau_key(uint64_t) { return false; }
-static std::vector<NoteRef> pipe_notes_refs() { return refs_; }
+struct StartNoteRefs {};
+static StartNoteRefs start_note_refs_kept;
+static std::vector<NoteRef> start_note_refs(bool) { return refs_; }
 static std::vector<uint64_t> program_cache_compute_keys() { return computes_; }
 static std::string pipe_notes_path() { return notes_path_; }
 static bool pipe_note_at(FILE* f, int64_t at, PipeNote* out) {

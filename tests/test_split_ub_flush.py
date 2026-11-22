@@ -1,4 +1,4 @@
-"""A submission cut into parts (gpu/vk/vk_replay.cpp maybe_split, RX_VK_CHUNK) writes the stream's uniform updates into
+"""A submission cut into parts (gpu/vk/vk_replay.cpp maybe_split) writes the stream's uniform updates into
 guest memory once, at its last part, as an unsplit submission does (finish_recording), on Intel without VRAM mirrors
 (pools_mirrored, the iGPUs); elsewhere, or with RX_VK_SPLIT_UBFLUSH=1, each part's end writes those recorded so far, as
 before. Source checks plus the decision compiled

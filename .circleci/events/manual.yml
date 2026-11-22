@@ -1,4 +1,4 @@
-# API-triggered manual jobs (release dry-run or vulkan link). Docs: docs/ci.md.
+# API-triggered manual jobs (release dry-run or vulkan link). Docs: docs/dev/reference/ci.md.
 workflows:
   manual-vulkan-dlss:
     when: pipeline.parameters.vulkan_dlss

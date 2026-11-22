@@ -26,6 +26,7 @@ namespace Shader::Backend::SPIRV {
 constexpr uint64_t MESH_FALLBACK_CAPACITY = 5, MESH_FALLBACK_HEADER_WORDS = 8, MESH_FALLBACK_RECORD_WORDS = 16;
 // (mma_layout.h mesh_fallback_global_attributes: the records buffer then holds the attribute regions' pool past the records)
 constexpr uint64_t MESH_FALLBACK_POOL_OFFSET = 128, MESH_FALLBACK_POOL_BYTES = 64;
+constexpr uint64_t MESH_FALLBACK_RECORDS_LIMIT = 1024;   // (the largest records buffer made: these all fit)
 inline bool mesh_fallback_global_attributes = false;
 // (mma_layout.h mesh_fallback_shared_warp: its counters past the records, or past the pool; the pool's own wait counts there too)
 constexpr uint64_t WARP_COUNTER_BYTES = 16;

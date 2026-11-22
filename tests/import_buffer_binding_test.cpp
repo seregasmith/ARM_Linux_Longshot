@@ -123,6 +123,8 @@ bool import_dma_buf_pieces(uint64_t lo, uint64_t hi, uint64_t, Pool& p) {
     return true;
 }
 #define fscanf mock_fscanf
+[[maybe_unused]] static void radv_import_headroom(uint64_t) {}
+
 /* ACTUAL */
 #undef fscanf
 

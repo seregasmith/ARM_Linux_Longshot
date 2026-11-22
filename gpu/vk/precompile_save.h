@@ -32,6 +32,11 @@ struct Outcome {
     size_t bytes = 0;     // (the cache's size: written, or as it was)
     std::string detail;   // (kWriteFailed: the file; kError: the exception's words)
 };
+/// Whether the cache's file holds what the cache did, after that save
+inline bool in_file(const Outcome& o) { return o.what == Outcome::kWritten || o.what == Outcome::kSame; }
+/// Whether the cache holds nothing its file lacks, with no save: its data the size the file was last read or written at, which is
+/// what a save takes for nothing new. A size the driver did not give says nothing
+inline bool unchanged(bool sized, size_t held, size_t in_the_file) { return sized && held && held == in_the_file; }
 inline std::string mb(size_t bytes) {
     char b[32];
     snprintf(b, sizeof b, "%.1f MB", bytes / 1048576.0);

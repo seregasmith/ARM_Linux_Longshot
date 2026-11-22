@@ -10,18 +10,25 @@ RUN_ALL_ARGS = ["--cxx", "g++"]
 
 ROOT=Path(__file__).resolve().parents[1]
 def block(text,marker):
-    start=text.index(marker);end=text.index('{',start)+1;depth=1
+    start = text.index(marker)
+    end = text.index('{', start) + 1
+    depth = 1
     while depth:
-        depth+=(text[end]=='{')-(text[end]=='}');end+=1
+        depth += (text[end] == '{') - (text[end] == '}')
+        end += 1
     return text[start:end]
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--cxx',default='clang++');a=p.parse_args()
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--cxx', default='clang++')
+    a = p.parse_args()
     s=(ROOT/'gpu/vk/vk_replay.cpp').read_text(encoding='utf-8')
     direct=block(s,'void do_submit(')
-    start=s.index('        const uint64_t value = ',s.index('void do_present('));end=s.index('\n',s.index('        present_value = 0;',start))
+    start = s.index('        const uint64_t value = ', s.index('void do_present('))
+    end = s.index('\n', s.index('        present_value = 0;', start))
     present=s[start:end]
-    source_submit=block(s,'void submit_q(');source_present=block(s,'void present(')
+    source_submit = block(s, 'void submit_q(')
+    source_present = block(s, 'void present_tagged(')
     # (8c28ed7 takes the value first, for the queue it belongs to, then submits it: both lines, as the source has them)
     ordered_submit='\n'.join(next(l for l in source_submit.splitlines() if text in l)
                              for text in ('const uint64_t value = ++q_values;','submit_job(h, value, queue);'))
@@ -70,12 +77,18 @@ int main(){
     puts("PASS: 100 dump transitions, legacy/queued paths, no present double-allocation, reserved work ahead of pushed");
 }
 '''
-    work=ROOT/'work';work.mkdir(exist_ok=True)
+    work = ROOT / 'work'
+    work.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='timeline-modes-',dir=work) as temp:
-        d=Path(temp).resolve();d.relative_to(work.resolve());cpp=d/'fixture.cpp';exe=d/'fixture.exe';cpp.write_text(fixture,encoding='utf-8')
-        subprocess.run([a.cxx,'-std=c++20','-O2',str(cpp),'-o',str(exe)],check=True);subprocess.run([str(exe)],check=True)
+        d = Path(temp).resolve()
+        d.relative_to(work.resolve())
+        cpp, exe = d / 'fixture.cpp', d / 'fixture.exe'
+        cpp.write_text(fixture, encoding='utf-8')
+        subprocess.run([a.cxx, '-std=c++20', '-O2', str(cpp), '-o', str(exe)], check=True)
+        subprocess.run([str(exe)], check=True)
     # Both synchronous branches must retain ordering while allocating/recording, including dump mode.
     for body in (source_submit,source_present):
         branch=body[body.index('    if (!async_on()) {'):]
         assert branch.index('sync_order_mu')<branch.index('if (sync_waits_on())')
-if __name__=='__main__':main()
+if __name__ == '__main__':
+    main()

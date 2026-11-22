@@ -49,8 +49,10 @@ def main():
         color += '\n'+block(fi, 'void colour_constants(')
         start = fi.index('    const float max_luminance = in.native_pq')
         end = fi.index('    const int32_t rw =', start)
-        color += '\nstruct {bool first_frame=true,native_pq=false;float max_luminance=1;uint64_t sequence=0;} g;\n'
-        color += 'struct Input {bool reset=false,native_pq=false;float max_luminance=1;uint64_t sequence=1;};\n'
+        # (present: a HUD-less colour of the frame, Inputs::present; VK_NULL_HANDLE when the frame has its HUD)
+        color += '\n#define VK_NULL_HANDLE nullptr\n'
+        color += 'struct {bool first_frame=true,native_pq=false,hudless=false;float max_luminance=1;uint64_t sequence=0;} g;\n'
+        color += 'struct Input {bool reset=false,native_pq=false;float max_luminance=1;uint64_t sequence=1;const void* present=nullptr;};\n'
         color += 'bool reset_for(const Input& in){'+fi[start:end]+'return reset;}\n'
         begin = fi.index('    if (in.native_pq &&')
         finish = fi.index('    if (!prepare(', begin)
@@ -77,7 +79,11 @@ void color_cases(){
  ++in.sequence;assert(!reset_for(in));++in.sequence;in.max_luminance=4000;assert(reset_for(in));
  ++in.sequence;assert(!reset_for(in));++in.sequence;in.native_pq=false;assert(reset_for(in));
  ++in.sequence;in.max_luminance=7000;assert(!reset_for(in)); // SDR ignores HDR peak.
- in.sequence+=2;assert(reset_for(in));++in.sequence;in.reset=true;assert(reset_for(in));
+ in.sequence+=2;assert(reset_for(in));
+ // (a HUD-less source after one with the HUD, and back: not the same kind of colour)
+ ++in.sequence;in.present=&in;assert(reset_for(in));++in.sequence;assert(!reset_for(in));
+ ++in.sequence;in.present=nullptr;assert(reset_for(in));++in.sequence;assert(!reset_for(in));
+ ++in.sequence;in.reset=true;assert(reset_for(in));
 }
 '''
     else:

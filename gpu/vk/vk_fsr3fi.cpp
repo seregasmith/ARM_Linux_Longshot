@@ -194,7 +194,7 @@ struct Constants {
     float min_max_luminance[2];
     float tan_half_fov;
     /// (longshot) AMD's _pad1: the made frame's place between the frame before (0) and this one (1), which the patched
-    /// passes read (scripts/fsr3_shaders.py FI_PATCHES; AMD's own fix it at 0.5)
+    /// passes read (scripts/shaders.py FI_PATCHES; AMD's own fix it at 0.5)
     float interpolation_t;
     float jitter[2];
     float motion_vector_scale[2];
@@ -244,7 +244,7 @@ static_assert(sizeof(OfSpdConstants) == 32, "cbOF_SPD must match the SDK's layou
 // ---- state ----
 
 constexpr uint32_t kMaxMade = kFsr3fiMaxMade;   ///< made frames between two of the game's (vk_fsr3fi.h)
-/// (longshot) cbFI's dispatchFlags bit the patched interpolation reads: the HUD kept where it is (scripts/fsr3_shaders.py
+/// (longshot) cbFI's dispatchFlags bit the patched interpolation reads: the HUD kept where it is (scripts/shaders.py
 /// FI_PATCHES, KeepStaticPixels). AMD's own bits are 0 to 2, its debug views, which this backend never sets
 constexpr uint32_t kKeepStatic = 1u << 16;
 /// (longshot) And the bit that says the colour's alpha marks the HUD (Inputs::hud_mask; HudMaskInAlpha in the patched
@@ -340,9 +340,8 @@ constexpr VkImageSubresourceRange ALL_LEVELS{VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_RE
 /// The made frames of Frame generation by this backend: at FSR 3.1 FG on the Frame generation by row (the default where DLSS
 /// FG cannot run) all of them, and at DLSS FG where NVIDIA DLSS Frame Generation does not make them (vk_framegen.cpp asks it
 /// first: Frame generation's Auto), at any multiplier. Built-in FG on the row: the renderer's own blend. RX_VK_FSR_FG=1 asks for it over the row, =0 never.
-/// It was opt-in (RX_VK_FSR_FG=1, 2x only) while it moved the HUD with the scene, as this game draws its HUD into the same
-/// picture and has no HUD-less colour: smeared HUD, a ghost trail behind Link, a see-through rectangle (#1635 and seven
-/// duplicates, 2026-11-10). The patched passes keep it where it is (kKeepStatic; RX_VK_FSR_FG_HUD=0: AMD's as they were).
+/// AMD's passes move the HUD with the scene, as this game draws its HUD into the same picture and has no HUD-less colour:
+/// smeared HUD, a ghost trail behind Link, a see-through rectangle. The patched passes keep it where it is (kKeepStatic; RX_VK_FSR_FG_HUD=0: AMD's as they were).
 uint32_t asked() {
     static const int env = []() {
         const char* e = getenv("RX_VK_FSR_FG");
@@ -1144,7 +1143,7 @@ uint32_t generate(VkCommandBuffer cmd, const Inputs& in, const float* times, uin
         record_pass(cmd, P_FI_RECONSTRUCT_AND_DILATE, res, 6, render_x, render_y);
     }
     // (longshot) The SDK makes one frame, the midpoint, from here on. This makes `count` of them, each at its own t
-    // (scripts/fsr3_shaders.py FI_PATCHES: the patched passes read it from cbFI): everything above, the flow and the
+    // (scripts/shaders.py FI_PATCHES: the patched passes read it from cbFI): everything above, the flow and the
     // dilated inputs, is once a game frame and shared by them; the vector fields, the made frame's depth, the disocclusion
     // mask and the frame itself depend on t, so each made frame runs them again, from the setup that zeroes them.
     // A reset makes none (nothing to interpolate from), but its setup still runs once: it is what sets the frame counter
@@ -1263,5 +1262,17 @@ uint32_t generate(VkCommandBuffer cmd, const Inputs& in, const float* times, uin
 VkImage made_image(uint32_t i) { return i < g.ready ? g.made[i].image : VK_NULL_HANDLE; }
 
 void reset() { g.first_frame = true; }
+
+void release() {
+    if (g.ready) {
+        size_t n = 0;
+        for (Image* t : all_images()) n += t->image != VK_NULL_HANDLE, drop_image(*t);
+        for (Image& t : g.made) n += t.image != VK_NULL_HANDLE, drop_image(t);
+        g.ready = 0;
+        g.width = g.height = g.render_width = g.render_height = 0;
+        logf("vk: fsr3fi: frame generation off: its %zu images let go", n);
+    }
+    if (!dead.empty()) free_dead();
+}
 
 } // namespace mkwvk::fsr3fi

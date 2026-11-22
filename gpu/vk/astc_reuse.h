@@ -1,6 +1,6 @@
 // Decoded ASTC used again (vk_texture.cpp): a texture the game made again at another address, with the same blocks as one
-// it finalized, takes that one's image by a GPU copy instead of being decoded (and re-encoded as BC3) again. Issue 1069: every
-// area load decoded 0.8-1.2 GB of ASTC, revisits too, the earlier copies still held (2,383 -> 10,893 textures over a tour).
+// it finalized, takes that one's image by a GPU copy instead of being decoded (and re-encoded as BC3) again: otherwise every
+// area load decodes 0.8-1.2 GB of ASTC, revisits too, the earlier copies still held.
 // tests/test_astc_reuse.py
 #pragma once
 #include <cstdint>

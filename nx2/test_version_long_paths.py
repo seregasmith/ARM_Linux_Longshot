@@ -6,7 +6,7 @@ a folder past 260 was not listed at all, so its sources were left out without a 
 read the same way: a source left out of it changes the stamp, and every player's shader caches with it. Both hash each
 file's path relative to their root, so the same tree must give the same answer at any depth.
 
-Both files are loaded alone by other tools (scripts/dev_packs.py, the bake tools, the checks), so they keep long paths of
+Both files are loaded alone by other tools (`scripts/dev.py packs`, the checks), so they keep long paths of
 their own: this check loads them alone too, in a process where nothing else made long paths work (nx2/long_paths.py).
 
 On Windows with the long-paths setting off (the default) it fails without the fix; elsewhere, and with that setting on,

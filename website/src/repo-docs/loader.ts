@@ -3,7 +3,7 @@
 import type { Loader, LoaderContext } from 'astro/loaders';
 import { docsLoader } from '@astrojs/starlight/loaders';
 import { contentPages } from '../content-pages.ts';
-import { isSourceFile, renderPage, sourceFiles, testedFragmentsPath } from './pages.ts';
+import { isSourceFile, renderPage, sourceFiles } from './pages.ts';
 
 async function loadRepoPages(context: LoaderContext) {
   for (const slug of Object.keys(contentPages)) {
@@ -22,7 +22,7 @@ export function longshotDocsLoader(): Loader {
       await docs.load(context);
       await loadRepoPages(context);
       if (!context.watcher) return;
-      context.watcher.add([...sourceFiles, testedFragmentsPath]);
+      context.watcher.add(sourceFiles);
       for (const event of ['add', 'change', 'unlink'] as const) {
         context.watcher.on(event, async (file) => {
           if (isSourceFile(file)) await loadRepoPages(context);

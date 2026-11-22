@@ -78,8 +78,8 @@ inline const char* corner_name(int v) {
 /// is written (the game's own time, until then in the renderer's part)
 enum Part { kGame, kRender, kGpuWait, kPace, kWaitRender, kWaitGpu, kWaitMain, kParts };
 /// (longshot) The render thread's frame (threaded rendering): its recording and submitting (what is left), its waits for the
-/// parallel replay's workers, for the GPU (a recording slot), and for work (idle). Over the same present-to-present span
-enum RenderPart { kRtWork, kRtWorkers, kRtGpu, kRtIdle, kRtParts };
+/// GPU (a recording slot) and for work (idle). Over the same present-to-present span
+enum RenderPart { kRtWork, kRtGpu, kRtIdle, kRtParts };
 
 struct Frame {
     int64_t at_ns = 0;          // (its present)

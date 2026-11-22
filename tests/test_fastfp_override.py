@@ -13,6 +13,9 @@ tagged "# (fastfp)". This checks, game-free and without a compiler:
     region (its fast and exact copies, counted in the stats), a label in the middle of the run cuts it (the labelled
     instruction joins neither side), a run of 7 stays as
     the kit writes it, and an instruction with code after it (a game patch) is not joined;
+  - (longshot) a run of 4 multiplies, a store through x29, 4 more: one region of 8 whose store waits for a64_ff_end and is
+    the unmarked _sp store in both copies (frame_stores, ff_frame_stores); with A64_FASTFP_STORES=0, or in a function
+    holding an address the game's patches name (set_patched), the store ends the run and there is no region;
   - nx2/lift.py installs it before nx2/lift_fixes.py's wrapper, so lift_fixes and poll wrap the copy, not the other way round.
 
 It has teeth (each by hand, then restored, 2026-11-15): a line of the copy changed without the tag, the tag dropped from an
@@ -32,7 +35,8 @@ KIT = os.path.join(ROOT, "third_party", "a64-kit")
 sys.path.insert(0, os.path.join(KIT, "lift"))
 sys.path.insert(0, os.path.join(KIT, "tools"))
 sys.path.insert(0, os.path.join(ROOT, "nx2"))
-for name in ("A64_FASTFP", "A64_FASTFP_MIN", "A64_LOCAL_REGS", "A64_KEEP_FLAGS", "A64_MARK_FRAME", "A64_HOT_FUNCS"):
+for name in ("A64_FASTFP", "A64_FASTFP_MIN", "A64_FASTFP_STORES", "A64_FASTFP_VMOVES", "A64_LOCAL_REGS", "A64_KEEP_FLAGS",
+             "A64_MARK_FRAME", "A64_HOT_FUNCS"):
     os.environ.pop(name, None)
 import a64_lift  # noqa: E402
 import fastfp  # noqa: E402
@@ -160,11 +164,51 @@ def check_run():
     print("ok   the copy writes what the kit writes with A64_FASTFP=0; with it on, runs become regions, cut at labels and patches")
 
 
+STORE = "{ uint64_t _b=c->x[29]; int64_t _o=16; recomp_stp64(c,(_b+_o),c->vreg[3][0],c->vreg[3][1]); }"
+
+
+def check_stores():
+    """(longshot) a guest store inside a run (A64_FASTFP_STORES), through emit_function"""
+    def emit_stores(stores_env=None, patched=None):
+        os.environ["A64_FASTFP"] = "1"
+        if stores_env is not None:
+            os.environ["A64_FASTFP_STORES"] = stores_env
+        fastfp.set_patched(patched)
+        try:
+            L = lifter(False)
+            e = 0x1000
+            body, texts = {}, {}
+            for i in range(9):
+                w = 0x0e000000 + i
+                body[e + 4 * i] = (("op",), w)
+                texts[w] = (STORE if i == 4 else MUL % (3 + i % 4), 0)
+            body[e + 36] = (("ret",), 0xd65f03c0)
+            L.funcs = {e: (body, set())}
+            text, _ = fastfp.emit_function(L, e, texts)
+            return text, L.stats
+        finally:
+            os.environ.pop("A64_FASTFP", None)
+            os.environ.pop("A64_FASTFP_STORES", None)
+            fastfp.set_patched(None)
+    text, stats = emit_stores()
+    if stats.get("ff_regions") != 1 or stats.get("ff_ops") != 8:
+        fail("8 multiplies around a store: %s regions of %s ops, not one of 8:\n%s" % (stats.get("ff_regions"), stats.get("ff_ops"), text))
+    if "a64_ff_end(c, _ffm))) { recomp_stp64_sp(c,_ffpa0,_ffpd0,_ffpe0); goto L_ff_00001000; }" not in text or \
+            "recomp_stp64_sp(c,(_b+_o),c->vreg[3][0],c->vreg[3][1]);" not in text or "recomp_stp64(" in text:
+        fail("the region's store does not wait for a64_ff_end as the frame's unmarked store:\n" + text)
+    for kw, why in (({"stores_env": "0"}, "A64_FASTFP_STORES=0"), ({"patched": lambda: {0x1004}}, "a patched function")):
+        _, stats = emit_stores(**kw)
+        if stats.get("ff_regions"):
+            fail("%s: the store joined a region" % why)
+    print("ok   a store joins a run as a deferred store; not with A64_FASTFP_STORES=0, nor in a function the patches name")
+
+
 def main():
     check_text()
     check_tree()
     check_install_order()
     check_run()
+    check_stores()
     print("fastfp override: ok")
 
 

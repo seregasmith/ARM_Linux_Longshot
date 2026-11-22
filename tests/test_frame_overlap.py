@@ -1,5 +1,5 @@
 """Frame overlap: what a frame's recordings do to the game's memory, and where the GPU's time goes between them
-(gpu/vk/frame_overlap.h, gpu/vk/vk_replay.cpp; docs/development/frame-pipeline.md).
+(gpu/vk/frame_overlap.h, gpu/vk/vk_replay.cpp; docs/dev/reference/architecture.md, The frame pipeline).
 
 OoT's main thread waits once a frame, with no timeout, for the fence of the frame before's present, and makes the CPU signal
 its next frame's work waits for only after it: the render thread gets a frame once the GPU has finished the one before. The
@@ -9,11 +9,11 @@ does: an early answer to the game's wait (RX_VK_FRAME_WAIT_EARLY), short first p
 before it sleeps were each built, measured to gain nothing, and removed (the page has the numbers).
 
 The rules are compiled and run (tests/frame_overlap_test.cpp). And the source:
-- the game's waits are wait(), parts end by RX_VK_CHUNK alone, and the render thread sleeps on its queue: none of the
+- the game's waits are wait(), parts end by maybe_split alone, and the render thread sleeps on its queue: none of the
   three removed things is back;
 - every recording is counted at its end, before its submit; a frame ends at its present's own recording;
 - a draw or dispatch is only counted where it pushes its constants: nothing there ends a part;
-- the presenter thread (RX_VK_PRESENT_THREAD) has the swapchain to itself: present_image waits for it before it acquires.
+- the presenter thread (on every PC) has the swapchain to itself: present_image waits for it before it acquires.
 
 python -I -B tests/test_frame_overlap.py [--cxx g++]
 """
@@ -41,15 +41,14 @@ def check_source():
     replay = (vk / "vk_replay.cpp").read_text(encoding="utf-8")
     draw = (vk / "vk_draw.cpp").read_text(encoding="utf-8")
     table = (vk / "switches.def").read_text(encoding="utf-8")
-    docs = (ROOT / "docs" / "development.md").read_text(encoding="utf-8")
-    page = (ROOT / "docs" / "development" / "frame-pipeline.md").read_text(encoding="utf-8")
+    page = (ROOT / "docs" / "dev" / "reference" / "architecture.md").read_text(encoding="utf-8")
     need('#include "frame_overlap.h"' in replay, "vk_replay.cpp no longer includes frame_overlap.h")
 
     # (the early wait is gone: measured, nothing to gain)
     need("t.nvn_wait = wait;" in replay and '"RX_VK_FRAME_WAIT_EARLY"' not in replay and "RX_VK_FRAME_WAIT_EARLY" not in table,
          "the game's waits are not wait(), or the removed early wait is back")
-    need("development/frame-pipeline.md" in docs and "vk: frame overlap (600 presents)" in page and "RX_VK_FRAME_WAIT_EARLY" in page,
-         "docs/development.md does not link the frame pipeline's page, or the page lost the log line or the record of the early wait")
+    need("\n## The frame pipeline\n" in page and "vk: frame overlap (600 presents)" in page and "Answering the frame wait early" in page,
+         "docs/dev/reference/architecture.md lost the frame pipeline's section, its log line or the record of the early wait")
 
     # (every recording counted at its end; a frame ends at its present's own recording)
     end = block(replay, "void fo_recording_end(const Recording& r) {")
@@ -105,17 +104,17 @@ def check_source():
          "looking at the next capture takes it, or changes it")
     need("*capture = st_sync_cap_pages, *live = st_sync_live_pages;" in block(memory, "void memory_sync_sources(int64_t* capture, int64_t* live) {"),
          "the parts' counts are not mirror_sync's own (this submit's capture, guest memory as it is)")
-    need('"vk: frame ahead (600 presents): ' in block(replay, "void fo_log(double frames) {") and "vk: frame ahead (600 presents)" in page,
+    need('"vk: frame ahead (600 presents): ' in block(replay, "void fo_log(double frames) {") and "`vk: frame ahead` lines" in page,
          "the frame ahead line is gone from the log or from the page")
     for word in ("part_end_wanted", "submit_recording(", "vkQueueSubmit", "split_part("):
         need(word not in sig, "the frame ahead counters change what is recorded or submitted: " + word)
 
     # (the presenter thread: the swapchain is one thread's at a time)
-    image = block(replay, "void present_image(")
+    image = block(replay, "void present_image_with_trial(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view, bool source_srgb, bool allow_scale, OutputTrialSource trial) {")
     need(image.rindex("present_thread_drain();", 0, image.index("vkAcquireNextImageKHR(")) > image.index("frame_index = (slot + 1) % slots;"),
          "present_image acquires the next image while the presenter thread may still present the last")
     copy = block(replay, "bool presenter_wait_copy(VkFence done) {")
-    need("step < 40;" in copy and "presenter_wait_idle(lk, 5000)" in block(replay, "void present_thread_drain() {"),
+    need("step < 40;" in copy and "presenter_wait_idle(lk, 5000)" in block(replay, "bool present_thread_drain() {"),
          "the presenter's own wait for the copy is not shorter than a drain's wait for the presenter")
 
 

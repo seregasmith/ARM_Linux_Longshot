@@ -126,7 +126,7 @@ class LinkSkipTests(unittest.TestCase):
         self.assertEqual(self.count(), 2)
 
     def test_a_map_deleted_is_written_again(self):
-        """(mooki on #30: the build asks every link for a map, which prof.py and samap.py read)"""
+        """(mooki on #30: the build asks every link for a map, which the profiling tools read)"""
         self.link()
         os.remove(self.map)
         self.link()

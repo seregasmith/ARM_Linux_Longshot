@@ -1,5 +1,5 @@
 // (longshot) Frame overlap: what a frame's recordings do to the game's memory, and where the GPU's time goes between them
-// (vk_replay.cpp; docs/development/frame-pipeline.md has the frame's whole sequence and
+// (vk_replay.cpp; docs/dev/reference/architecture.md, The frame pipeline, has the frame's whole sequence and
 // what was measured). Kept apart so the rules are checked without the renderer (tests/test_frame_overlap.py).
 //
 // The game waits once a frame, with no timeout, for the fence of the frame before's present, and only then says that its next
@@ -82,7 +82,7 @@ constexpr int gap_column(int working_before) {
     return working_before < 0 ? 0 : working_before >= kGapColumns ? kGapColumns - 1 : working_before;
 }
 
-// ---- Frame ahead: what the signal's job took that came with the signal (counters only; docs/development/frame-pipeline.md) ----
+// ---- Frame ahead: what the signal's job took that came with the signal (counters only; docs/dev/reference/architecture.md, The frame pipeline,) ----
 // The frame's submits are in the render thread's hands ~2 ms before the CPU's signal, and its draws are recorded in the
 // signal's job. Could a part have been recorded when the last submit came? Not if it took something that came after it.
 // Counted per recording with a draw of the signal's job (a part):

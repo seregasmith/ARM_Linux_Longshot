@@ -1,6 +1,6 @@
 // (longshot) RX_VK_TRANSLATE_WAIT_MS: how long, in all, each recording thread waits in a frame for shaders still translating
-// before leaving their draws on earlier frames' targets out (vk_draw.cpp, draw). Off (-1, each translation waited out as
-// #1573 does) unless set.
+// before leaving their draws on earlier frames' targets out (vk_draw.cpp, draw). Off (-1, each translation waited out)
+// unless set.
 #pragma once
 #include <cmath>
 #include <cstdlib>

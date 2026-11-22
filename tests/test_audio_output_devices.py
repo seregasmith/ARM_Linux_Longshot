@@ -4,10 +4,13 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 
 RUN_ALL_ARGS = ["--cc", "clang", "--cxx", "{cxx}"]
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'tests'))
+from menu_model_fixture import menu_text  # noqa: E402
 
 def source_contracts():
     menu = (ROOT / 'gpu/vk/vk_menu.cpp').read_text(encoding='utf-8')
@@ -15,10 +18,12 @@ def source_contracts():
     api = (ROOT / 'gpu/vk/vk_api.h').read_text(encoding='utf-8')
     build = (ROOT / 'nx2/build.py').read_text(encoding='utf-8')
     devices = (ROOT / 'host/audio_output_devices.c').read_text(encoding='utf-8')
-    assert re.search(r'\{TAB_AUDIO, "Microphone", &opts\.mic,', menu)
-    assert 'TAB_GAMEPLAY, "Microphone"' not in menu
-    assert re.search(r'\{TAB_AUDIO, "Output device", &output_pick,', menu)
-    assert re.search(r'\{TAB_AUDIO, "Speaker layout", &opts\.audio_output,', menu)
+    # (the rows: vk_menu.cpp's and its modules', #1633: the Audio tab's are gpu/vk/menu/audio.cpp's)
+    rows = menu_text(ROOT)
+    assert re.search(r'\{TAB_AUDIO, "Microphone", &opts\.mic,', rows)
+    assert 'TAB_GAMEPLAY, "Microphone"' not in rows
+    assert re.search(r'\{TAB_AUDIO, "Output device", &output_pick,', rows)
+    assert re.search(r'\{TAB_AUDIO, "Speaker layout", &opts\.audio_output,', rows)
     assert 'if (r.value == &opts.audio_output) return "audio_output";' in menu
     tick = menu[menu.index('void menu_tick()'):]
     assert tick.count('refresh_outputs();') == 1, 'Device discovery must not poll on the render-frame path'
@@ -31,7 +36,7 @@ def source_contracts():
     check_host_callbacks(api, backend)
     assert '#include "options_path.h"' in devices and 'hos_options_file()' in devices
     assert 'hos_game_path_a' not in devices
-    assert re.search(r'\{TAB_AUDIO, "Speaker layout", &opts\.audio_output, 0, 3,', menu)
+    assert re.search(r'\{TAB_AUDIO, "Speaker layout", &opts\.audio_output, 0, 3,', rows)
     assert 'audio_mono(pcm, FRAME, out_channels, rx_option(HOS_OPT_AUDIO_OUTPUT, 0) == 3);' in audio
     assert 'translator_files.stamp(vk)' in build and 'LONGSHOT_SHADER_STAMP' in build
     assert 'DRV_QUERYFUNCTIONINSTANCEID' in devices and 'calloc(total ? total : 1' in devices
@@ -142,6 +147,7 @@ Host h{count,info,select_output,status,now},*host=&h;
 namespace i18n { const char* tr(const char* text) { return text; } }
 @GLOBALS@
 struct Row{int*value;int hi;}; Row rows[]={{&output_pick,0}};
+void menu_row_top(const int* value,int hi){for(Row& r:rows)if(r.value==value)r.hi=hi;}   // (vk_menu.cpp's)
 @HELPERS@
 int main(){
     for(int i=0;i<80;i++)names.push_back({"id-"+std::to_string(i),i<2?"Duplicate":"Output "+std::to_string(i)});
@@ -186,8 +192,12 @@ def main():
         src, exe = work/'parser.c', work/'parser.exe'
         src.write_text(PARSER, encoding='utf-8')
         run([args.cc,'-std=c11','-Wall','-Wextra','-Werror','-I',ROOT,'-I',header,src,'-o',exe]);run([exe])
-        globals_text=menu[menu.index('// The playback row stores'):menu.index('constexpr int kMaxMics')]
-        helpers=menu[menu.index('void refresh_outputs()'):menu.index('void mic_tell_host()')]
+        # (the playback row's code: the Audio module's, gpu/vk/menu/audio.cpp, #1633)
+        module = (ROOT / 'gpu/vk/menu/audio.cpp').read_text(encoding='utf-8')
+        pick = re.search(r'^int output_pick = 0;.*\n', module, re.M)
+        assert pick, 'gpu/vk/menu/audio.cpp: no output_pick'
+        globals_text=pick.group(0)+module[module.index('// The playback row stores'):module.index('// (longshot) the Microphone row:')]
+        helpers=module[module.index('void refresh_outputs()'):module.index('void mic_tell_host()')]
         src,exe=work/'menu.cpp',work/'menu.exe'
         src.write_text(MENU.replace('@GLOBALS@',globals_text).replace('@HELPERS@',helpers),encoding='utf-8')
         run([args.cxx,'-std=c++17','-Wall','-Wextra','-Werror','-I',header,src,'-o',exe]);run([exe])

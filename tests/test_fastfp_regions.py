@@ -3,9 +3,17 @@ plain IEEE single precision, game-free.
 
 Python, no compiler:
   - ff_eligible: loads, vector moves, the FPX helpers and the exact compare blocks' FPCR tests and FPSR |= may join; a
-    store, a page mark, a raw guest pointer (a memcpy store), an MRS or MSR of FPSR/FPCR, a call, a branch may not;
+    page mark, a raw guest pointer (a memcpy store), an MRS or MSR of FPSR/FPCR, a call, a branch may not;
+  - (longshot) nx2/fastvec.py's vector moves and shuffles (a64_vld16, a64_vdup, A64_EXT16, A64_EXT8, a64_tbl1) may join,
+    unless A64_FASTFP_VMOVES=0;
+  - (longshot) guest stores (A64_FASTFP_STORES): STR / STP, through a register, SP or x29, with writeback, may join; with
+    the switch off none may; STLR, a store under a condition, a text whose load follows its store may not. ff_split cuts
+    a run before a load that follows a store in it (not before one that comes before every store);
   - ff_region: a run below A64_FASTFP_MIN float ops is the exact text unchanged; above it the fast copy names the a64_ff_
-    ops, saves and puts back every register the run names, and keeps the exact copy.
+    ops, saves and puts back every register the run names, and keeps the exact copy. With stores: the fast copy calls no
+    store helper, its stores' address and values go to locals, stored after a64_ff_end passed, in their order, with the
+    same helpers; a store through x29 is the unmarked _sp one in both copies once frame_stores and ff_frame_stores ran;
+    the exact copy is the run's text unchanged; A64_FASTFP=check compares each store's address and values too.
 
 C (skipped without a compiler or on a host that is not x86-64): a region ff_region makes from lifted-style text (vector
 FMUL/FADD/FSUB in place, the 4- and 2-lane forms, scalar FADD/FSUB/FMUL/FDIV/FSQRT, an integer register written), with
@@ -19,6 +27,12 @@ FASTFP_HEADER and stand-in exact helpers that count their calls and note the reg
   - a tiny exact product without FZ, read again by the next op: the exact copy (a denormal operand flags it);
   - overflow and divide-by-zero: fast, the infinities, FPSR.OFC / FPSR.DZC set;
   - the gate closed (FPSR.IXC clear, or HOS_NO_FASTFP set): the exact copy;
+  - (longshot) the run's three guest stores (a 32-bit store through x19, one through x19 with writeback, an STP of a
+    vector register's halves through x29): on the fast copy, guest memory and the store order as the reference's, the two
+    x19 stores marked and the x29 pair not (_sp); on every fall-back, each store made once (by the exact copy, nothing
+    by the fast one), in order;
+  - (longshot) the same region written with A64_FASTFP=check: the random runs clean, and no mismatch counted (the stores'
+    addresses and values compared as well as the registers).
   - (longshot) a scalar FMSUB in the region (FMA3 at x86-64-v3, the exact helper at v2), and at v3 the cases where x86's
     FMA is not Arm's: 0 * inf + a quiet NaN, a product rounded up to 2^-126 (FZ off and on), a subnormal addend under
     FZ: the exact copy. (Dropping fma32_fma32 from FF_CONV fails the 2^-126 cases.) Each op alone against its exact
@@ -27,6 +41,9 @@ FASTFP_HEADER and stand-in exact helpers that count their calls and note the reg
 It has teeth (each by hand, then restored, 2026-11-11):
   - the AVX ops' operands swapped (A64_FF_OP's "%2, %1, %0" made "%1, %2, %0"): the random runs differ at v3;
   - the invalid flag no longer sending the region to its exact copy (a64_ff_end's 0x13 made 0x12): 0 * inf fails.
+  (longshot, 2026-11-20) the deferred stores made before a64_ff_end (the fast copy storing in place): the fall-backs
+  store twice; the deferred stores in reverse order: the store order differs; ff_split's cut dropped: the load after a
+  store joins the region (the Python check).
 
     python -I -B tests/test_fastfp_regions.py [--cc clang]
 """
@@ -45,6 +62,8 @@ sys.path.insert(0, os.path.join(KIT, "tools"))
 sys.path.insert(0, os.path.join(ROOT, "nx2"))
 os.environ["A64_FASTFP"] = "1"
 os.environ.pop("A64_FASTFP_MIN", None)
+os.environ.pop("A64_FASTFP_STORES", None)
+os.environ.pop("A64_FASTFP_VMOVES", None)
 import fastfp as L  # noqa: E402  (the rules and the header live in nx2, outside the kit)
 import toolchain  # noqa: E402
 
@@ -59,9 +78,7 @@ def check_python():
           "a64_vfpx_mul32(c,c->vreg[3],c->vreg[1],c->vreg[2],4);",
           "{ if (!a64_fcmp32(c,c->vreg[0],a64_vzero)) { if(c->fpcr & (1ULL<<24)) { c->fpsr|=128; } } }",
           "{ uint8_t _s[16]; memcpy(_s,c->vreg[3],16); a64_vst16(c->vreg[4],_s); }"]
-    bad = ["recomp_store64(c,c->x[1] + 8,c->x[2]);",
-           "{ recomp_stp64(c,(c->x[12]+c->x[13]),c->vreg[20][0],c->vreg[20][1]); }",
-           "memcpy(A64_PTR(c->x[0]), c->vreg[1], 16);",
+    bad = ["memcpy(A64_PTR(c->x[0]), c->vreg[1], 16);",
            "c->x[3] = c->fpsr;",          # MRS FPSR
            "c->fpcr = c->x[3];",          # MSR FPCR
            "A64_ICALL(c, c->x[8]);",
@@ -72,6 +89,47 @@ def check_python():
     for t in bad:
         if L.ff_eligible(t):
             fail("should end a region: %s" % t)
+    stores = ["recomp_store64(c,c->x[1] + 8,c->x[2]);",
+              "{ recomp_stp64(c,(c->x[12]+c->x[13]),c->vreg[20][0],c->vreg[20][1]); }",
+              "{ uint64_t _v=0; memcpy(&_v,&c->vreg[0][0],4); recomp_store32(c,(c->x[19]+4ULL),_v); }",
+              "{ uint64_t _b=c->x[29]; int64_t _o=-16; recomp_stp64(c,(_b+_o),c->vreg[8][0],c->vreg[8][1]); }",
+              "{ uint64_t _b=c->x[0]; int64_t _o=8; recomp_store32(c,(_b+_o),c->x[3]); c->x[0]=_b+_o; }",
+              "recomp_store32_sp(c,c->x[31] + 104,c->x[25]);"]
+    no_stores = ["recomp_store32(c,c->x[1],c->x[2]);",                                # STLR (suyu's spelling)
+                 "if (c->x[1]) { recomp_store32(c,c->x[1] + 0,c->x[2]); }",           # under a condition
+                 "recomp_store32(c,c->x[1] + 0,c->x[2]); c->x[3]=recomp_load32(c,c->x[4] + 0);",   # its own load after it
+                 "{ uint64_t _a=c->x[0]; uint32_t _o = __atomic_exchange_n((uint32_t *)A64_PTR(_a), (uint32_t)c->x[1], "
+                 "__ATOMIC_SEQ_CST); A64_MARK(_a, 4); c->x[2] = (uint64_t)_o; }"]   # atomic
+    for t in stores:
+        if not L.ff_eligible(t, True):
+            fail("a store should join a region (A64_FASTFP_STORES): %s" % t)
+        if L.ff_eligible(t, False):
+            fail("a store should end a region with A64_FASTFP_STORES=0: %s" % t)
+    for t in no_stores:
+        if L.ff_eligible(t, True):
+            fail("should end a region even with stores on: %s" % t)
+    # (nx2/fastvec.py's vector moves and shuffles join, unless A64_FASTFP_VMOVES=0)
+    vmoves = ["{ a64_vld16(c->vreg[0],(c->x[9]+1184ULL)); }", "a64_vdup(c->vreg[7],c->vreg[7],8,4,1);",
+              "A64_EXT16(c->vreg[1],c->vreg[2],c->vreg[3],4);", "A64_EXT8(c->vreg[1],c->vreg[2],c->vreg[3],4);",
+              "a64_tbl1(c->vreg[1],c->vreg[2],c->vreg[3],1);"]
+    for t in vmoves:
+        if not L.ff_eligible(t, False):
+            fail("a vector move should join a region: %s" % t)
+    os.environ["A64_FASTFP_VMOVES"] = "0"
+    try:
+        for t in vmoves:
+            if L.ff_eligible(t, False):
+                fail("a vector move should end a region with A64_FASTFP_VMOVES=0: %s" % t)
+    finally:
+        os.environ.pop("A64_FASTFP_VMOVES")
+    # (a load after a store cuts the run there, a64_vld16's too; one before every store does not)
+    ld = "c->x[8]=recomp_load64(c,c->x[3] + 0);"
+    mul = "a64_vfpx_mul32(c,c->vreg[1],c->vreg[1],c->vreg[2],4);"
+    st = stores[2]
+    run_ = [(4 * i, t) for i, t in enumerate([ld, mul, st, mul, ld, mul, st, st, mul, vmoves[0], mul])]
+    parts = [[t for _, t in p] for p in L.ff_split(run_)]
+    if parts != [[ld, mul, st, mul], [ld, mul, st, st, mul], [vmoves[0], mul]]:
+        fail("ff_split cut the run as %s" % parts)
     few = [(0x1000 + 4 * i, "a64_vfpx_add32(c,c->vreg[1],c->vreg[1],c->vreg[2],4);") for i in range(L.ff_min() - 1)]
     text, n = L.ff_region(few)
     if n or text != "\n".join(t for _, t in few):
@@ -83,13 +141,67 @@ def check_python():
                  "c->vreg[1][1] = _ffv11", "c->fpsr = _ffsr", "a64_vfpx_add32(", "L_ff_00001000:;"):
         if need not in text:
             fail("the region text has no %r" % need)
+    check_python_stores()
     print("fastfp regions: python checks passed")
+
+
+def check_python_stores():
+    """(longshot) a region with guest stores: the deferred stores' shape, their order, the exact copy unchanged"""
+    mul = "a64_vfpx_mul32(c,c->vreg[%d],c->vreg[1],c->vreg[2],4);"
+    s1 = "{ uint64_t _v=0; memcpy(&_v,&c->vreg[3][0],4); recomp_store32(c,(c->x[19]+4ULL),_v); }"
+    s2 = "{ uint64_t _b=c->x[29]; int64_t _o=-16; recomp_stp64(c,(_b+_o),c->vreg[4][0],c->vreg[4][1]); }"
+    s3 = "recomp_store64(c,c->x[19] + 8,c->x[2]);"
+    texts = [mul % 3] * 4 + [s1] + [mul % 4] * 4 + [s2, s3]
+    items = [(0x2000 + 4 * i, t) for i, t in enumerate(texts)]
+    exact = "\n".join(texts)
+    text, k, n = L.ff_regions(items, 8, True)
+    if (k, n) != (1, 8):
+        fail("a run of 8 multiplies and 3 stores: %d regions of %d ops, not one of 8" % (k, n))
+    head, _, rest = text.partition("\nif (RECOMP_LIKELY(a64_ff_end(c, _ffm))) { ")
+    fast = head.split("\n", 1)[1]
+    if not rest or "recomp_st" in fast:
+        fail("the fast copy stores, or its stores do not wait for a64_ff_end:\n" + text)
+    for need in ("(_ffa0=((c->x[19]+4ULL)),_ffd0=(_v))", "(_ffpa1=((_b+_o)),_ffpd1=(c->vreg[4][0]),_ffpe1=(c->vreg[4][1]))",
+                 "(_ffa2=(c->x[19] + 8),_ffd2=(c->x[2]))", "uint64_t _ffa0, _ffd0; uint64_t _ffpa1, _ffpd1, _ffpe1; "):
+        if need not in text:
+            fail("the region text has no %r:\n%s" % (need, text))
+    deferred = rest.split("\n", 1)[0]
+    want = "recomp_store32(c,_ffa0,_ffd0); recomp_stp64(c,_ffpa1,_ffpd1,_ffpe1); recomp_store64(c,_ffa2,_ffd2); goto L_ff_00002000; }"
+    if deferred != want:
+        fail("the deferred stores are\n  %s\nnot\n  %s" % (deferred, want))
+    if ("\n%s\nL_ff_00002000:; }" % exact) not in text:
+        fail("the exact copy is not the run's text unchanged")
+    framed = L.ff_frame_stores(L.frame_stores(text))
+    if "recomp_stp64_sp(c,_ffpa1,_ffpd1,_ffpe1)" not in framed or "recomp_stp64_sp(c,(_b+_o)" not in framed or \
+            "recomp_store32_sp" in framed or "recomp_store64_sp" in framed:
+        fail("the x29 pair is not the unmarked _sp store in both copies (and only it):\n" + framed)
+    os.environ["A64_FASTFP_STORES"] = "0"
+    try:
+        if L.ff_regions(items, 8) != (L.ff_region(items, 8)[0], 1, 8):
+            fail("A64_FASTFP_STORES=0: the run is not written as ff_region writes it")
+    finally:
+        os.environ.pop("A64_FASTFP_STORES")
+    os.environ["A64_FASTFP"] = "check"
+    try:
+        text, _ = L.ff_region(items, 8)
+    finally:
+        os.environ["A64_FASTFP"] = "1"
+    for need in ("_ffa0 == _ffoa0 && (uint32_t)_ffd0 == (uint32_t)_ffod0",
+                 "_ffpa1 == _ffpoa1 && (uint64_t)_ffpd1 == (uint64_t)_ffpod1 && (uint64_t)_ffpe1 == (uint64_t)_ffpoe1",
+                 "(_ffoa0=((c->x[19]+4ULL)),_ffod0=(_v),recomp_store32(c,_ffoa0,_ffod0))"):
+        if need not in text:
+            fail("A64_FASTFP=check: the region text has no %r:\n%s" % (need, text))
+    print("fastfp regions: python store checks passed")
 
 
 # lifted-style instruction texts for the C region (ops in place, so the exact copy must see the inputs put back)
 OPS = ["a64_vfpx_mul32(c,c->vreg[0],c->vreg[0],c->vreg[1],4);",                       # v0 = v0 * v1
        "a64_vfpx_add32(c,c->vreg[2],c->vreg[0],c->vreg[3],4);",                       # v2 = v0 + v3
+       # (longshot) STR s2, [x19, #4]
+       "{ uint64_t _v=0; memcpy(&_v,&c->vreg[2][0],4); recomp_store32(c,(c->x[19]+4ULL),_v); }",
        "a64_vfpx_sub32(c,c->vreg[4],c->vreg[3],c->vreg[1],2);",                       # v4 = v3 - v1 (2 lanes)
+       # (longshot) STR w-of-v4, [x19, #8]! (writeback: x19 moves, the next stores use the old one)
+       "{ uint64_t _b=c->x[19]; int64_t _o=8; recomp_store32(c,(_b+_o),c->vreg[4][0]); c->x[19]=_b+_o; }",
        "a64_vfpx_add32(c,c->vreg[5],c->vreg[1],c->vreg[3],2);",                       # v5 = v1 + v3 (2 lanes)
        "{ uint32_t _n[4],_m[4],_r[4]={0};memcpy(_n,c->vreg[1],16);memcpy(_m,c->vreg[3],16);"
        "{uint64_t _a=_n[0],_b=_m[0],_v=0;_v=a64_fpx_add32_add32(c,_a,_b);_r[0]=(uint32_t)_v;}"
@@ -97,6 +209,8 @@ OPS = ["a64_vfpx_mul32(c,c->vreg[0],c->vreg[0],c->vreg[1],4);",                 
        "{uint64_t _a=_n[2],_b=_m[2],_z=(_a^_b)&0x80000000ULL,_v=0;_v=a64_fpx_mul32_fma32(c,_a,_b,_z);_r[2]=(uint32_t)_v;}"
        "{uint64_t _a=_n[3],_b=_m[3],_v=0;_v=a64_fpx_div32_div32(c,_a,_b);_r[3]=(uint32_t)_v;}"
        "memcpy(c->vreg[6],_r,16);}",                                                    # v6 = scalar lanes
+       # (longshot) STP d-halves of v6, [x29, #16]: a frame store (unmarked once frame_stores ran)
+       "{ uint64_t _b=c->x[29]; int64_t _o=16; recomp_stp64(c,(_b+_o),c->vreg[6][0],c->vreg[6][1]); }",
        "{ uint32_t _n[4],_r[4]={0};memcpy(_n,c->vreg[3],16);"
        "{uint64_t _a=_n[0],_v=0;_v=a64_fpx_sqrt32_sqrt32(c,_a);_r[0]=(uint32_t)_v;} memcpy(c->vreg[7],_r,16);}",
        # (longshot) FMSUB s8, s9, s10, s11 as the lifter emits it: v8 = v11 - v9 * v10 (a64_ff_fma32_fma32)
@@ -134,9 +248,20 @@ static uint64_t a64_fpx_sqrt32_sqrt32(Ctx *c, uint64_t a) { (void)c; note(); ret
 /* (not counted: at x86-64-v2 the fast copy calls it too, as a64_ff_fma32_fma32; the region's other ops count the
    exact copy) */
 static uint64_t a64_fpx_fma32_fma32(Ctx *c, uint64_t a, uint64_t b, uint64_t z) { (void)c; return B(fmaf(F(a), F(b), F(z))); }
+/* (longshot) stand-in guest stores: guest memory a small array, each store logged in order, the marked ones counted */
+static uint8_t mem[256]; static int nst, nmark; static uint64_t slog[16];
+static void st_(uint64_t a, const void *p, int n, int mark) { memcpy(mem + (a & 0x7f), p, n); if (nst < 16) slog[nst] = a; nst++; nmark += mark; }
+static void recomp_store32(Ctx *c, uint64_t a, uint64_t v) { uint32_t t = (uint32_t)v; (void)c; st_(a, &t, 4, 1); }
+static void recomp_stp64(Ctx *c, uint64_t a, uint64_t v0, uint64_t v1) { uint64_t t[2] = {v0, v1}; (void)c; st_(a, t, 16, 1); }
+static void recomp_stp64_sp(Ctx *c, uint64_t a, uint64_t v0, uint64_t v1) { uint64_t t[2] = {v0, v1}; (void)c; st_(a, t, 16, 0); }
+static void mem_reset(void) { memset(mem, 0, sizeof mem); nst = nmark = 0; memset(slog, 0, sizeof slog); }
 %(header)s
 static void region(Ctx *__restrict c) {
 %(region)s
+}
+/* (longshot) the same run written with A64_FASTFP=check */
+static void region_check(Ctx *__restrict c) {
+%(check)s
 }
 /* the region's ops in plain C (the reference for normal operands) */
 static void reference(Ctx *c) {
@@ -146,9 +271,12 @@ static void reference(Ctx *c) {
     memcpy(c->vreg[0], v0, 16);
     for (int j = 0; j < 4; j++) r[j] = v0[j] + v3[j];
     memcpy(c->vreg[2], r, 16);
+    recomp_store32(c, c->x[19] + 4, c->vreg[2][0]);
     memset(r, 0, 16); for (int j = 0; j < 2; j++) r[j] = v3[j] - v1[j]; memcpy(c->vreg[4], r, 16);
+    recomp_store32(c, c->x[19] + 8, c->vreg[4][0]); c->x[19] += 8;
     memset(r, 0, 16); for (int j = 0; j < 2; j++) r[j] = v1[j] + v3[j]; memcpy(c->vreg[5], r, 16);
     r[0] = v1[0] + v3[0]; r[1] = v1[1] - v3[1]; r[2] = v1[2] * v3[2]; r[3] = v1[3] / v3[3]; memcpy(c->vreg[6], r, 16);
+    recomp_stp64_sp(c, c->x[29] + 16, c->vreg[6][0], c->vreg[6][1]);
     memset(r, 0, 16); r[0] = sqrtf(v3[0]); memcpy(c->vreg[7], r, 16);
     { float a, b, z; memcpy(&a, c->vreg[9], 4); memcpy(&b, c->vreg[10], 4); memcpy(&z, c->vreg[11], 4);
       c->vreg[8][0] = B(fmaf(-a, b, z)); c->vreg[8][1] = 0; }
@@ -161,25 +289,40 @@ static uint32_t normal(void) {   /* |x| in [2^-20, 2^20), either sign */
 static void set(Ctx *c, int v, uint32_t a, uint32_t b, uint32_t d, uint32_t e) {
     uint32_t l[4] = {a, b, d, e}; memcpy(c->vreg[v], l, 16); }
 static void fresh(Ctx *c, uint64_t fpcr) {
-    memset(c, 0, sizeof *c); c->fpcr = fpcr; c->fpsr = 0x10; c->x[5] = 41;
+    memset(c, 0, sizeof *c); c->fpcr = fpcr; c->fpsr = 0x10; c->x[5] = 41; c->x[19] = 0x40; c->x[29] = 0x50;
     for (int v = 0; v < 12; v++) set(c, v, normal(), normal(), normal(), 0x3f800000u + (rnd() & 0xfffu));
     c->vreg[3][0] &= ~0x80000000ULL; }   /* (v3's lane 0 is square-rooted: not negative) */
-static int run(Ctx *c) { exact_calls = 0; cur = c; region(c); return exact_calls; }
+static int run(Ctx *c) { exact_calls = 0; cur = c; mem_reset(); region(c); return exact_calls; }
 static int bad;
 #define EXPECT(cond, ...) do { if (!(cond)) { printf(__VA_ARGS__); printf("\n"); bad++; } } while (0)
+/* (longshot) the run's stores, each once and in order: x19 + 4, x19 + 8 (marked), x29 + 16 (the frame pair, unmarked) */
+static int stores_once(void) { return nst == 3 && slog[0] == 0x44 && slog[1] == 0x48 && slog[2] == 0x60 && nmark == 2; }
 static void must_fall_back(const char *what, Ctx *c) {
     uint64_t v0[2]; memcpy(v0, c->vreg[0], 16); const uint64_t x5 = c->x[5];
     EXPECT(run(c) > 0, "%%s: the fast copy was kept", what);
     EXPECT(!memcmp(seen_v0, v0, 16) && seen_x5 == x5, "%%s: the exact copy did not see the inputs put back", what);
+    EXPECT(stores_once(), "%%s: %%d stores (%%d marked), not the run's 3 once each in order", what, nst, nmark);
 }
 int main(void) {
     Ctx c, r;
+    uint8_t want[sizeof mem];
     for (int i = 0; i < 200000; i++) {
-        fresh(&c, i & 1 ? 0x01000000u : 0); r = c; reference(&r);
+        fresh(&c, i & 1 ? 0x01000000u : 0); r = c; mem_reset(); reference(&r); memcpy(want, mem, sizeof mem);
         EXPECT(run(&c) == 0, "random %%d: the exact copy ran", i);
-        EXPECT(!memcmp(c.vreg, r.vreg, sizeof c.vreg) && c.x[5] == r.x[5], "random %%d: the fast copy differs", i);
+        EXPECT(!memcmp(c.vreg, r.vreg, sizeof c.vreg) && c.x[5] == r.x[5] && c.x[19] == r.x[19], "random %%d: the fast copy differs", i);
+        EXPECT(!memcmp(mem, want, sizeof mem) && stores_once(), "random %%d: the fast copy's stores differ (%%d stores, %%d marked)", i, nst, nmark);
         if (bad > 10) return 1;
     }
+    /* (longshot) A64_FASTFP=check: the same runs clean, no mismatch counted, the exact copy's stores kept */
+    for (int i = 0; i < 20000; i++) {
+        fresh(&c, i & 1 ? 0x01000000u : 0); r = c; mem_reset(); reference(&r); memcpy(want, mem, sizeof mem);
+        cur = &c; mem_reset(); region_check(&c);
+        EXPECT(!memcmp(c.vreg, r.vreg, sizeof c.vreg) && c.x[19] == r.x[19] && !memcmp(mem, want, sizeof mem) && stores_once(),
+               "check %%d: the exact copy's result or stores differ", i);
+        if (bad > 10) return 1;
+    }
+    EXPECT(a64_ff_n_[0] == 20000 && a64_ff_n_[1] == 20000 && a64_ff_n_[2] == 0,
+           "check: %%lld runs, %%lld clean, %%lld mismatched", a64_ff_n_[0], a64_ff_n_[1], a64_ff_n_[2]);
     fresh(&c, 0); set(&c, 0, 0x7fc00001u, 0x7fc00002u, 0, 0); set(&c, 1, 0x7fc00003u, 0x7fc00004u, 0, 0);
     must_fall_back("two NaNs (a NaN result: the exact copy flags it as Arm does)", &c);
     fresh(&c, 0); set(&c, 0, 0, 0x3f800000u, 0x3f800000u, 0x3f800000u); set(&c, 1, 0x7f800000u, 0x3f800000u, 0x3f800000u, 0x3f800000u);
@@ -242,6 +385,13 @@ def check_c(cc):
     text, n = L.ff_region(items)
     if not n:
         fail("the C region was not made fast")
+    os.environ["A64_FASTFP"] = "check"
+    try:
+        check, _ = L.ff_region(items)
+    finally:
+        os.environ["A64_FASTFP"] = "1"
+    # (as emit_function leaves them in a function whose x29 is its frame pointer)
+    text, check = (L.ff_frame_stores(L.frame_stores(t)) for t in (text, check))
     # (the test resets the enable cache between cases: a hook the real header doesn't need)
     header = L.FASTFP_HEADER.replace(
         "static inline __attribute__((always_inline)) int a64_ff_enabled_(void) { static int v = -1; if (v < 0) v = !getenv(\"HOS_NO_FASTFP\"); return v; }",
@@ -249,7 +399,7 @@ def check_c(cc):
         "static int a64_ff_enabled_(void) { if (a64_ff_v_ < 0) a64_ff_v_ = !getenv(\"HOS_NO_FASTFP\"); return a64_ff_v_; }")
     if "a64_ff_enabled_cache_reset" not in header:
         fail("FASTFP_HEADER's enable test changed: update the test's hook")
-    src = DRIVER % {"header": header, "region": text}
+    src = DRIVER % {"header": header, "region": text, "check": check}
     tmp = tempfile.mkdtemp(prefix="fastfp_")
     try:
         path = os.path.join(tmp, "fastfp_test.c")

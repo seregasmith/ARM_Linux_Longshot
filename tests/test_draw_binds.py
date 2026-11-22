@@ -31,7 +31,8 @@ def main():
         raise SystemExit("a vertex set remembers an empty size as empty")
     if "gpu_bind_stamp() == vstamp" not in draw:
         raise SystemExit("a vertex set is remembered across a mirror")
-    if draw.count("bind_index(") != 3:
+    # (the quads' own indices, an indirect draw's, and a direct draw's two: rebased to the buffer's start, or not)
+    if draw.count("bind_index(") != 4:
         raise SystemExit("an indexed draw binds its index buffer on its own")
     bound = block(source, "void bind_index(")
     if bound.index("index_bind_same(") > bound.index("vkCmdBindIndexBuffer("):

@@ -4,14 +4,14 @@ import { copyFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AstroIntegration } from 'astro';
-import guideManifest from '../../../docs/images/guide/manifest.json' with { type: 'json' };
+import guideManifest from '../../../docs/user/images/guide/manifest.json' with { type: 'json' };
 
 const repoRoot = path.resolve('..');
 
 export const repositoryAssets = {
   'assets/longshot.png': 'assets/longshot.png',
   ...Object.fromEntries(guideManifest.screenshots.map(({ file }) => {
-    const source = `docs/images/guide/${file}`;
+    const source = `docs/user/images/guide/${file}`;
     return [source, source];
   })),
   ...Object.fromEntries(['longshot.png', 'teary-elf-bean.png', 'grappling-hook-bean.png', 'glowing-fairy-bean.png',

@@ -191,8 +191,8 @@ uint32_t hos_output_size(int height) {
 /* (longshot) The render targets' GPU pool (nx2/oot_patches.py), 0x13100000 bytes as shipped, for 2560 x 1440: a 3840x2160 3D at
    the 4K output ran out of it. Scaled with the output's pixels, or the widescreen picture's when it has more (host/hos_main.c:
    hos_wide_out, the output's height at the screen's shape: 7680 x 2160 for a 32:9 screen at the 4K output, twice the pixels the pool
-   was scaled for, and the game crashed as Kokiri Forest loaded, a null pointer or "texture handle ids -1", issue 1031);
-   Castle Town's guard-house conversation/camera test crashed with 305 MB at 2560 x 1440 and passed with 512 MB.
+   was scaled for, or the game crashes as Kokiri Forest loads, a null pointer or "texture handle ids -1");
+   Castle Town's guard-house conversation/camera crashes with 305 MB at 2560 x 1440 and passes with 512 MB.
    Keep at least 512 MB by default; larger scaled pools and an explicit HOS_RT_POOL_MB=<MB> still win. An output with more pixels
    than 3840 x 2160 (a size of the player's own, up to 5120 x 2880's pixels: hos_output_parse) keeps its pool to 900 MB:
    5120 x 2880 scales to 1220 MB, and 1220 and 1000 MB both failed the game's own reservation at boot; at 900 MB it boots and
@@ -229,7 +229,11 @@ HLE(_ZN2nn2oe44SetPerformanceModeChangedNotificationEnabledEb) {}
 HLE(_ZN2nn2oe28SetResumeNotificationEnabledEb) {}
 HLE(_ZN2nn2oe38SetUserInactivityDetectionTimeExtendedEb) {}
 /* No system notifications ever arrive: TryPop says none, Pop waits forever (as it would on a quiet console). */
-HLE(_ZN2nn2oe25TryPopNotificationMessageEPj) { RET(0); }
+extern void nvn_output_preview_poll(Ctx *c);
+HLE(_ZN2nn2oe25TryPopNotificationMessageEPj) {
+    nvn_output_preview_poll(c);
+    RET(0);
+}
 HLE(_ZN2nn2oe22PopNotificationMessageEv) { for (;;) hos_sleep_ns(1000000000LL); }
 
 /* ---- nn::account: one user ------------------------------------------------------------------------------------ */

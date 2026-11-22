@@ -189,6 +189,10 @@ void vkCmdBlitImage(VkCommandBuffer, VkImage a, VkImageLayout al, VkImage b, VkI
            r->dstOffsets[1].x == (int32_t)dst.width && r->dstOffsets[1].y == (int32_t)dst.height);
     blits++;
 }
+// (the FPS counter footer's record, upscale_route.h: nobody reads it here, so nothing is published for it)
+namespace upscale_route { enum class Route { Network, StandIn, Blit, Engine, Stretch }; }
+namespace upscaler_rows { enum { GAME = 0 }; }
+static void route_publish(upscale_route::Route, bool, const Texture *, const Texture *, uint32_t, int = 0, bool = false) {}
 '''
 SUFFIX = r'''
 int main(int argc, char **argv) {

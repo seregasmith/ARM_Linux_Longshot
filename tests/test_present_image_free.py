@@ -76,8 +76,13 @@ struct VkSubmitInfo2 { int sType; const void* pNext = nullptr; int flags = 0; ui
     const VkCommandBufferSubmitInfo* pCommandBufferInfos = nullptr; uint32_t signalSemaphoreInfoCount = 0;
     const VkSemaphoreSubmitInfo* pSignalSemaphoreInfos = nullptr; };
 struct Extent { uint32_t width = 1920, height = 1080; };
+enum class Sw { acquire_ahead };
+struct Policy {   // (device_policy.h's acquire_ahead off, as with every driver but AMD's on Windows: #1458's order)
+    bool acquire_ahead = false;
+    bool set(Sw) const { return false; }
+};
 struct Device { int device = 1; VkSwapchainKHR swapchain = 1; uint64_t swapchain_generation = 0; Extent swap_extent;
-    std::vector<VkSemaphore> swap_rendered{901, 902, 903, 904}; std::mutex present_mu; } dev;
+    std::vector<VkSemaphore> swap_rendered{901, 902, 903, 904}; std::mutex present_mu; Policy policy; } dev;
 struct Frame { VkCommandPool pool = 11; VkCommandBuffer cmd = 12; VkFence done = 13; VkSemaphore acquired = 14; };
 namespace fps_stats { enum { kGpuWait, kPace }; }
 namespace gpu_wait_stats { struct Exclude { Exclude() {} }; }   // (vk_work.h: a wait left out of the GPU wait counts)
@@ -221,7 +226,7 @@ def main():
     p.add_argument("--cxx", default="clang++")
     a = p.parse_args()
     replay = (a.source / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
-    present = block(replay, "void present_image(VkImage src,")
+    present = block(replay, "void present_image_with_trial(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view, bool source_srgb, bool allow_scale, OutputTrialSource trial) {")
     acquire = between(present, "    uint32_t index = 0;", "    if (vkResetCommandPool(dev.device, f.pool, 0)")
     submit = between(present, "    if (vkEndCommandBuffer(f.cmd) == VK_ERROR_DEVICE_LOST) device_lost();",
                      "    std::unique_lock qk(dev.present_mu);")

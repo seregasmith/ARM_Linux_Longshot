@@ -17,7 +17,8 @@ enum NVSDK_NGX_PerfQuality_Value {
     NVSDK_NGX_PerfQuality_Value_DLAA = 5
 };
 constexpr int NVSDK_NGX_DLSS_Hint_Render_Preset_K = 11, NVSDK_NGX_DLSS_Hint_Render_Preset_L = 12,
-              NVSDK_NGX_DLSS_Hint_Render_Preset_M = 13, NVSDK_NGX_DLSS_Hint_Render_Preset_Default = 0;
+              NVSDK_NGX_DLSS_Hint_Render_Preset_M = 13, NVSDK_NGX_DLSS_Hint_Render_Preset_Default = 0,
+              NVSDK_NGX_DLSS_Hint_Render_Preset_E = 5;
 constexpr int NVSDK_NGX_DLSS_Feature_Flags_MVLowRes = 1, NVSDK_NGX_DLSS_Feature_Flags_IsHDR = 2,
               NVSDK_NGX_DLSS_Feature_Flags_AutoExposure = 4;
 constexpr const char* NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA = "aa";
@@ -50,12 +51,17 @@ State state;
 State& st() { return state; }
 std::atomic<bool> present_native_pq{false};
 bool temporal_hdr_input() { return false; }   // (vk_temporal.cpp: DLAA before the bloom, not in this fixture)
+bool prewarm = true;   // (RX_VK_DLSS_PREWARM, on by default)
+bool temporal_prewarm_on() { return prewarm; }
+namespace perf_report { enum { kDlssRecreated = 4 }; }
+unsigned recreated = 0;
+void perf_event(int event) { if (event == perf_report::kDlssRecreated) recreated++; }
 uint64_t frame = 0;
 uint64_t texture_frame_no() { return frame; }
 unsigned preset = 11;
 unsigned wanted_preset() { return preset; }
 void logf(const char*, ...) {}
-void note_work() {}
+void note_other_work() {}   // (vk_work.h: NGX's own commands, counted as other work)
 void temporal_later(std::function<void()> f) { f(); }
 void NVSDK_NGX_VULKAN_ReleaseFeature(NVSDK_NGX_Handle*) {}
 void NVSDK_NGX_Parameter_SetUI(void*, const char*, unsigned) {}
@@ -86,7 +92,7 @@ const char* test_getenv(const char*) { return nullptr; }
 #undef getenv
 
 void reset() {
-    state = {}; frame = 0; queries = creations = 0; fail_create = false;
+    state = {}; frame = 0; queries = creations = recreated = 0; fail_create = false; prewarm = true;
     settings[2] = {2293, 960, 1720, 720, 3440, 1440};
     settings[5] = {3440, 1440, 3440, 1440, 3440, 1440};
     settings[1] = {2007, 840, 1720, 720, 3440, 1440};
@@ -117,6 +123,16 @@ int main() {
         assert(captured.Feature.InWidth == 3440 && captured.Feature.InHeight == 1440);
         assert(captured.Feature.InPerfQualityValue == NVSDK_NGX_PerfQuality_Value_DLAA);
         assert(iw == 3440 && ih == 1440);
+        assert(recreated == 1);   // (the second feature is counted as made again)
+    }
+    for (bool on : {true, false}) {
+        // DLSS (not native AA) at a full-size frame: with RX_VK_DLSS_PREWARM the scaled mode whose range holds it, else DLAA's.
+        reset(); prewarm = on;
+        unsigned iw = 0, ih = 0;
+        assert(call(3440, 1440, iw, ih) == 2 && recreated == 0);
+        assert(captured.Feature.InPerfQualityValue ==
+               (on ? NVSDK_NGX_PerfQuality_Value_MaxQuality : NVSDK_NGX_PerfQuality_Value_DLAA));
+        assert(state.feature_aa == !on);
     }
     reset(); preset = 11;
     settings[2].fails = true;  // Skipped entries must not shift the selected optimal dimensions.

@@ -176,6 +176,42 @@ class HeaderCacheTests(unittest.TestCase):
         self.assertFalse(self.cache_bytes())
         self.assertEqual(len(self.removed), 2)
 
+    def test_header_bytes_change_invalidates_objects(self):
+        tools = self.install('version one')
+        self.check(tools)
+        self.cache()
+        (tools / 'include' / 'windows.h').write_text('#define CHANGED 1\n', encoding='ascii')
+        self.check(tools)
+        self.assertFalse(self.cache_bytes())
+        self.assertEqual(len(self.removed), 2)
+
+    def test_install_moved_out_of_versions_keeps_cached_bytes(self):
+        # (the stamp names no folder: a builder moved anywhere, or a new tools.lock with the same compiler and headers)
+        first = self.install('version one')
+        moved = self.root / 'elsewhere' / 'tools'
+        shutil.copytree(first, moved)
+        self.check(first)
+        self.cache()
+        before = self.cache_bytes()
+        self.check(moved)
+        self.assertEqual(self.cache_bytes(), before)
+        self.assertFalse(self.removed)
+
+    def test_path_stamp_of_an_earlier_builder_keeps_cached_bytes(self):
+        # (a work folder an earlier builder noted by the headers' paths relative to its tools: reused, the note written anew)
+        import hashlib
+        tools = self.install('version one')
+        self.version = 'authored clang version 1'
+        rel = sorted('<tools>/include/' + n for n in ('stdio.h', 'stdlib.h', 'windows.h'))
+        old = hashlib.sha1('\n'.join([self.version] + rel).encode()).hexdigest()
+        (self.work / 'system_headers.txt').write_text(old + '\n')
+        self.cache()
+        before = self.cache_bytes()
+        self.check(tools)
+        self.assertEqual(self.cache_bytes(), before)
+        self.assertFalse(self.removed)
+        self.assertNotEqual((self.work / 'system_headers.txt').read_text().strip(), old)
+
     def test_failed_dependency_probe_preserves_objects(self):
         tools = self.install('version one')
         self.check(tools)

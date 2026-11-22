@@ -50,13 +50,23 @@ typedef struct { WORD wButtons; uint8_t bLeftTrigger, bRightTrigger; int16_t sTh
 typedef struct { DWORD dwPacketNumber; XINPUT_GAMEPAD Gamepad; } XINPUT_STATE;
 typedef DWORD(WINAPI *XInputGetStateFn)(DWORD, XINPUT_STATE *);
 static XInputGetStateFn xinput_get;   /* (no XInput: SDL has the pads) */
+#define LOAD_LIBRARY_SEARCH_SYSTEM32 0x800
 static HMODULE LoadLibraryA(const char *name) { (void)name; return NULL; }
+static HMODULE LoadLibraryExA(const char *name, void *file, unsigned flags) { (void)name; (void)file; (void)flags; return NULL; }
 static void *GetProcAddress(HMODULE m, const char *name) { (void)m; (void)name; return NULL; }
 static LONG InterlockedExchange(volatile LONG *p, LONG v) { LONG o = *p; *p = v; return o; }
 typedef int SRWLOCK;
 #define SRWLOCK_INIT 0
 static void AcquireSRWLockShared(SRWLOCK *p) { (void)p; }
 static void ReleaseSRWLockShared(SRWLOCK *p) { (void)p; }
+static void AcquireSRWLockExclusive(SRWLOCK *p) { (void)p; }
+static void ReleaseSRWLockExclusive(SRWLOCK *p) { (void)p; }
+typedef void *HANDLE;
+typedef DWORD(WINAPI *LPTHREAD_START_ROUTINE)(void *);
+static HANDLE CreateThread(void *a, size_t s, LPTHREAD_START_ROUTINE fn, void *arg, DWORD f, DWORD *id) { (void)a; (void)s; (void)fn; (void)arg; (void)f; (void)id; return NULL; }
+static int CloseHandle(HANDLE h) { (void)h; return 1; }
+static void Sleep(DWORD ms) { (void)ms; }
+void hos_host_thread_register_self(const char *name) { (void)name; }
 static void hos_log(const char *format, ...) { (void)format; }
 static int64_t now_ns = 1000000000LL;
 static int64_t hos_now_ns(void) { return now_ns; }
@@ -64,12 +74,18 @@ static int menu_open;
 int rx_option(int id, int otherwise) { return id == 1 ? menu_open : id == 11 || id == 16 || id == 17 ? 0 : otherwise; }
 static uint64_t pads_down;      /* (by position, 1 << HOS_PAD_*: every pad SDL has, merged as pad_sdl.c merges them) */
 static int32_t pads_stick[4];
-int hos_sdl_pads(uint64_t *buttons, int32_t stick[4]) { *buttons |= pads_down; memcpy(stick, pads_stick, sizeof pads_stick); return 2; }
+int hos_sdl_pads(uint64_t *buttons, int32_t stick[4], int *deck_builtin_input) { (void)deck_builtin_input; *buttons |= pads_down; memcpy(stick, pads_stick, sizeof pads_stick); return 2; }
 static void player_used(void) {}
 static void binds_load(void) {}
 static SRWLOCK pad_bind_lock = SRWLOCK_INIT;
-static int pad_bind[HOS_SW_N][2];
+static int pad_bind[HOS_KEY_N][2] = {[HOS_KEY_TOGGLE_HUD] = {-1, -1}};
+static int sampled_pad(int i, int k) { return pad_bind[i][k]; }
+static LONG hud_bind_generation;
 static uint64_t oc_consumed_pads;
+static volatile LONG pad_count_now;
+static int sprint_now;   /* (Sprint's gamepad input, read with the pads: tests/test_sprint.py) */
+enum { SPRINT_PAD = 2 };
+static int sprint_read(void) { return sprint_now; }
 """
 
 MAIN = r"""
@@ -78,6 +94,7 @@ static uint64_t game(int32_t stick[4]) {
     now_ns += 16000000;   /* (past pads_read's 2 ms cache) */
     uint64_t buttons = 0;
     memset(stick, 0, 4 * sizeof *stick);
+    sprint_now = 0;   /* read_input clears the sampled state before its pad block */
     game_pads(&buttons, stick);
     return buttons;
 }
@@ -90,6 +107,17 @@ int main(void) {
     CHECK(game(s) == 0);
     pads_down = PAD(SOUTH); CHECK(game(s) == SW(B));   /* (by position: the bottom face button is the Switch's B) */
     pads_down = 0; CHECK(game(s) == 0);
+
+    /* Sprint held through closing the menu waits for release, even while moving. */
+    pad_bind[HOS_SW_LS][0] = -1;   /* the automatic layout moved L3 from LS to Sprint */
+    pad_bind[HOS_KEY_SPRINT][0] = HOS_PAD_LSTICK;
+    pad_bind[HOS_KEY_SPRINT][1] = -1;
+    menu_open = 1; pads_down = PAD(LSTICK); pads_stick[0] = 30000; CHECK(game(s) == 0);
+    menu_open = 0; CHECK(game(s) == 0 && sprint_now == 0 && s[0] == 30000);
+    CHECK(game(s) == 0 && sprint_now == 0);
+    pads_down = 0; CHECK(game(s) == 0 && sprint_now == 0);
+    pads_down = PAD(LSTICK); CHECK(game(s) == 0 && sprint_now == SPRINT_PAD);
+    pads_down = 0; pads_stick[0] = 0; CHECK(game(s) == 0);
 
     /* A trigger that stays down through the menu (worn, or past its rest), the menu closed with East (A) */
     menu_open = 1;
@@ -136,14 +164,20 @@ def main():
     state = hid[hid.index("static volatile LONG pad_raw_now;"):hid.index("uint32_t hos_pad_raw(")]
     code = "\n".join((
         block(api, "enum { HOS_SW_A") + ";", block(api, "enum { HOS_PAD_SOUTH") + ";",
+        block(api, "enum { HOS_KEY_MOVE_UP") + ";",
         re.search(r"^enum \{ HOS_PAD_TOUCHPAD = \d+ \};", api, re.M).group(0),
         PRELUDE,
         block(hid, "static const signed char pad_default[HOS_SW_N] =") + ";",
-        block(hid, "static void stick_max("), block(hid, "static uint64_t bound_pad_buttons("), state,
+        block(hid, "static void stick_max("), block(hid, "static uint64_t hud_pad_mask("),
+        block(hid, "static uint64_t bound_pad_buttons("), state,
+        block(hid, "static int pad_sprint_down("),
         block(hid, "void hos_filter_stick("),
-        re.search(r"^static volatile int xinput_pads_now;.*$", hid, re.M).group(0),
+        # (the XInput code before pads_read: its thread and its reading; never started here, SDL has the pads)
+        hid[hid.index("static volatile int xinput_pads_now;"):hid.index("static void pads_read(")],
         block(hid, "static void pads_read("),
-        "static void game_pads(uint64_t *buttons, int32_t stick[4]) " + pads,
+        # (read_input's `down`, the buttons down at this read, which the cut block fills for the player's input check below it;
+        #  deck_builtin_input is read_input's local the cut block passes to pads_read)
+        "static void game_pads(uint64_t *buttons, int32_t stick[4]) {\n    uint64_t down = 0;\n    int deck_builtin_input = 0;\n    (void)deck_builtin_input;\n    " + pads + "\n    (void)down;\n}",
         MAIN))
     with tempfile.TemporaryDirectory(prefix="longshot-pads-after-menu-") as tmp:
         src = Path(tmp) / "t.c"

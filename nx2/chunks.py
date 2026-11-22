@@ -25,7 +25,8 @@ import os
 import re
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
-import whole_write   # (rewrites written beside and moved over: issue 1197)
+import whole_write   # (rewrites written beside and moved over)
+import build_jobs   # (the workers the build was asked for)
 
 import a64_lift
 import lifted_c
@@ -65,16 +66,21 @@ def load(img_dir):
     path = os.path.join(img_dir, FILE)
     if not os.path.exists(path):
         return []
-    return [int(l, 16) for l in open(path) if l.strip() and not l.startswith("#")]
+    try:
+        with open(path, encoding="utf-8") as f:
+            return [int(l, 16) for l in f if l.strip() and not l.startswith("#")]
+    except (OSError, UnicodeDecodeError, ValueError) as e:
+        print("chunks: %s could not be read (%s); ignoring" % (path, e), flush=True)
+        return []
 
 
 def save(img_dir, starts):
     # (lift.py --standalone writes this under <work>/image while its image.bin goes to <work>/sa/image, and nothing made
     # that folder: a fresh work folder stopped the lift at its last step with FileNotFoundError. make_game.py prepares it)
     os.makedirs(img_dir, exist_ok=True)
-    with open(os.path.join(img_dir, FILE), "w") as f:
-        f.write("# first guest address of each lifted C chunk after the first (nx2/chunks.py)\n")
-        f.write("".join("%08x\n" % s for s in sorted(starts)))
+    text = ("# first guest address of each lifted C chunk after the first (nx2/chunks.py)\n"
+            + "".join("%08x\n" % s for s in sorted(starts)))
+    whole_write.write_whole(os.path.join(img_dir, FILE), text, sync=True)   # (read by every later lift: issue #765)
 
 
 def seed_from_gen(gen_dir):
@@ -138,7 +144,7 @@ def _no_fork():
 
 def file_jobs():
     """Processes for the per-file passes (split_big, edit_c) and for the emit: LONGSHOT_LIFT_JOBS, else the cores this process
-    may use (at most 16; each holds its run's texts and the pages of the lift it touches), and at most one per 2 GB of available
+    may use (at most 16, and at most LONGSHOT_JOBS when the build was given a count; each holds its run's texts and the pages of the lift it touches), and at most one per 2 GB of available
     memory where they are forked (one per 0.75 GB where they are spawned: Windows, its available physical memory): a Steam
     Deck (16 GB) ran out with 8, and the system's out-of-memory
     handling stopped the lift ("lift.py stopped (signal 15): BrokenPipeError") or one worker (the update then sat at "jump tables"
@@ -150,7 +156,7 @@ def file_jobs():
         n = len(os.sched_getaffinity(0))
     except AttributeError:
         n = os.cpu_count() or 1
-    n = max(1, min(16, n))
+    n = build_jobs.cap(max(1, min(16, n)))   # (no more than the build was asked for: LONGSHOT_JOBS, nx2/build_jobs.py)
     gb = _available_gb()
     if gb is not None:
         # a new process (spawn: Windows) holds only the emit's tables and its run's bodies: 395 MB at most, measured

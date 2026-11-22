@@ -241,10 +241,13 @@ def check_device(tree):
     main = (tree / 'gpu/vk/vk_main.cpp').read_text(encoding='utf-8')
     device = section(main, 'bool create_device() {', 'vkCreateDevice(dev.physical, &ci', 'vk_main.cpp create_device')
     failures = []
-    for text in ('f.pNext = &f11, f11.pNext = &f12', 'vkGetPhysicalDeviceFeatures2(dev.physical, &f);', 'dev.vk12 = f12;',
-                 'ci.pNext = &f;'):
+    for text in ('f.pNext = &f11, f11.pNext = &f12', 'vkGetPhysicalDeviceFeatures2(dev.physical, &f);', 'dev.vk12 = f12;'):
         if text not in device:
             failures.append('create_device: no %r before vkCreateDevice' % text)
+    # (the chain vkCreateDevice takes starts at f: directly, or through the chain Intel XeSS's features are added to, which
+    # keeps the renderer's structures, vk_xess.cpp xess_device_features)
+    if 'ci.pNext = &f;' not in device and not ('void* chain = &f;' in device and 'ci.pNext = chain;' in device):
+        failures.append("create_device: no 'ci.pNext = &f;' (or the chain from &f) before vkCreateDevice")
     if re.search(r'\.shader(StorageImage|UniformTexelBuffer|StorageTexelBuffer)ArrayNonUniformIndexing\s*=[^=]', main):
         failures.append('vk_main.cpp switches a nonuniform indexing feature off')
     return failures

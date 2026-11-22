@@ -1,11 +1,11 @@
-"""NVIDIA DLSS Frame Generation's runtime and its refusals (gpu/vk/vk_dlss.cpp, scripts/ngx_sdk.py), game-free.
+"""NVIDIA DLSS Frame Generation's runtime and its refusals (gpu/vk/vk_dlss.cpp, scripts/fetch.py dlss), game-free.
 
 The build placed only DLSS's runtime (nvngx_dlss.dll) in the game's ngx folder, so NGX took the driver's own copy of DLSS
 Frame Generation's: on an RTX 5080 its 310.2.1 made 1 frame at most, so 3x and 4x were the renderer's own frames, and at 2x
 it refused every set (0xbad00005), each refusal a wasted evaluation, the game at half its rate with nothing made.
 
 Checked here:
-- scripts/ngx_sdk.py fetches and installs frame generation's runtime beside DLSS's, under the name vk_dlss.cpp looks for;
+- scripts/fetch.py dlss fetches and installs frame generation's runtime beside DLSS's, under the name vk_dlss.cpp looks for;
 - dlss_fg_frames gives frame generation up after kFgRefusalsOff refused sets in a row (as after three failed creations), a
   set made counting them again from 0, and says once when it is asked for more frames than its runtime makes;
 - fg_start says whether the runtime folders hold frame generation's runtime or NGX takes the driver's own.
@@ -37,20 +37,21 @@ def function(text, marker):
 
 def main():
     src = (ROOT / "gpu" / "vk" / "vk_dlss.cpp").read_text(encoding="utf-8")
-    spec = importlib.util.spec_from_file_location("ngx_sdk_for_dlssg", ROOT / "scripts" / "ngx_sdk.py")
-    ngx = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(ngx)
+    spec = importlib.util.spec_from_file_location("fetch_for_dlssg", ROOT / "scripts" / "fetch.py")
+    fetch = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fetch)
+    ngx = fetch.DLSS
 
-    # (the runtime ngx_sdk.py installs is the one vk_dlss.cpp looks for, on both platforms)
+    # (the runtime scripts/fetch.py dlss installs is the one vk_dlss.cpp looks for, on both platforms)
     names = re.findall(r'constexpr const char\* kFgRuntime = "([^"]+)";', src)   # (Windows' first, then Linux')
     if len(names) != 2:
         fail("vk_dlss.cpp: kFgRuntime is not named for Windows and Linux")
     if ngx.runtime_name("windows", "framegen") != names[0]:
-        fail("scripts/ngx_sdk.py installs %s, vk_dlss.cpp looks for %s" % (ngx.runtime_name("windows", "framegen"), names[0]))
+        fail("scripts/fetch.py dlss installs %s, vk_dlss.cpp looks for %s" % (ngx.runtime_name("windows", "framegen"), names[0]))
     if not ngx.runtime_name("linux", "framegen").startswith(names[1]):
-        fail("scripts/ngx_sdk.py installs %s, vk_dlss.cpp looks for %s*" % (ngx.runtime_name("linux", "framegen"), names[1]))
+        fail("scripts/fetch.py dlss installs %s, vk_dlss.cpp looks for %s*" % (ngx.runtime_name("linux", "framegen"), names[1]))
     if "framegen" not in ngx.RUNTIMES:
-        fail("scripts/ngx_sdk.py does not install frame generation's runtime")
+        fail("scripts/fetch.py dlss does not install frame generation's runtime")
 
     off = re.search(r"constexpr int kFgRefusalsOff = (\d+);", src)
     if not off or not 1 < int(off.group(1)) <= 8:

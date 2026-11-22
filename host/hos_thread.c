@@ -121,12 +121,33 @@ static void pin_by_core(HosThread *t) {
     (void)t;
 #endif
 }
+#if !defined(__EMSCRIPTEN__)
+static void vc_note_mask_change(HosThread *t);
+static int vc_mask_changed(uint64_t old_mask, uint64_t new_mask);
+#endif
 void hos_thread_affinity(HosThread *t, int ideal, uint64_t mask) {
     if (ideal >= 0) t->ideal_core = ideal;
-    if (mask) t->core_mask = mask;
+    const uint64_t old_mask = t->core_mask;
+    /* (the real kernel refuses an empty affinity; 0 is this game's own no-affinity convention, and its
+       trampoline caches the entry core for it) */
+    t->core_mask = mask;
     pin_by_core(t);
+#if !defined(__EMSCRIPTEN__)
+    if (vc_mask_changed(old_mask, mask)) vc_note_mask_change(t);
+#else
+    (void)old_mask;
+#endif
 }
 uint64_t hos_thread_mask(HosThread *t) { return t->core_mask; }
+static int hos_thread_wrapper_mask(HosThread *t, uint32_t *out) {
+    if (!t || t->entry != 0x834a2e50ULL || !t->arg) return 0;
+    uint64_t *tt = (uint64_t *)hos_guest_range(t->arg + 0xb8, 8);
+    if (!tt || *tt != t->guest_tt) return 0;
+    uint32_t *m = (uint32_t *)hos_guest_range(t->arg + 0xb0, 4);
+    if (!m) return 0;
+    *out = *m;
+    return 1;
+}
 void hos_thread_boost(int level) {
 #if defined(_WIN32) && !defined(__EMSCRIPTEN__)
     static int off = -1;
@@ -767,7 +788,8 @@ static const NameSpec *match_name_spec(const NameSpec *s, int n, const char *nam
    fastest kind (8+ logical processors always have them on a CPU of one kind): a laptop's 2 performance cores and 8
    efficiency ones (i5-1235U) would keep one of the two from the game; then none is kept. The calling thread's
    processor group's cores: the masks the affinity calls take are its group's. On Linux the same choice from
-   /sys/devices/cpu_core/cpus (Intel's hybrid CPUs; last_fastest_core below); without that file, the last core, as before. */
+   /sys/devices/cpu_core/cpus (Intel's hybrid CPUs; last_fastest_core below); without that file, the last core, as before.
+   Every way, only among the cores the process may run on wholly (its affinity mask: process_cpus, #522). */
 /* (longshot) The cores that share the largest L3, on a CPU whose cores do not all share one of the same size: AMD's X3D CPUs
    with two CCDs (7900X3D, 7950X3D, 9900X3D, 9950X3D) have the 3D V-Cache on one CCD only (96 MB against 32 MB). Windows
    moves a game there only when its Game Bar knows the program as a game; this one it does not know, so its threads ran on
@@ -799,12 +821,25 @@ static uint64_t pick_cache_cores(const uint64_t *masks, const uint64_t *sizes, i
     if (physical < 8) return 0;
     return best;
 }
-/* (the choice: the cores' logical processor masks and EfficiencyClass, n of them; 0 for none. tests/test_reserved_core.py) */
-static uint64_t pick_reserved_core(const uint64_t *masks, const unsigned char *classes, int n) {
+/* (longshot) The logical processors this process may run on (its affinity mask: `start /affinity`, a launcher's, Process
+   Lasso's, taskset's), for the reserved core's choice; every one when the mask cannot be read (Windows gives 0 for a process
+   with threads in more than one processor group) */
+static uint64_t process_cpus(void) {
+    DWORD_PTR proc = 0, sys = 0;
+    if (!GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys) || !proc) return ~0ull;
+    return (uint64_t)proc;
+}
+/* (the choice: the cores' logical processor masks and EfficiencyClass, n of them, among the cores whose logical processors
+   are all in allowed (process_cpus); 0 for none. A core outside the process's mask is no candidate and is not counted: the
+   replay thread cannot be pinned there (Windows refuses the mask; Linux lets the thread leave the set it was given), and
+   the game's threads would lose a core of the mask's for nothing. As #522's fallback below, which the enhanced choice
+   skipped: under 0x0FFF of 16 the last core of all, 0xC000, was kept, the replay's pin was refused and the log said it held.
+   tests/test_reserved_core.py, tests/test_reserved_core_mask.py) */
+static uint64_t pick_reserved_core(const uint64_t *masks, const unsigned char *classes, int n, uint64_t allowed) {
     uint64_t last = 0;
     int best = -1, fast = 0, logical = 0;
     for (int i = 0; i < n; i++) {
-        if (!masks[i]) continue;
+        if (!masks[i] || (masks[i] & ~allowed)) continue;
         logical += __builtin_popcountll(masks[i]);
         if ((int)classes[i] > best) {
             best = classes[i], last = masks[i], fast = 1;
@@ -819,8 +854,9 @@ static uint64_t pick_reserved_core(const uint64_t *masks, const unsigned char *c
     static bool logged = false;
     if (!logged) {
         logged = true;
-        hos_log("vk: reserved core selection: %d cores, %d logical, best class=%d, fast cores=%d, selected=%#llx",
-                n, logical, best, fast, (unsigned long long)last);
+        hos_log("vk: reserved core selection: %d cores, %d logical, best class=%d, fast cores=%d, selected=%#llx "
+                "(of the logical processors %#llx)", n, logical, best, fast, (unsigned long long)last,
+                (unsigned long long)allowed);
         for (int i = 0; i < n; i++) {
             if (masks[i]) {
                 hos_log("vk:   core %d: mask=%#llx, class=%d, popcount=%d",
@@ -891,9 +927,10 @@ static uint64_t last_fastest_core_legacy(int *cores) {
     }
 
     int logical = 0;
-    int current_core = 0;
+    int current_core = 0, listed = 0;
     uint64_t masks[256];
     unsigned char classes[256];
+    const uint64_t allowed = process_cpus();   /* (longshot: the cores the process may run on wholly, as pick_reserved_core) */
 
     int pcore_candidates = 0;
     int ecore_candidates = 0;
@@ -901,6 +938,8 @@ static uint64_t last_fastest_core_legacy(int *cores) {
     for (DWORD i = 0; i < len / sizeof info[0] && current_core < 256; i++) {
         if (info[i].Relationship == RelationProcessorCore) {
             uint64_t mask = (uint64_t)info[i].ProcessorMask;
+            listed++;
+            if (mask & ~allowed) continue;
             int popcount = __builtin_popcountll(mask);
             logical += popcount;
 
@@ -918,15 +957,15 @@ static uint64_t last_fastest_core_legacy(int *cores) {
         }
     }
 
-    *cores = current_core;
+    *cores = listed;
 
-    hos_log("vk: legacy API fallback: %d cores, %d logical, P-candidates=%d, E-candidates=%d",
-            current_core, logical, pcore_candidates, ecore_candidates);
+    hos_log("vk: legacy API fallback: %d cores, %d logical, P-candidates=%d, E-candidates=%d (of the logical processors %#llx)",
+            current_core, logical, pcore_candidates, ecore_candidates, (unsigned long long)allowed);
 
     // If mixed core types detected, use enhanced picker
     if (pcore_candidates > 0 && ecore_candidates > 0) {
         hos_log("vk: Intel hybrid CPU detected via legacy API heuristic");
-        return pick_reserved_core(masks, classes, current_core);
+        return pick_reserved_core(masks, classes, current_core, allowed);
     }
 
     // Single CPU type - use original logic (last core)
@@ -980,7 +1019,7 @@ static uint64_t last_fastest_core(int *cores) {
     }
 
     *cores = n;
-    return pick_reserved_core(masks, classes, n);
+    return pick_reserved_core(masks, classes, n, process_cpus());
 }
 #endif
 #if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
@@ -1031,7 +1070,7 @@ static uint64_t last_fastest_core(int *cores) {
             n++;
         }
     *cores = n;
-    return pick_reserved_core(masks, classes, n);
+    return pick_reserved_core(masks, classes, n, process_cpus());
 }
 #endif
 uint64_t hos_reserved_cpus(void) {
@@ -1069,7 +1108,8 @@ uint64_t hos_reserved_cpus(void) {
         const uint64_t fast = last_fastest_core(&cores);
         if (cores) {
             mask = fast;
-            hos_log("vk: reserved core mask (enhanced): %#llx (%d cores)", (unsigned long long)mask, cores);
+            hos_log("vk: reserved core mask (enhanced): %#llx (%d cores; a core the process may run on wholly, of %#llx)",
+                    (unsigned long long)mask, cores, (unsigned long long)process_cpus());
             return mask;
         }
     }
@@ -1079,7 +1119,8 @@ uint64_t hos_reserved_cpus(void) {
         const uint64_t fast = last_fastest_core(&cores);
         if (cores) {
             mask = fast;
-            hos_log("vk: reserved core mask (hybrid, /sys/devices/cpu_core): %#llx (%d cores)", (unsigned long long)mask, cores);
+            hos_log("vk: reserved core mask (hybrid, /sys/devices/cpu_core): %#llx (%d cores; a core the process may run on "
+                    "wholly, of %#llx)", (unsigned long long)mask, cores, (unsigned long long)process_cpus());
             return mask;
         }
     }
@@ -1091,13 +1132,13 @@ uint64_t hos_reserved_cpus(void) {
        affinity) had the PC's last core kept all the same, outside its set, and a thread may leave the set: the replay ran
        there, beside whatever else did. A timed session kept to one CCD of a 7900X (CPUs 0-5,12-17) replayed on CPUs 11 and
        23 of the other, with the builds: frames of 2-8 s whenever one ran, and a 13th core when none did. A core counts
-       when all its logical processors are allowed; with every processor allowed, the last core as before */
-    DWORD_PTR proc = 0, sys = 0;
-    if (!GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys) || !proc) proc = ~(DWORD_PTR)0;
+       when all its logical processors are allowed; with every processor allowed, the last core as before. (The choices
+       above keep the same rule: pick_reserved_core) */
+    const uint64_t proc = process_cpus();
     int logical = 0;
     uint64_t last = 0;
     for (DWORD i = 0; i < len / sizeof info[0]; i++)
-        if (info[i].Relationship == RelationProcessorCore && !((uint64_t)info[i].ProcessorMask & ~(uint64_t)proc)) {
+        if (info[i].Relationship == RelationProcessorCore && !((uint64_t)info[i].ProcessorMask & ~proc)) {
             logical += __builtin_popcountll((uint64_t)info[i].ProcessorMask);
             if ((uint64_t)info[i].ProcessorMask > last) last = (uint64_t)info[i].ProcessorMask;
         }
@@ -1253,12 +1294,12 @@ static void sleep_ns(int64_t ns, int guest) {
         int how = hos_short_sleep_timer(getenv("HOS_SHORT_SLEEP_TIMER"), threads);
 #if !defined(_WIN32)
         /* (longshot) Linux: the game's own sleeps wait on the timer whatever the processors, the host's still yield (1).
-           With #2602, OoT's five idle job workers and sead::MainThread yielded 3.3-3.6 ms a frame each in Hyrule Field
-           (RTX 3090, 7900X, 24 threads), ~9 ms of CPU a frame in all, while one of them waited on a GPU readback. With
-           the timer for all sleeps the frame's CPU fell 44.8 -> 35.4 ms at the same median frame (11.30 / 11.32 ms).
+           Yielding, OoT's five idle job workers and sead::MainThread take 3.3-3.6 ms a frame each in Hyrule Field,
+           ~9 ms of CPU a frame in all, while one of them waits on a GPU readback. With the timer for all sleeps the
+           frame's CPU falls 44.8 -> 35.4 ms at the same median frame.
            The job workers are not on the frame's critical path there (HOS_CHAIN), so their ~0.5 ms later wake costs
            nothing measured; on 4-8 thread CPUs (the Steam Deck: 8) those yields took processors the frame needs.
-           HOS_SHORT_SLEEP_TIMER=0: all yield, as before; =1: all on the timer */
+           HOS_SHORT_SLEEP_TIMER=0: all yield; =1: all on the timer */
         if (!getenv("HOS_SHORT_SLEEP_TIMER")) how = 1;
 #endif
         /* (the line says what was chosen, before any thread has made its timer: where the high-resolution timer cannot
@@ -1507,12 +1548,36 @@ HLE(_ZN2nn2os11SleepThreadENS_8TimeSpanE) {
 
 /* ---- TLS slots --------------------------------------------------------------------------------------------- */
 static volatile LONG slot_used[HOS_TLS_SLOTS];
+/* the guest's core-cache key: f_834aa7e0 allocates 0x84e9f7ac; its slot is where the trampoline writes core+1.
+   The key, the wrapper entry 0x834a2e50 and its +0xb0/+0xb8 fields are this build's addresses: another build
+   matches nothing, core_tls_slot stays -1 and core_tls_alias_now() returns 1, so the code is inert. */
+static volatile int core_tls_slot = -1;
+/* vc_sync_tls writes the slot on the scheduler's thread; allocation and freeing run on the game's. A free clears the
+   slot before it is published as reusable, and a write keeps the validated slot it checked, so neither a freed slot
+   nor a negative index is written. vc_lock is the outer lock (vc_sync_tls runs under it); nothing takes this one
+   while holding another. */
+static SRWLOCK tls_slot_lock = SRWLOCK_INIT;
+static int core_tls_alias_now(void) {
+    if (core_tls_slot < 0) return 1;
+    void *dp = hos_guest_range(0x84e9f668ULL, 8);
+    if (!dp) return 0;
+    const uint64_t d = *(const uint64_t *)dp;
+    if (!d) return 0;
+    void *p = hos_guest_range(d + 0x48, 4);
+    if (!p) return 0;
+    return (int)*(const uint32_t *)p == core_tls_slot;
+}
 
 /* nn::os::AllocateTlsSlot(TlsSlot*, void (*)(unsigned long)) -> Result */
 HLE(_ZN2nn2os15AllocateTlsSlotEPNS0_7TlsSlotEPFvmE) {
     for (int i = 0; i < HOS_TLS_SLOTS; i++) {
         if (!InterlockedCompareExchange(&slot_used[i], 1, 0)) {
             G32(ARG(0)) = (uint32_t)i;
+            if (ARG(0) == 0x84e9f7acULL) {
+                AcquireSRWLockExclusive(&tls_slot_lock);
+                core_tls_slot = i;   /* (in use before the scheduler can see it) */
+                ReleaseSRWLockExclusive(&tls_slot_lock);
+            }
             RET(0);
             return;
         }
@@ -1520,7 +1585,14 @@ HLE(_ZN2nn2os15AllocateTlsSlotEPNS0_7TlsSlotEPFvmE) {
     RET(0x2C01);   /* os::ResultOutOfResource */
 }
 
-HLE(_ZN2nn2os11FreeTlsSlotENS0_7TlsSlotE) { if ((uint32_t)ARG(0) < HOS_TLS_SLOTS) slot_used[(uint32_t)ARG(0)] = 0; }
+HLE(_ZN2nn2os11FreeTlsSlotENS0_7TlsSlotE) {
+    if ((uint32_t)ARG(0) < HOS_TLS_SLOTS) {
+        AcquireSRWLockExclusive(&tls_slot_lock);
+        if ((int)(uint32_t)ARG(0) == core_tls_slot) core_tls_slot = -1;   /* (before the slot can be allocated again) */
+        slot_used[(uint32_t)ARG(0)] = 0;
+        ReleaseSRWLockExclusive(&tls_slot_lock);
+    }
+}
 HLE(_ZN2nn2os11GetTlsValueENS0_7TlsSlotE) { RET((uint32_t)ARG(0) < HOS_TLS_SLOTS ? cur->tls_slots[(uint32_t)ARG(0)] : 0); }
 HLE(_ZN2nn2os11SetTlsValueENS0_7TlsSlotEm) { if ((uint32_t)ARG(0) < HOS_TLS_SLOTS) cur->tls_slots[(uint32_t)ARG(0)] = ARG(1); }
 
@@ -1739,14 +1811,13 @@ void hos_thread_log_handles(void) {
    once. Guest code with no checkpoint (a spin loop) keeps its core, so a waiter that has waited too long runs anyway
    without one (an "escape", logged with the holders): HOS_VCORE_ESCAPE_US for a better waiter, HOS_VCORE_ESCAPE_EQ_US
    otherwise (both 2000000: 2 s). An escape runs a thread with no core while the holder still runs on it, so two threads
-   share per-core state (#1929); it is kept only as a deadlock breaker. 250 ms was the default before: on the 25-minute
-   route it escaped 6-8 times a run, at waits that ended by themselves within 1.2 s (0 escapes at 2 s, frame times the
-   same or better). A thread that waits only because better threads keep winning its core (they take it in turns at every
+   share per-core state; it is kept only as a deadlock breaker. 2 s, not less: at 250 ms waits that end by themselves
+   within 1.2 s escape several times a run (none at 2 s, frame times the same or better). A thread that waits only because better threads keep winning its core (they take it in turns at every
    block, or one of them runs on) is starved, not deadlocked, and an escape runs it beside the holder for nothing: once
    it has waited HOS_VCORE_STARVE_US (1000000: 1 s; 0: never) it goes before every other waiter at the next release of a
    core it may use, and asks the worst holder of those cores to give the core up, whatever its priority. It runs a turn,
-   the holders ask for the core back as for any worse thread, and a wait that long ends in a grant, not an escape (#262;
-   the 5 s line counts these grants). Every 5 s the log has a "vcores:" line. GetCurrentCoreNumber answers the
+   the holders ask for the core back as for any worse thread, and a wait that long ends in a grant, not an escape (the
+   5 s line counts these grants). Every 5 s the log has a "vcores:" line. GetCurrentCoreNumber answers the
    core a thread holds. */
 #if !defined(__EMSCRIPTEN__)
 static SRWLOCK vc_lock = SRWLOCK_INIT;
@@ -1763,11 +1834,36 @@ int hos_vcores_on(void) {
     return on;
 }
 static int vc_cores(void) { return hos_cores() > 8 ? 8 : hos_cores(); }
+/* (a raw mask change outside the virtual cores is not a remask: 0x40 -> 0x80 on a 6-core host; the
+   thread stays pinned as before) */
+static int vc_mask_changed(uint64_t old_mask, uint64_t new_mask) {
+    const uint64_t all = (1u << vc_cores()) - 1;
+    return (old_mask & all) != (new_mask & all);
+}
+/* the core a mask-0 thread should take: the guest's cached core (seam threads), then its last one, then ideal/lowest */
+static int vc_pref_core(HosThread *t) {
+    int c = -1;
+    const int slot = core_tls_slot;
+    uint32_t wm = 0;
+    const int seam = hos_thread_wrapper_mask(t, &wm);
+    if (seam && slot >= 0 && slot < HOS_TLS_SLOTS && !core_tls_alias_now()) {
+        const uint64_t cached = t->tls_slots[slot];
+        if (cached > 0 && cached <= (uint64_t)vc_cores()) c = (int)cached - 1;
+    }
+    if (c < 0 && t->vc_last > 0) c = t->vc_last - 1;
+    if (c < 0) c = hos_thread_core(t);
+    if (c < 0 || c >= vc_cores()) c = 0;
+    return c;
+}
+/* the bits of the guest mask this host can use; 0 for a mask wholly outside the virtual cores */
+static uint32_t vc_mask(const HosThread *t) {
+    return (uint32_t)(t->core_mask & ((1u << vc_cores()) - 1));
+}
 static unsigned vc_allowed(HosThread *t) {
     const unsigned all = (1u << vc_cores()) - 1;
-    unsigned m = (unsigned)(t->core_mask & all);
-    if (!m) m = 1u << hos_thread_core(t);
-    return m;
+    if (t->core_mask == 0) return all;   /* (the guest's no-affinity value) */
+    const unsigned m = vc_mask(t);
+    return m ? m : (1u << hos_thread_core(t));   /* (nonzero but past the vcores: pinned as before) */
 }
 /* a runs before b: a starved waiter first (the one waiting longest first among them), then by priority */
 static int vc_better(HosThread *a, HosThread *b) {
@@ -1778,12 +1874,61 @@ static int vc_better(HosThread *a, HosThread *b) {
 /* a free core t may run on (its last one, its ideal one, then the lowest), or -1; holding vc_lock */
 static int vc_free_for(HosThread *t) {
     const unsigned m = vc_allowed(t);
+    if (t->core_mask == 0) {
+        const int pref = vc_pref_core(t);
+        if (pref >= 0 && !vc_owner[pref]) return pref;
+        for (int c = 0; c < vc_cores(); c++)
+            if (!vc_owner[c]) return c;
+        return -1;
+    }
     if (t->vc_last > 0 && (m >> (t->vc_last - 1) & 1) && !vc_owner[t->vc_last - 1]) return t->vc_last - 1;
     const int ideal = hos_thread_core(t);
     if ((m >> ideal & 1) && !vc_owner[ideal]) return ideal;
     for (int c = 0; c < vc_cores(); c++)
         if ((m >> c & 1) && !vc_owner[c]) return c;
     return -1;
+}
+/* the guest's TLS core cell follows the core the thread actually holds; a multi-bit mask has none */
+/* The cell is 8-byte aligned. At a take the target is blocked; a same-core mask change writes it from the
+   SetThreadCoreMask thread while the target may read or write it: one checkpoint of disagreement is accepted,
+   and the next take rewrites it. */
+static void vc_sync_tls(HosThread *t, int c) {
+    const uint32_t mask = vc_mask(t);
+    uint32_t wm = 0;
+    if (!hos_thread_wrapper_mask(t, &wm)) return;
+    AcquireSRWLockExclusive(&tls_slot_lock);
+    const int slot = core_tls_slot;   /* (validated, then held: a free clears it under this lock) */
+    if (slot >= 0 && slot < HOS_TLS_SLOTS && !core_tls_alias_now())
+        t->tls_slots[slot] = mask == 0 || (mask & (mask - 1)) == 0 ? (uint64_t)c + 1 : 0;
+    ReleaseSRWLockExclusive(&tls_slot_lock);
+}
+
+/* The holder sees a request at its next checkpoint: its running context's poll (a fiber's while it runs one). */
+static void vc_wake_holder(HosThread *t) {
+    Ctx *rc = t->run_ctx;
+    __atomic_store_n(rc ? &rc->poll : &t->ctx.poll, 1, __ATOMIC_RELAXED);
+}
+/* A post-start mask change can leave the holder on a core the new mask excludes. Ask it to yield at its next
+   checkpoint; the reacquisition uses the new mask. A change that keeps the same core syncs the cell now. */
+static void vc_note_mask_change(HosThread *t) {
+    if (!hos_vcores_on() || !t) return;
+    AcquireSRWLockExclusive(&vc_lock);
+    const uint32_t mask = vc_mask(t);
+    if (t->vc_held) {
+        const int c = t->vc_held - 1;
+        int move;
+        if (t->core_mask == 0) move = (c != vc_pref_core(t));
+        else if (mask == 0) move = 0;   /* (nonzero but past the vcores: pinned as before) */
+        else move = !((mask >> c) & 1);
+        if (move) {
+            __atomic_store_n(&t->vc_kick, 2, __ATOMIC_RELAXED);
+            t->vc_kick_at = hos_now_ns();
+            vc_wake_holder(t);
+        } else {
+            vc_sync_tls(t, c);
+        }
+    }
+    ReleaseSRWLockExclusive(&vc_lock);
 }
 static void vc_take(HosThread *t, int c) {
     vc_owner[c] = t;
@@ -1792,6 +1937,7 @@ static void vc_take(HosThread *t, int c) {
     __atomic_store_n(&t->vc_kick, 0, __ATOMIC_RELAXED);
     t->vc_starved = 0;
     t->vc_held_at = hos_now_ns(), t->vc_kick_at = 0;
+    vc_sync_tls(t, c);
 }
 static void vc_dequeue(HosThread *t) {
     for (int i = 0; i < vc_nq; i++)
@@ -1879,7 +2025,7 @@ static void vc_long_wait(HosThread *t, int64_t waited, int how, unsigned m) {
     if (log)
         hos_log("vcores: %s (priority %d) waited %.1f ms for a core: %s; the cores it may use now:%s", t->name, t->priority,
                 waited / 1e6, by, who);
-    /* (HOS_PROFILE=1: at its time, and when the wait began, for scripts/profile_report.py to put it in its frame) */
+    /* (HOS_PROFILE=1: at its time, and when the wait began, for scripts/perf.py report to put it in its frame) */
     hos_profiling_event("vcore_wait %.1f ms from %lld: %s (priority %d) waited for a core: %s; the cores it may use now:%s",
                         waited / 1e6, (long long)(now - waited), t->name, t->priority, by, who);
 }
@@ -1933,12 +2079,13 @@ static void vc_acquire(HosThread *t) {
                 HosThread *h = vc_owner[k];
                 if ((m >> k & 1) && h && (!worst || h->priority > worst->priority)) worst = h;
             }
-        if (worst && !worst->vc_kick) {
-            __atomic_store_n(&worst->vc_kick, worst->priority > t->priority ? 1 : 2, __ATOMIC_RELAXED);
-            worst->vc_kick_at = hos_now_ns();
-            Ctx *rc = worst->run_ctx;   /* (a fiber's context while it runs one) */
-            __atomic_store_n(rc ? &rc->poll : &worst->ctx.poll, 1, __ATOMIC_RELAXED);
-            vc_st.kicks++;
+        if (worst) {
+            if (!worst->vc_kick) {
+                __atomic_store_n(&worst->vc_kick, worst->priority > t->priority ? 1 : 2, __ATOMIC_RELAXED);
+                worst->vc_kick_at = hos_now_ns();
+                vc_st.kicks++;
+            }
+            vc_wake_holder(worst);   /* (also repairs a request whose interrupt was already taken) */
         }
         SleepConditionVariableSRW(&t->vc_cv, &vc_lock, 1, 0);
         if (t->vc_held) {   /* granted by a release */
@@ -2008,7 +2155,13 @@ static void vc_yield(HosThread *t, int strict) {
     if (!__atomic_load_n(&vc_nq, __ATOMIC_ACQUIRE) && !__atomic_load_n(&t->vc_kick, __ATOMIC_RELAXED)) return;
     AcquireSRWLockExclusive(&vc_lock);
     const int c = t->vc_held - 1;
-    int any = 0;
+    /* a mask change that excludes the held core must move even when nobody waits; a nonzero mask
+       wholly outside the vcores is pinned as before and does not force a move */
+    const uint32_t mask = vc_mask(t);
+    int any;
+    if (t->core_mask == 0) any = (c != vc_pref_core(t));
+    else if (mask == 0) any = 0;
+    else any = !((mask >> c) & 1);
     for (int i = 0; i < vc_nq && !any; i++) {
         HosThread *w = vc_queue[i];
         any = (vc_allowed(w) >> c & 1) && (w->vc_starved || (strict ? w->priority < t->priority : w->priority <= t->priority));
@@ -2028,8 +2181,8 @@ static void vc_yield(HosThread *t, int strict) {
 }
 /* 1 when the caller is to take a core again after its block (hos_vcore_back): it gave its core up, or it has run without
    one since an escape. An escape lasts until the thread's next block, as every other thread waits for a core after one;
-   it took none again before, so an escaped thread ran with no core, and the core number of a core another thread held,
-   for the rest of its life (issue 1929) */
+   taking none again, an escaped thread would run with no core, and the core number of a core another thread held,
+   for the rest of its life */
 int hos_vcore_away(void) {
     HosThread *t = cur;
     if (!hos_vcores_on() || !t) return 0;

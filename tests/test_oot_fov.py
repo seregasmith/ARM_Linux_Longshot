@@ -16,6 +16,8 @@ RUN_ALL_ARGS = ["--cc", "gcc"]
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
 import oot_fov
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
+from menu_model_fixture import menu_text  # noqa: E402
 
 
 class InstallTests(unittest.TestCase):
@@ -47,7 +49,7 @@ class InstallTests(unittest.TestCase):
     def test_lift_and_menu_wiring(self):
         lift = (ROOT / "nx2/lift.py").read_text(encoding="utf-8")
         self.assertLess(lift.index("oot_fov.install("), lift.index("discover.discover(L"))
-        menu = (ROOT / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8")
+        menu = menu_text()   # (vk_menu.cpp and its modules' rows, #1633)
         api = (ROOT / "gpu/vk/vk_api.h").read_text(encoding="utf-8")
         options = (ROOT / "gpu/vk/vk_menu.h").read_text(encoding="utf-8")
         replay = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
@@ -60,10 +62,13 @@ class InstallTests(unittest.TestCase):
         self.assertIn("if (id == HOS_OPT_FOV) return opts.fov;", replay)
         self.assertIn("if (id == HOS_OPT_PROMPTS) return opts.prompts;", replay)
         self.assertIn("if (id == HOS_OPT_CAMERA_SPEED) return opts.camera_speed;", replay)
+        # (scales: module sliders (gpu/vk/menu/gameplay.cpp and camera.cpp, #1633), which is_slider and stops_at_ends take)
         for name in ("is_slider", "stops_at_ends"):
             function = menu[menu.index("bool " + name):].split("\n", 1)[0]
-            self.assertIn("&opts.fov", function)
-            self.assertIn("&opts.camera_speed", function)
+            self.assertIn("menu::Kind::Slider", function)
+        for module, key in (("gameplay.cpp", "field_of_view"), ("camera.cpp", "camera_speed")):
+            text = (ROOT / "gpu/vk/menu" / module).read_text(encoding="utf-8")
+            self.assertRegex(text, r'\.key = "%s",[^}]*\.kind = menu::Kind::Slider,' % key)
 
 
 HEAD = r'''

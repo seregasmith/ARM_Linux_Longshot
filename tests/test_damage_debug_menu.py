@@ -10,6 +10,13 @@ import tempfile
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 ROOT = Path(__file__).resolve().parents[1]
+import sys  # noqa: E402
+sys.path.insert(0, str(ROOT / "tests"))
+from menu_model_fixture import built_menu, menu_model_prelude, menu_text, unhook  # noqa: E402
+from menu_model_fixture import module_rows as described_rows  # noqa: E402
+
+# (the shown() hooks of the Debug tab's module rows, as this fixture answers them: both false, as the stubs below say)
+SHOWN_HOOKS = {"intel_compiler_row", "laptop_row"}
 
 
 def block(text, marker):
@@ -26,41 +33,63 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cxx", default="g++")
     args = parser.parse_args()
-    menu = (ROOT / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8")
+    # (vk_menu.cpp and its modules, their rows as table lines: menu_text, #1633)
+    menu = menu_text(ROOT)
     header = (ROOT / "gpu/vk/vk_menu.h").read_text(encoding="utf-8")
-    table = block(menu, "Row rows[] = {")
+    table = block(menu, "Row rows[] = {") + block(menu, "Row module_rows[] = {")
     entries = re.findall(r'\{TAB_DEBUG,[^{}]*\}', table)
     assert len(entries) >= 18
     assert '{TAB_GAMEPLAY, "Damage taken"' not in table
     assert sum('"Damage taken"' in entry for entry in entries) == 1
-    source = '#include <atomic>\n#include <cassert>\n#include <cstring>\n#include <iterator>\n'
+    # (#1633: the tab's order is the model's, row_order, so the rows go in the order the menu builds them: built_menu. A row
+    # with a value as its table line; the others, a module's button or page and the headings, as rows with no value)
+    by_label = {re.match(r'\{TAB_DEBUG, "((?:[^"\\]|\\.)*)"', entry).group(1): entry for entry in entries}
+    hooks = {r["label"].strip('"'): unhook(r["shown"]) for r in described_rows(ROOT) if r["page"] == "debug" and "shown" in r}
+    assert set(hooks.values()) <= SHOWN_HOOKS, hooks   # (a new shown() on the Debug tab: answer it here)
+    layout = built_menu(args.cxx, ROOT)[0]["debug"]
+    lines = []
+    for item in layout:
+        if item.heading:
+            line = '{TAB_DEBUG, "%s", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true}' % item.label
+        elif item.label in by_label:
+            line = by_label[item.label]
+        else:
+            assert item.value in ("", "nullptr"), item
+            line = '{TAB_DEBUG, "%s", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, false}' % item.label
+        if item.label in hooks:
+            line = line[:-1] + ", -1, false, &shown_%s}" % hooks[item.label]
+        lines.append(line)
+    # (what follows the tools: the Developer rows and the sections' after it, in the tab's order, less the hidden)
+    first = [item.heading for item in layout].index(True)
+    after_tools = [item.label for item in layout[first + 1:] if not item.heading and item.label not in hooks]
+    source = '#include <atomic>\n#include <cassert>\n#include <cstring>\n#include <iterator>\n#include <vector>\n'
+    source += menu_model_prelude(ROOT)
     source += block(header, "struct Options {") + ';\nOptions opts;\n'
     source += block(menu, "enum MenuTab {") + ';\n'
     source += block(menu, "struct Row {") + ';\n'
-    for name in ("tx_onoff", "tx_damage_taken", "tx_robust", "tx_intel_compiles"):
+    for name in ("tx_onoff", "tx_damage_taken"):
         source += block(menu, "const char* " + name + "(") + '\n'
-    # Help text is not used by this navigation fixture.
-    source += 'const char* hn_robust(int, int) { return nullptr; }\n'
-    source += 'const char* hn_astc_rgba8(int, int) { return nullptr; }\n'
-    source += 'const char* hn_intel_compiles(int, int) { return nullptr; }\n'
-    source += 'Row rows[] = {' + ',\n'.join(entries) + '};\n'
+    # Help, hints and the other rows' texts are not used by this navigation fixture.
+    table = '\n'.join(lines)
+    for name in sorted(set(re.findall(r'\b(tx_\w+|hn_\w+)\b', table)) - {"tx_onoff", "tx_damage_taken"}):
+        source += ('const char* %s(int, int) { return nullptr; }\n' if name.startswith("hn_") else
+                   'const char* %s(int) { return ""; }\n') % name
+    source += 'bool intel_compiler_row() { return false; }   // (not Intel graphics on Windows: its two rows hidden)\n'
+    source += 'bool laptop_row() { return false; }   // (a dedicated card: no Set up for a weak laptop button)\n'
+    for name in sorted(set(hooks.values())):
+        source += 'const menu::Setting shown_%s = [] { menu::Setting s; s.shown = %s; return s; }();\n' % (name, name)
+    source += 'Row rows[] = {' + ',\n'.join(lines) + '};\n'
     source += 'constexpr int kRows = sizeof rows / sizeof rows[0];\n'
+    source += 'const std::vector<int>& row_order(int t) {   // (the Debug tab in the model\'s order; no other tab here)\n'
+    source += '    static std::vector<int> debug, none;\n'
+    source += '    if (debug.empty()) for (int i = 0; i < kRows; i++) debug.push_back(i);\n'
+    source += '    return t == TAB_DEBUG ? debug : none;\n}\n'
+    source += 'const char* const after_tools[] = {%s};\n' % ", ".join('"%s"' % label for label in after_tools)
     source += '''
 bool cheats_env = false;
 bool quick_debug = false;
-bool reflex_available() { return false; }
-bool antilag_available() { return false; }
-bool intel_compiler_row() { return false; }   // (not Intel graphics on Windows: the Developer section's rows as before)
-bool laptop_row() { return false; }   // (a dedicated card: no Set up for a weak laptop button)
-int upscalers_available() { return 1; }
-constexpr int DLSS_OK = 0;
-int dlss_why() { return 1; }
-namespace ur {
-bool upscaler_shown(int n) { return n > 1; }
-bool model_shown(bool available) { return available; }
-}
 '''
-    for name in ("bool cheats_on(", "bool is_laptop_row(", "bool row_shown(", "int tab_row_count(", "int tab_row_to_global(",
+    for name in ("bool cheats_on(", "bool row_shown(", "int tab_row_count(", "int tab_row_to_global(",
                  "int menu_damage_taken("):
         source += block(menu, name) + '\n'
     source += re.search(r"std::atomic<bool> transition_autosave_enabled\{[^}]+\};", menu).group() + '\n'
@@ -125,7 +154,11 @@ int main() {
         const int n = debug_rows(order, &dev, &heading);
         assert(heading >= 0);
         assert(dev == (env || enabled ? (int)std::size(expected) : kDebugGeneralRows));
-        assert(n == dev + 7); // Only the existing Developer rows follow (Frame pacing and Threaded rendering among them).
+        // Only the Developer rows and the sections' after it follow, in the tab's order (Frame pacing and Threaded rendering
+        // among them).
+        assert(n == dev + (int)std::size(after_tools));
+        for (int i = dev; i < n; ++i)
+            assert(!std::strcmp(rows[tab_row_to_global(TAB_DEBUG, order[i])].name, after_tools[i - dev]));
         for (int i = 0; i < dev; ++i) {
             const Row& row = rows[tab_row_to_global(TAB_DEBUG, order[i])];
             assert(!std::strcmp(row.name, expected[i]));

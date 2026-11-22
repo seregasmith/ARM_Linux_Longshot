@@ -14,8 +14,8 @@
    The side changes on a thread of its own (a sleep to the next flip on the host's clock, hos_now_ns), never at a present.
    The frame trace (RX_VK_FRAME_TRACE) gets each frame's side as its ab_side column (MkwVkHost.ab_frame): -1 outside the A/B,
    0 or 1, and 2 or 3 for that side's frames in a transition (a flip inside the frame, or less than AB_SETTLE_NS before its
-   end), which scripts/ab_summary.py leaves out. The host also sums the presents' intervals by side (rx_nvn_present) and logs
-   the sums at the end of the run (hos_close_finish): "ab: ...". docs/development.md, "An A/B within one run". */
+   end), which scripts/perf.py ab leaves out. The host also sums the presents' intervals by side (rx_nvn_present) and logs
+   the sums at the end of the run (hos_close_finish): "ab: ...". docs/dev/developing.md, "An A/B within one run". */
 #include "hos.h"
 #include <stdint.h>
 #include <stdio.h>
@@ -147,7 +147,7 @@ static int hos_ab_setup(const char *text, int64_t now) {
     __atomic_store_n(&ab.on, 1, __ATOMIC_RELEASE);   /* (the plan whole before a thread that reads it sees it on) */
     __atomic_store_n(&hos_ab_side_now, -1, __ATOMIC_RELAXED);
     hos_log("ab: HOS_AB: after %.0f s of warm-up, %s alternates every %.1f s between its normal value (side 0, first) and %d "
-            "(side 1); the frame trace (RX_VK_FRAME_TRACE) has each frame's side in its ab_side column (scripts/ab_summary.py)",
+            "(side 1); the frame trace (RX_VK_FRAME_TRACE) has each frame's side in its ab_side column (scripts/perf.py ab)",
             ab.warm_s, ab.name, ab.period_s, ab.value);
     return 1;
 }
@@ -192,7 +192,7 @@ static int hos_ab_summary(char *out, size_t cap) {
     if (at < (int)cap && n[0] && n[1])
         at += snprintf(out + at, cap - at, "side 1 %+.2f %% frame time; ", 100 * (m1 - m0) / m0);
     if (at < (int)cap)
-        at += snprintf(out + at, cap - at, "%lld frames in transitions left out (the host's presents; scripts/ab_summary.py "
+        at += snprintf(out + at, cap - at, "%lld frames in transitions left out (the host's presents; scripts/perf.py ab "
                                            "on the frame trace for medians and a confidence interval)", (long long)(n[2] + n[3]));
     if (at < (int)cap && !__atomic_load_n(&ab_read, __ATOMIC_RELAXED))
         at += snprintf(out + at, cap - at, "; %s was never read during the A/B: no switch of that name takes part, both sides "

@@ -76,6 +76,7 @@ void apply_mode(uint32_t){if(!state.swapchain)invalid=true;++modes;}
 uint32_t fifo_min_interval_us(){return 0;}
 void log_timings(){}
 template<class... T> void logf(const char*,T...){}
+namespace rec {struct Settled {};}   // (vk_recorder.h: no recorder thread here, so no wait it changes)
 int vkWaitSemaphores(int,const VkSemaphoreWaitInfo*,uint64_t);
 constexpr uint64_t kReflexThisFrame=~0ull;thread_local uint64_t reflex_present_frame=kReflexThisFrame;
 const void* reflex_submit_id(const void* next,uint64_t frame=kReflexThisFrame);   // (vk_reflex.h's default)

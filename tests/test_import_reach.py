@@ -45,7 +45,8 @@ def excerpts(memory):
         start = memory.index("import_reach::Reach live_reach;")
         code += memory[start:memory.index(";", start) + 1] + "\n" + block(memory, ADD) + "\n" + block(memory, TAKE) + "\n"
     for marker in ("void retire_pool(std::map<uint64_t, Pool>::iterator it) {", "void bg_drain(", "void prefetch_chunks(",
-                   "void span_game_pools(", "Pool* pool_lookup(uint64_t guest, uint64_t size) {", "Pool* pool_of(",
+                   "void span_game_pools(", "Pool* pool_lookup(uint64_t guest, uint64_t size) {",
+                   "Pool* pool_of(uint64_t guest, uint64_t size) {",
                    "bool import_in_background(", "void memory_note_gpu_write(", "int memory_guest_imported("):
         code += block(memory, marker) + "\n"
     return types, code, reach

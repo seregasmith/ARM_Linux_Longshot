@@ -2,7 +2,7 @@
 
 Locals cost compile time in every function they are given to (the Test Farm: the game's compile +27% with them in all
 ~295,000) and pay only where the code runs. nx2/ran_funcs.txt names the 77,725 functions a 100-minute play session ran
-(scripts/coverage/cover.py, issue #362): ~42% of the lifted C's estimated compile. Every other function keeps its registers
+(scripts/coverage/cover.py): ~42% of the lifted C's estimated compile. Every other function keeps its registers
 and flags in the context, as on a lift without locals, so a function the list misses is as fast as before, never slower.
 
 Checked here, without the game:

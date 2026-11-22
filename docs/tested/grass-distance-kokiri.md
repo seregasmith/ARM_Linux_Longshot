@@ -1,0 +1,3 @@
+| Date | Build | OS / desktop | GPU / driver | CPU / RAM | Settings | Where | Result |
+|---|---|---|---|---|---|---|---|
+| Not reported | PR #1382, ed84459d; Game's on the same build as baseline | Windows 11 | RTX 5090, NVIDIA 621.01 | 32 threads; RAM not reported | 2560x1440, DLSS, no frame generation, 60 fps cap; `RX_VK_PASS_TIMING=1` | Kokiri Forest stepping stones, facing the exit, camera tilted up; one run, interleaved Game's, 4x, 2x, 3x twice, 25 s each | Median GPU ms/frame: 7.47 Game's, 7.66 2x, 7.76 3x, 7.89 4x. Debug white-blade pixels in upper half, two shots: 1336/1243 Game's, 3645/3647 2x, 4462/4416 4x. This predates the later field-grass patch and its removal. |

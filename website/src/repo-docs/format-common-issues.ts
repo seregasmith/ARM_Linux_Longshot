@@ -1,6 +1,6 @@
 import { sectionsAt } from './format-install.ts';
 
-// The Help page (docs/common-issues.md): an introduction with a list of the groups, then one `##` group for each moment
+// The Help page (docs/user/common-issues.md): an introduction with a list of the groups, then one `##` group for each moment
 // a problem shows up, each with `###` problems that end with a line of report-search links, then "Still stuck?".
 // Presentation labels only: all troubleshooting steps and links live in the document.
 const groups = new Map([

@@ -20,7 +20,7 @@ enum Part {
     kListLine,  // a list (the teleport list, the inventory): a line as shown (index, 0 the top one), side -1 the left half, 1 the right half
     kButton,    // the restart question's buttons: index 0 Later, 1 Restart now
 };
-enum CtlColumn { kCtlPrimary, kCtlAlternate, kCtlKeyboard, kCtlToggle, kCtlColumns };
+enum CtlColumn { kCtlPrimary, kCtlAlternate, kCtlKeyboard, kCtlToggle, kCtlReset, kCtlColumns };
 struct Hit {
     Part part = kNone;
     int index = -1;

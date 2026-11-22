@@ -1,4 +1,4 @@
-# Same-repo pull request (mb/setup path-filter). Docs: docs/ci.md.
+# Same-repo pull request (mb/setup path-filter). Docs: docs/dev/reference/ci.md.
 workflows:
   ci:
     jobs:
@@ -26,8 +26,7 @@ workflows:
           filters: >-
             pipeline.parameters.gpu or pipeline.parameters.windows
             or pipeline.parameters.full
-      - website:
-          filters: pipeline.parameters.website
+      - website:   # (always: its checks run on every change; the preview or deploy only when the site's sources change)
       - website-preview-build:
           requires: [website]
           filters: pipeline.parameters.website

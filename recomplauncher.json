@@ -27,13 +27,18 @@
     "args": [
       "--cli",
       "--prepare",
-      "--game",
-      "{game}",
+      "--game={game}",
       "--out",
-      "{install}/Longshot"
+      "{install}/Longshot",
+      "--work",
+      "{install}/recompdata/cache/work"
     ],
+    "done": [
+      "{install}/Longshot/image.bin"
+    ],
+    "keeps_copy": true,
     "version": "2",
-    "label": "Building the game from your copy (15 to 30 minutes)",
+    "label": "Building the game (15 to 30 minutes the first time)",
     "timeout": 7200,
     "options": [
       {

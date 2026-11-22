@@ -169,6 +169,13 @@ void Traverse(EmitContext& ctx, IR::Program& program) {
                     ctx.OpAtomicIAdd(ctx.U32[1], counter, ctx.Const(static_cast<u32>(spv::Scope::Device)), ctx.u32_zero_value,
                                      ctx.Const(1U));
                 }
+                if (ctx.wmma16_fused.active) {
+                    if (ctx.wmma16_fused.skip_insts.contains(&inst)) continue;
+                    if (inst.GetOpcode() == IR::Opcode::MatrixMulAddF16) {
+                        EmitMatrixMulAddF16Fused(ctx, &inst);
+                        continue;
+                    }
+                }
                 EmitInst(ctx, &inst);
             }
             break;
@@ -689,6 +696,12 @@ void PatchMeshInstructions(std::vector<u32>& code, const EmitContext& ctx) {
 std::vector<u32> EmitSPIRV(const Profile& profile, const RuntimeInfo& runtime_info, IR::Program& program, Bindings& bindings) {
     EmitContext ctx{profile, runtime_info, program, bindings};
     if (program.info.uses_cooperative_matrix && mma_software) DefineSoftwareMatrixFunction(ctx);
+    if (program.info.uses_cooperative_matrix && !mma_software && mma_wmma16) {
+        if (!DefineWmma16MatrixFunction(ctx, program))
+            DefineSoftwareMatrixFunction(ctx);   // (the tiles do not fit the shared memory)
+        else if (mma_wmma16_fused)
+            DefineWmma16PairFunction(ctx, program);
+    }
     Id main{};
     if (runtime_info.mesh_fallback_vertex) {   // (longshot: the fallback's generated vertex stage, which reads the records)
         const Id void_function{ctx.TypeFunction(ctx.void_id)};

@@ -20,6 +20,9 @@ class RecompLauncherJsonTests(unittest.TestCase):
         # output_res, resolution, upscaling, frame_rate_cap, dlss)
         ini_key = menu.split("const char* ini_key(const Row& r) {", 1)[1].split("\n}", 1)[0]
         rows |= set(re.findall(r'return "([a-z_0-9]+)";', ini_key))
+        # (#1633: the rows the menu's modules describe, gpu/vk/menu/, by their keys)
+        for module in (ROOT / "gpu" / "vk" / "menu").glob("*.cpp"):
+            rows |= set(re.findall(r'\.key = "([a-z_0-9]+)"', module.read_text(encoding="utf-8")))
         keys = {key for setting in manifest["settings"] for choice in setting["choices"] for key in choice["set"]}
         self.assertTrue(keys)
         # (keys the game reads that are no menu row: Compile shaders, which the preparation reads, vk_draw.cpp compile_all)
@@ -40,9 +43,65 @@ class RecompLauncherJsonTests(unittest.TestCase):
         self.assertIn(out + "/user", manifest["saves"])
         self.assertNotIn("{home}/Games", json.dumps(manifest))
 
+    def test_builds_again_from_what_the_game_folder_kept(self):
+        # (RecompLauncher's prepare.keeps_copy: with the player's copy gone, it runs the step again leaving out every argument
+        # with {game} in it. What is left must still build into the same folder: make_game then builds from the files it kept)
+        manifest = json.loads((ROOT / "recomplauncher.json").read_text(encoding="utf-8"))
+        prepare = manifest["prepare"]
+        self.assertTrue(prepare["keeps_copy"])
+        with_copy = [arg for arg in prepare["args"] if "{game}" in arg]
+        self.assertEqual(with_copy, ["--game={game}"])
+        out = manifest["folders"]["game"][0]["path"]
+        without_copy = [arg for arg in prepare["args"] if "{game}" not in arg]
+        self.assertEqual(without_copy[:4], ["--cli", "--prepare", "--out", out])
+
+    def test_the_work_folder_is_in_the_game_folder(self):
+        # (the work folder is what makes a build after an update quick: the translated code and the compiled objects. In the
+        # install folder it moves and uninstalls with the game, and nothing is left in the player's ~/.cache or LOCALAPPDATA.
+        # recompdata/cache is RecompLauncher's {data}/cache, which its backups and cloud saves leave out. Written out, not
+        # {data}, so a launcher from before {data} builds into the same place)
+        manifest = json.loads((ROOT / "recomplauncher.json").read_text(encoding="utf-8"))
+        args = manifest["prepare"]["args"]
+        work = args[args.index("--work") + 1]
+        self.assertEqual(work, "{install}/recompdata/cache/work")
+        out = manifest["folders"]["game"][0]["path"]
+        self.assertFalse(work.startswith(out + "/"), "the work folder stays out of the game folder the build writes")
+        self.assertFalse(any(work.startswith(save + "/") or work == save for save in manifest["saves"]))
+
+    def test_a_finished_build_is_told_by_its_image(self):
+        # (prepare.done: the file every finished build has on Windows and Linux, the one Play's start script looks for)
+        manifest = json.loads((ROOT / "recomplauncher.json").read_text(encoding="utf-8"))
+        out = manifest["folders"]["game"][0]["path"]
+        self.assertEqual(manifest["prepare"]["done"], [out + "/image.bin"])
+        self.assertIn('[ -f "$folder/image.bin" ]', (ROOT / "builder" / "linux" / "longshot-launch").read_text(encoding="utf-8"))
+
     def test_appimage_carries_it(self):
-        self.assertIn('cp recomplauncher.json "$APPDIR/recomplauncher.json"',
+        # (the release's copy, with its own prepare.version: release_manifest)
+        self.assertIn('"$PY" -I scripts/builder_package.py manifest "$VERSION" --out "$APPDIR/recomplauncher.json"',
                       (ROOT / "scripts" / "linux" / "appimage.sh").read_text(encoding="utf-8"))
+
+    def test_a_release_asks_for_a_new_build(self):
+        # (RecompLauncher keeps a game set up through an update and builds it again only when prepare.version changes: each
+        # release's copy carries its own version, and nothing else of the file changes)
+        bp = self.builder_package()
+        shipped = json.loads(bp.release_manifest("v3.2.1").decode("utf-8"))
+        manifest = json.loads((ROOT / "recomplauncher.json").read_text(encoding="utf-8"))
+        self.assertEqual(shipped["prepare"]["version"], "v3.2.1")
+        manifest["prepare"]["version"] = "v3.2.1"
+        self.assertEqual(shipped, manifest)
+
+    def test_a_release_rebuilds_without_the_copy(self):
+        # (the new build an update asks for runs from what the game folder kept, so the player isn't asked for the copy)
+        shipped = json.loads(self.builder_package().release_manifest("v3.2.1").decode("utf-8"))
+        self.assertTrue(shipped["prepare"]["keeps_copy"])
+
+    @staticmethod
+    def builder_package():
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("builder_package", ROOT / "scripts" / "builder_package.py")
+        bp = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bp)
+        return bp
 
     def test_windows_zip_carries_it(self):
         # (scripts/builder_package.py zip: the setup as LongshotBuilder.exe, the builder, tools.lock and VERSION, and this
@@ -69,6 +128,8 @@ class RecompLauncherJsonTests(unittest.TestCase):
                 self.assertEqual(z.read("VERSION"), b"v3.0.0\n")
                 # (and where the builder and the game read it: without it a release's game logged "longshot unknown")
                 self.assertEqual(z.read("LongshotBuilder/tools/version.txt"), b"v3.0.0\n")
+                # (and in the setup step's version, so RecompLauncher builds the game again after the update)
+                self.assertEqual(json.loads(z.read("recomplauncher.json"))["prepare"]["version"], "v3.0.0")
         manifest = json.loads((ROOT / "recomplauncher.json").read_text(encoding="utf-8"))
         self.assertIn("LongshotBuilder.exe", manifest["start"]["program"])
         self.assertIn("LongshotBuilder.exe", manifest["prepare"]["program"])

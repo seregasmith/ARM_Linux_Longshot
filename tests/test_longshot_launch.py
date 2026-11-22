@@ -29,6 +29,7 @@ def game(folder):
         "printf 'APPDIR=%s\\n' \"${APPDIR-UNSET}\"\n"
         "printf 'LD_LIBRARY_PATH=%s\\n' \"${LD_LIBRARY_PATH-UNSET}\"\n"
         "printf 'LONGSHOT_TOOLS=%s\\n' \"${LONGSHOT_TOOLS-UNSET}\"\n"
+        "printf 'STORE=%s\\n' \"${LONGSHOT_SHADER_STORE-UNSET}\"\n"
         "printf 'PYTHONPATH=%s\\n' \"${PYTHONPATH-UNSET}\"\n"
         "printf 'CHECK=%s\\n' \"${LONGSHOT_NO_UPDATE_CHECK-UNSET}\"\n"
         "printf 'LD_PRELOAD=%s\\n' \"${LD_PRELOAD-UNSET}\"\n"
@@ -43,13 +44,13 @@ def game(folder):
 
 
 class LaunchTests(unittest.TestCase):
-    def run_launch(self, *args, home, cwd=None, extra=None):
+    def run_launch(self, *args, home, cwd=None, **more):
         e = os.environ.copy()
         e.pop("DISPLAY", None)
         e.pop("WAYLAND_DISPLAY", None)
         e.update(HOME=str(home), APPDIR="/from/the/appimage", APPIMAGE="/tmp/Longshot.AppImage", ARGV0="Longshot", OWD="/old",
                  LD_LIBRARY_PATH="/builder/lib", LONGSHOT_TOOLS="/builder/tools", PYTHONPATH="/builder/python")
-        e.update(extra or {})
+        e.update(more)
         return subprocess.run([str(LAUNCH), *args], env=e, cwd=cwd, text=True, capture_output=True, check=False)
 
     def test_the_folder_starts_bin_longshot_without_the_builders_libraries(self):
@@ -78,7 +79,7 @@ class LaunchTests(unittest.TestCase):
             other = Path(tmp) / "ubuntu12_32" / "gameoverlayrenderer.so"
             other.parent.mkdir()
             other.write_bytes(bytes(head) + bytes(64))
-            ran = self.run_launch(str(folder), home=tmp, extra={
+            ran = self.run_launch(str(folder), home=tmp, **{
                 "LD_PRELOAD": "/nowhere/ubuntu12_64/gameoverlayrenderer.so:%s:%s" % (other, libc),
                 "RX_MARCH": "armv8.2-a+lse", "RX_CPM": "/builder/cpm"})
         self.assertEqual(ran.returncode, 0, ran.stderr)
@@ -89,8 +90,19 @@ class LaunchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="longshot-launch-") as tmp:   # (none for this CPU: none at all)
             folder = Path(tmp) / "game"
             game(folder)
-            ran = self.run_launch(str(folder), home=tmp, extra={"LD_PRELOAD": "/nowhere/gameoverlayrenderer.so"})
+            ran = self.run_launch(str(folder), home=tmp, **{"LD_PRELOAD": "/nowhere/gameoverlayrenderer.so"})
         self.assertIn("LD_PRELOAD=UNSET", ran.stdout.splitlines())
+
+    def test_the_shader_store_switch_reaches_the_game(self):
+        # (the game's own switch: kept, as make_game.game_env keeps it for the shaders prepared at the build)
+        for store in ("/mnt/fast/shaders", "0"):
+            with tempfile.TemporaryDirectory(prefix="longshot-launch-") as tmp:
+                folder = Path(tmp) / "Games" / "Longshot"
+                game(folder)
+                ran = self.run_launch(str(folder), home=tmp, LONGSHOT_SHADER_STORE=store)
+            self.assertEqual(ran.returncode, 0, ran.stderr)
+            self.assertIn("STORE=" + store, ran.stdout.splitlines())
+            self.assertIn("LONGSHOT_TOOLS=UNSET", ran.stdout.splitlines())
 
     def test_no_folder_is_games_longshot(self):
         with tempfile.TemporaryDirectory(prefix="longshot-launch-") as tmp:

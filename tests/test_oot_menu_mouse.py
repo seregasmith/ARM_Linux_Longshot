@@ -19,7 +19,9 @@ D-pad's right (down) and left (up), a notch each, one after another, and the mou
 camera's). With the cursor hidden (R held counts as the pad in use) the wheel still moves a list, and moving the mouse
 points at nothing. A left press on a panel page is a click at its release, and none when the button was let go
 while the pointer was away (another window in front). Once frames go on with no menu holding the mouse, the window is
-told at once.
+told at once. A replay (HOS_INPUT_PLAY) gives the recording's menu choices, not the mouse's: a focus only to a button
+in the screen's list (a guest address from a file: never handed to the game's setter otherwise), an item key only to
+one of Key Items' items and the page's setter; any other is counted as not met.
 python -I -B tests/test_oot_menu_mouse.py   (Windows: the feature's; elsewhere it is skipped)
 """
 import shutil
@@ -42,9 +44,12 @@ extern uint8_t *fake_heap;
 #define FAKE_BASE 0x100000ULL
 #define HOS_GUEST_SPACE (FAKE_BASE + (4ULL << 20))
 #define GP(a) ((void *)(fake_heap + ((uint64_t)(a) - FAKE_BASE)))
+#define G64(a) (*(uint64_t *)GP(a))
+#define g_module_base 0ull
 static inline void *hos_guest_range(uint64_t a, uint64_t n) {
     return a >= FAKE_BASE && n <= HOS_GUEST_SPACE - FAKE_BASE && a - FAKE_BASE <= HOS_GUEST_SPACE - FAKE_BASE - n ? GP(a) : NULL;
 }
+static inline int hos_mem_region(uint64_t a, uint64_t n) { return hos_guest_range(a, n) != NULL; }
 void hos_log(const char *fmt, ...);
 int64_t hos_now_ns(void);
 """
@@ -77,6 +82,7 @@ void hos_log(const char *fmt, ...) { va_list a; va_start(a, fmt); vfprintf(stder
 int64_t hos_now_ns(void) { return clock_ns; }
 void hos_oot_menu_focus(Ctx *c, uint64_t screen, uint64_t pane, uint64_t lr);
 void hos_oot_menu_tick(Ctx *c, uint64_t screen);
+int hos_oot_menu_sprint_active(void);
 
 /* the window: 3840 x 2160, so a pixel is a unit of the layout's (x right of the centre, y up) */
 static int ptr_x = 1920, ptr_y = 1080, wheel_next;
@@ -100,6 +106,32 @@ static char taps[1024];
 void hos_hid_tap(const char *press) { strncat(taps, press, sizeof taps - strlen(taps) - 2), strcat(taps, ";"); }
 void hos_hid_stick(int lx, int ly, int rx, int ry, int hold_ms) { (void)lx, (void)ly, (void)rx, (void)ry, (void)hold_ms; }
 void hos_hid_drag(int dx, int dy, int right) { (void)dx, (void)dy, (void)right; }
+/* (host/input_movie.c: what the mouse asked of the game is offered to a recording; a replay's choices are movie_q's,
+   given to their screen while movie_playing, each said met or not) */
+#include "input_movie.h"
+static int movie_focus, movie_items;
+void hos_input_movie_menu(int kind, uint64_t screen, uint64_t button, const char *key) {
+    (void)screen, (void)button, (void)key;
+    if (kind == 1) movie_focus++;
+    else movie_items++;
+}
+static int movie_playing, movie_met, movie_missed, movie_qn, movie_qi;
+static MovieMenu movie_q[8];
+static void movie_queue(uint64_t screen, int kind, uint64_t button, const char *key) {
+    MovieMenu *m = &movie_q[movie_qn++];
+    memset(m, 0, sizeof *m);
+    m->screen = screen, m->kind = (uint8_t)kind, m->button = button;
+    if (key) snprintf(m->key, sizeof m->key, "%s", key);
+}
+int hos_input_movie_menu_take(uint64_t screen, MovieMenu *out) {
+    while (movie_qi < movie_qn) {
+        const MovieMenu *m = &movie_q[movie_qi++];
+        if (m->screen == screen) return *out = *m, 1;
+    }
+    return 0;
+}
+void hos_input_movie_menu_done(int met) { if (met) movie_met++; else movie_missed++; }
+int hos_input_movie_playing(void) { return movie_playing; }
 static uint64_t focus_asked, focus_screen;
 static int focus_calls;
 /* (a focus change reported from another of the game's threads while the setter runs: the hook there must not wait for
@@ -121,7 +153,9 @@ static void focus_setter(Ctx *c) {
         other_pane = 0;
     }
 }
-A64Fn a64_lookup(uint64_t addr) { return addr == 0x8088ffc0ULL ? focus_setter : NULL; }
+static int item_calls;   /* (Key Items' setter, f_833fda00: the page's refresh from its key buffer) */
+static void item_setter(Ctx *c) { (void)c, item_calls++; }
+A64Fn a64_lookup(uint64_t addr) { return addr == 0x8088ffc0ULL ? focus_setter : addr == 0x833fda00ULL ? item_setter : NULL; }
 
 static uint64_t alloc(size_t n) { const uint64_t a = heap_top; heap_top += (n + 15) & ~(size_t)15; return a; }
 static void put64(uint64_t a, uint64_t v) { memcpy(GP(a), &v, 8); }
@@ -181,6 +215,8 @@ int main(void) {
     focused(b, 1);
     hos_oot_menu_focus(&ctx, pause, b, 0);
     frame(pause, 0, 200);   /* (the screen seen, its focus found: the mouse is for it) */
+    CHECK(hos_oot_menu_sprint_active());
+    CHECK(!hos_oot_menu_sprint_active());   /* no new screen update: the menu has stopped */
     reset();
     frame(pause, -500, 210);
     CHECK(focus_calls == 1 && focus_asked == a && focus_screen == pause);   /* hover: the setter, on that button */
@@ -332,6 +368,33 @@ int main(void) {
     CHECK(menu_gone == 0);   /* (the first frames: not yet 50 ms) */
     for (int i = 0; i < 4; i++) frame(hud, 0, 0);
     CHECK(menu_gone > 0);
+
+    /* A replay: a screen with a button and Key Items' key buffer (+760, its room at +768, browsing: +840 0). The
+       recording's choices: a focus to its button; to an address that is no button of it, and to another screen's button
+       (a file's guest addresses); an item key that is none of Key Items', and one that is. Only the button and the item
+       reach the game's setters, the other three are not met; the mouse's own pointing does nothing meanwhile */
+    clock_ns += 300000000LL;
+    const uint64_t replay = screen_new(0x84c0baa8ULL);
+    const uint64_t ra = button_new(replay, 400, 400, 200, 200);
+    {
+        const uint64_t buf = alloc(64);
+        put64(replay + 760, buf);
+        const int32_t room = 64, browsing = 0;
+        memcpy(GP(replay + 768), &room, 4), memcpy(GP(replay + 840), &browsing, 4);
+    }
+    movie_playing = 1;
+    movie_queue(replay, 1, ra, NULL);
+    movie_queue(replay, 1, 0x7777000ULL, NULL);
+    movie_queue(replay, 1, r1, NULL);
+    movie_queue(replay, 2, 0, "Item_Bogus");
+    movie_queue(replay, 2, 0, "Item_Medal_Light");
+    reset();
+    item_calls = 0;
+    frame(replay, -500, 210);   /* (over nothing of its: the mouse is not the replay's) */
+    CHECK(focus_calls == 1 && focus_asked == ra && focus_screen == replay);
+    CHECK(item_calls == 1 && !strcmp((const char *)GP(get64(replay + 760)), "Item_Medal_Light"));
+    CHECK(movie_met == 2 && movie_missed == 3);
+    movie_playing = 0;
     if (!fails) printf("PASS\n");
     return fails != 0;
 }
@@ -356,6 +419,7 @@ class OotMenuMouseTests(unittest.TestCase):
             (tmp / "gpu" / "vk" / "compat").mkdir()
             shutil.copy(ROOT / "gpu" / "vk" / "compat" / "longshot_env.h", tmp / "gpu" / "vk" / "compat" / "longshot_env.h")
             shutil.copy(ROOT / "host" / "oot_menu.c", tmp / "host" / "oot_menu.c")
+            shutil.copy(ROOT / "host" / "input_movie.h", tmp / "host" / "input_movie.h")
             (tmp / "host" / "keys.h").write_text(KEYS_H, encoding="utf-8")
             (tmp / "host" / "t.c").write_text(FIXTURE, encoding="utf-8")
             binary = tmp / "t.exe"

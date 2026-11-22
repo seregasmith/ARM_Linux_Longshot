@@ -25,6 +25,9 @@ from pathlib import Path
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 ROOT = Path(__file__).resolve().parents[1]
+import sys  # noqa: E402
+sys.path.insert(0, str(ROOT / "tests"))
+from menu_model_fixture import output_engine  # noqa: E402
 
 
 def block(text, marker):
@@ -60,6 +63,7 @@ MENU_FIXTURE = r'''#define _CRT_SECURE_NO_WARNINGS
 #include "host/hold_toggle.h"
 #include "gpu/vk/display_modes.h"
 #include "gpu/vk/menu_restart.h"
+#include "gpu/vk/menu_model.h"   // (#1633: a row can be a module's, Row.setting)
 using namespace mkwvk;
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); std::exit(1); } } while (0)
 constexpr int VK_BACK = 8, VK_TAB = 9, VK_RETURN = 0x0d, VK_ESCAPE = 0x1b, VK_END = 0x23, VK_HOME = 0x24, VK_LEFT = 0x25,
@@ -69,11 +73,17 @@ enum { HOS_PAD_SOUTH, HOS_PAD_EAST, HOS_PAD_WEST, HOS_PAD_NORTH, HOS_PAD_BACK, H
        HOS_PAD_RIGHT };
 enum { HOS_MOUSE_LEFT = 1, HOS_MOUSE_RIGHT = 2 };
 @@TEXT_ENUMS@@
-struct { int output_res, preset, ultrawide, handheld, audio_output; } opts;
-struct Row { int* value; int hi; bool restart; };
-Row rows[] = {{&opts.ultrawide, 0, true}, {&opts.output_res, 0, true}, {&opts.audio_output, 3, true}};
+struct { int output_res, preset, ultrawide, handheld, audio_output, vsync, framegen, hdr, reflex, dlss, upscale, framegen_by, hud_layout; } opts;
+struct Row { int* value; int hi; bool restart; const menu::Setting* setting = nullptr; };
+int speaker_restart_value(int v);   // (the Speaker layout row's, gpu/vk/menu/audio.cpp: cut below, #1633)
+const menu::Setting speaker = [] { menu::Setting s; s.key = "audio_output"; s.restart_value = speaker_restart_value; return s; }();
+Row rows[] = {{&opts.ultrawide, 0, true}, {&opts.output_res, 0, true}, {&opts.audio_output, 3, true, &speaker}};
 constexpr int kRows = 3;
 int restart_slot[kRows] = {0, 1, 2};
+int mods_slot = -1;   // (the Mods tab's slot, which restart_values fills after the rows': no mods here)
+bool can_mods() { return false; }
+uint32_t hos_pad_raw();
+struct { uint32_t (*pad_raw)(); uint64_t (*mods_changed)(); } host_value{hos_pad_raw, nullptr}, *host = &host_value;
 namespace mr = menu_restart;
 struct RestartState : mr::State {
     int noted = 0;
@@ -86,13 +96,34 @@ bool screen_size(uint32_t* w, uint32_t* h) {
     return screen_w && screen_h ? (*w = screen_w, *h = screen_h, true) : false;
 }
 bool host_screen_size(uint32_t* w, uint32_t* h) { return screen_size(w, h); }
-std::vector<display_modes::Size> screen_modes() { return {{1920, 1080}}; }
+std::vector<display_modes::Size> screen_modes() { return {{1920, 1080}, {1024, 576}}; }
 void logf(const char*, ...) {}
 static int saves = 0;
 void save() { saves++; }
 static const int* released = nullptr;   // (main's env_release: the row the player set is theirs, over HOS_OUTPUT_RES)
 void env_release(const int* value) { released = value; }
+struct PreviewSize { unsigned width, height; };
+static bool request_native_preview(PreviewSize, bool = false) { return false; }
 @@CUT@@
+Out output_preview_target{};
+bool output_preview_from_field = false;
+int output_preview_countdown = 0, page = 0;
+int ask_sel = 0, preview_seconds = -1, listening = 0;
+std::atomic<bool> open_now{true};
+bool restart_ask() { int now[mr::kMax] = {}; restart_values(now); return restart_state.ask(now); }
+bool module_locked(const int*) { return false; }
+bool filter_needed() { return true; }
+bool framegen_by_fixed() { return false; }
+@@ROW_FIXED@@
+static bool output_preview_answer(bool keep) { return keep; }
+static bool save_preview_size(Out) { saves++; return true; }
+@@ANSWER_PREVIEW@@
+@@UNAVAILABLE_PREVIEW@@
+@@OUTPUT_REBUILT@@
+int output_preview_seconds() { return preview_seconds; }
+void preview_tick() {
+    @@PREVIEW_TICK@@
+}
 static const uint32_t K = HOS_TEXT_KEY;
 static void type(TextField& f, const char* s) {
     for (; *s; s++) CHECK(text_edit(f, (unsigned char)*s) == kTextGoOn);
@@ -118,7 +149,6 @@ static void startup(const char* output, int follow = 0) {
     saves = 0, menu_refresh = false, released = nullptr;
 }
 // The real focused branch, with only the outside world stubbed. No keyboard event is used in the pad tests.
-std::atomic<bool> open_now{true};
 uint32_t raw = 0, pad_press = 0, typed[64] = {};
 int typed_n = 0, pad_confirm = HOS_PAD_EAST, pad_back = HOS_PAD_SOUTH;
 bool press[13] = {}, changed = false, mouse = false;
@@ -149,7 +179,6 @@ void tap(int button, int count = 1) {
 // The host's raw pad callback and the menu's edge/repeat path, not a latched game-button word.
 uint32_t pad_raw_now = 0;
 @@PAD_RAW@@
-struct { uint32_t (*pad_raw)(); } host_value{hos_pad_raw}, *host = &host_value;
 void routed_tick() {
     const bool mine = true;
     bool pad_last = false, held[5] = {};
@@ -349,7 +378,103 @@ void test_audio_restart_with_custom_size() {
     CHECK(restart_state.pending(now) == 4u);   // Auto is not assumed to share the stereo layout.
     std::puts("PASS: test_audio_restart_with_custom_size: live Mono/Stereo, size edits and layout changes keep separate slots");
 }
+void test_native_preview_restart_state() {
+    opts.audio_output = 1;
+    startup("1280x720");
+    opts.audio_output = 2;   // A pending speaker-layout change survives the preview.
+    const int initial = opts.output_res;
+    output_preview_target = {1024, 576};
+    answer_native_preview(false);
+    CHECK(opts.output_res == initial && !saves && !output_preview_target.w);
+
+    output_preview_target = {1024, 576};
+    output_preview_countdown = 10;
+    page = 5;
+    answer_native_preview(true);
+    CHECK(opts.output_res == output_started && output_at(opts.output_res).w == 1024);
+    CHECK(saves == 1 && !page && !output_preview_countdown && !output_preview_target.w);
+    // (1024x576 is one of the screen's sizes, a choice the row offers: Custom output size, the player's own size, stays empty)
+    CHECK(rows[1].hi >= opts.output_res && opts.output_res < custom_index() && is(output_field, "", 0));
+    CHECK(restart_state.start[1] == (1024 << 16 | 576) && !restart_changed(rows[1]));
+    int now[mr::kMax] = {};
+    restart_values(now);
+    CHECK(restart_state.pending(now) == 4u);
+    opts.audio_output = 1;
+    restart_values(now);
+    CHECK(!restart_state.ask(now));
+}
+void test_pending_preview_locks_output_edits() {
+    startup("1280x720");
+    output_preview_target = {1024, 576};
+    CHECK(row_fixed(&opts.output_res) && row_fixed(&opts.ultrawide));
+    CHECK(row_fixed(&opts.preset) && row_fixed(&opts.handheld));
+    CHECK(!row_fixed(&opts.hud_layout));
+    const std::string original_field = output_field.text;
+    CHECK(!apply("1920x1080") && original_field == output_field.text);
+    CHECK(output_at(opts.output_res).w == 1280 && !saves);
+    answer_native_preview(false);
+    CHECK(!row_fixed(&opts.output_res) && !row_fixed(&opts.ultrawide));
+    CHECK(!apply("1920x1080") && output_at(opts.output_res).w == 1920 && saves == 1);
+}
+void test_rebuild_after_keep() {
+    startup("1280x720");
+    output_preview_target = {1024, 576};
+    answer_native_preview(true);
+    CHECK(saves == 1 && !restart_changed(rows[1]));
+    menu_output_rebuilt(1280, 720);
+    CHECK(saves == 1 && output_at(opts.output_res).w == 1024);
+    // (a size the row offers: no size of the player's own in Custom output size)
+    CHECK(output_at(output_started).w == 1280 && is(output_field, "", 0));
+    CHECK(restart_changed(rows[1]) && restart_ask());
+}
+void test_unavailable_preview_restart() {
+    opts.audio_output = 1;
+    startup("1280x720");
+    output_preview_target = {1024, 576};
+    output_preview_countdown = 0;
+    preview_seconds = 0;
+    open_now = false;
+    preview_tick();
+    int now[mr::kMax] = {};
+    restart_values(now);
+    CHECK(output_at(opts.output_res).w == 1024 && restart_state.pending(now) == 2u);
+    CHECK(saves == 1 && page == 5 && open_now && !output_preview_target.w);
+    startup("1280x720");
+    output_preview_target = {1024, 576};
+    output_preview_countdown = 0;   // Activated but never shown: rollback, no restart setting.
+    preview_seconds = -2;
+    preview_tick();
+    restart_values(now);
+    CHECK(!restart_state.pending(now) && !saves && !output_preview_target.w);
+    // Both sizes are absent from the offered list (1024x576 is the screen's: 1152x648); fallback must preserve the running
+    // custom choice.
+    startup("2400x1600", 1);
+    CHECK(output_started == custom_index());
+    CHECK(std::none_of(outputs().begin(), outputs().end(), [](Out o) { return o.w == 1152 && o.h == 648; }));
+    output_preview_target = {1152, 648};
+    output_preview_from_field = true;
+    unavailable_native_preview();
+    CHECK(output_at(opts.output_res).w == 1152 && custom_output.h == 648);
+    CHECK(output_at(output_started).w == 2400 && output_at(output_started).h == 1600);
+    const int back = output_for_aspect(aspect_started);
+    CHECK(output_at(back).w == 2400 && output_at(back).h == 1600);
+    startup("1280x720");
+    CHECK(!apply("1536x864"));
+    opts.output_res = output_choice_of(1280, 720);
+    const int arrow_target = output_choice_of(1024, 576);
+    CHECK(arrow_target != custom_index() && output_at(arrow_target).w == 1024 && output_at(arrow_target).h == 576);
+    CHECK(step_output_choice(opts.output_res, -1) == arrow_target);
+    output_preview_target = {1024, 576};
+    output_preview_from_field = false;
+    unavailable_native_preview();
+    CHECK(output_at(opts.output_res).w == 1024);
+    CHECK(custom_output.w == 1536 && custom_output.h == 864);
+}
 int main() {
+    test_native_preview_restart_state();
+    test_pending_preview_locks_output_edits();
+    test_rebuild_after_keep();
+    test_unavailable_preview_restart();
     test_toggle_text_isolation();
     test_pad_only_entry();
     test_pad_edit_existing();
@@ -600,21 +725,36 @@ def main():
         raise SystemExit("FAIL: vk_api.h: no HOS_TEXT_KEY and HOS_TEXT_OFF/ON/PASTE")
     cut = "\n".join([block(menu, "struct TextField {"), between(menu, "enum { kTextGoOn", "\n") + "\n",
                      block(menu, "int text_edit("), block(menu, "void text_set("),
-                     between(menu, "struct Out {", "Out shown_output()"),
+                     output_engine(ROOT, "Out shown_output()"),   # (the output module's, #1633)
                      block(menu, "void outputs_sync("), block(menu, "int row_restart_value("),
                      block(menu, "int restart_slot_of("), block(menu, "bool restart_changed("),
                      block(menu, "void restart_values("),
+                     block((ROOT / "gpu/vk/menu/audio.cpp").read_text(encoding="utf-8"), "int speaker_restart_value("),
+                     "extern Out output_preview_target;",
                      between(menu, "bool output_size_char(", "struct FieldRow {"),
                      between(menu, "TextField* editing =", "// ---- (longshot) the Controls page:")])
-    host_cut = between(backend, "enum { TEXT_QUEUE", "static const MkwVkHost vk_host")
+    # (the text queue, to its taker: what follows it in rx_backend.c, the input recordings' callbacks, is another check's)
+    host_cut = (between(backend, "enum { TEXT_QUEUE", "static int host_take_text(") +
+                block(backend, "static int host_take_text(") + "\n")
     focused = block(menu, "if (open_now.load() && editing) {")
     win = (ROOT / "host/display.c").read_text(encoding="utf-8")
     win_keys = block(win[win.index("case WM_KEYDOWN: {"):], "if (hos_text_focus()) {")
     pad_poll = between(menu, "    static uint32_t pad_held = 0;", "#ifndef VK_RSHIFT")
     pad_edge = between(menu, "    auto pad = ", "\n")
     pad_repeat = block(menu, "    {   // holding an arrow or the D-pad repeats it:")
+    # The same fixed-row guard covers both the arrows and the bridge entry point.
+    assert "row_fixed(r.value)" in block(menu, "void set_row(")
+    assert "row_fixed(r.value)" in block(menu, "int menu_setting_set(")
+    rebuild = block(menu, "void menu_output_rebuilt(")
+    assert "output_preview_take_rebuilt_size()" in block(menu, "void menu_tick() {")
     with tempfile.TemporaryDirectory(prefix="menu-text-") as tmp:
         compile_run(a.cxx, "c++", "c++20", MENU_FIXTURE.replace("@@TEXT_ENUMS@@", enums).replace("@@CUT@@", cut)
+                    .replace("@@ROW_FIXED@@", block(menu, "bool row_fixed(const int* value) {"))
+                    .replace("@@OUTPUT_REBUILT@@", rebuild)
+                    .replace("@@ANSWER_PREVIEW@@", block(menu, "static void answer_native_preview("))
+                    .replace("@@UNAVAILABLE_PREVIEW@@", block(menu, "static void unavailable_native_preview("))
+                    .replace("@@PREVIEW_TICK@@", block(block(menu, "void menu_tick() {"),
+                                                       "if (output_preview_target.w) {"))
                     .replace("@@PAD_RAW@@", block(hid, "uint32_t hos_pad_raw("))
                     .replace("@@GAME_KEY@@", block(hid, "static int key("))
                     .replace("@@PAD_POLL@@", pad_poll).replace("@@PAD_EDGE@@", pad_edge)

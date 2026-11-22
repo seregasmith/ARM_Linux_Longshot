@@ -22,7 +22,7 @@ def production_parts():
     # Extract the entire actual if(p) body, including build, first-worker
     # serialization, cache lock, lookup, publication and losing-object cleanup.
     precompile = source.index('void precompile_run(')
-    start = source.index('                if (p) {', precompile)
+    start = source.index('                if (p && note_key_holds(*p, n)) {', precompile)
     end = source.index('\n            }\n            pre->done++;', start)
     return entry, source[start:end]
 

@@ -45,13 +45,14 @@ struct { VkDevice device{}; VkPhysicalDeviceProperties props{}; } dev;
 std::map<VkBuffer, Allocation> buffers;
 std::set<VkDescriptorPool> pools;
 std::map<VkDescriptorSet, VkDescriptorPool> sets;
-uintptr_t serial = 100;
+std::atomic<uintptr_t> serial{100};
 template<class T> T handle() { return reinterpret_cast<T>(++serial); }
 bool fail_buffer = false, fail_map = false, fail_pool = false;
 int fail_sets = 0, allocation_calls = 0, invalid_pool_calls = 0, destroys = 0, updates = 0, binds = 0;
 uint64_t largest_request = 0;
-std::mutex par_mutex;
-struct ParLock { std::lock_guard<std::mutex> lock{par_mutex}; };
+std::mutex fake_mutex, recording_mutex;
+// The fake driver owns these maps and counters, independently of recording admission.
+using FakeLock = std::lock_guard<std::mutex>;
 namespace rec {   // (vk_recorder.h's RX_VK_RECORDER_OWN marks, as they are with the recorder off)
 inline void slot_begin(uint64_t) {}
 inline void slot_done() {}
@@ -61,41 +62,50 @@ struct OwnSlot { OwnSlot() {} ~OwnSlot() {} };   // (a scope, as the real one)
 uint64_t rec_end_pos[64];   // (vk_replay.cpp: each slot's end in the recorder's ring)
 void logf(const char*, ...) {}
 bool create_buffer(uint64_t bytes, VkBufferUsageFlags, bool, VkBuffer& buffer, VmaAllocation& allocation, void** map, bool = false) {
+    FakeLock lock(fake_mutex);
     ++allocation_calls; largest_request = std::max(largest_request, bytes);
     if (fail_buffer || bytes > (16ull << 20)) return false;
     buffer = handle<VkBuffer>(); auto& a = buffers[buffer]; a.bytes.assign((size_t)bytes, 0);
     allocation = &a; *map = fail_map ? nullptr : a.bytes.data(); return true;
 }
 void destroy_buffer(VkBuffer buffer, VmaAllocation allocation) {
+    FakeLock lock(fake_mutex);
     require(buffer && buffers.count(buffer) && &buffers.at(buffer) == allocation, "buffer ownership/double free");
     buffers.erase(buffer); ++destroys;
 }
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateDescriptorPool(VkDevice, const VkDescriptorPoolCreateInfo*, const VkAllocationCallbacks*, VkDescriptorPool* pool) {
+    FakeLock lock(fake_mutex);
     // Vulkan output handles must not be trusted after a failing creation result.
     if (fail_pool) { *pool = reinterpret_cast<VkDescriptorPool>(uintptr_t(0xdead)); return VK_ERROR_OUT_OF_HOST_MEMORY; }
     *pool = handle<VkDescriptorPool>(); pools.insert(*pool); return VK_SUCCESS;
 }
+// Caller holds fake_mutex.
 void drop_sets(VkDescriptorPool pool) {
     for (auto it = sets.begin(); it != sets.end();) {
         if (it->second == pool) it = sets.erase(it); else ++it;
     }
 }
 VKAPI_ATTR VkResult VKAPI_CALL vkResetDescriptorPool(VkDevice, VkDescriptorPool pool, VkDescriptorPoolResetFlags) {
+    FakeLock lock(fake_mutex);
     require(pools.count(pool), "reset invalid pool"); drop_sets(pool); return VK_SUCCESS;
 }
 VKAPI_ATTR void VKAPI_CALL vkDestroyDescriptorPool(VkDevice, VkDescriptorPool pool, const VkAllocationCallbacks*) {
+    FakeLock lock(fake_mutex);
     require(pools.erase(pool) == 1, "pool ownership/double free"); drop_sets(pool);
 }
 VKAPI_ATTR VkResult VKAPI_CALL vkAllocateDescriptorSets(VkDevice, const VkDescriptorSetAllocateInfo* info, VkDescriptorSet* set) {
+    FakeLock lock(fake_mutex);
     if (!pools.count(info->descriptorPool)) { ++invalid_pool_calls; return VK_ERROR_UNKNOWN; }
     if (fail_sets > 0) { --fail_sets; return VK_ERROR_OUT_OF_POOL_MEMORY; }
     *set = handle<VkDescriptorSet>(); sets[*set] = info->descriptorPool; return VK_SUCCESS;
 }
 VKAPI_ATTR void VKAPI_CALL vkUpdateDescriptorSets(VkDevice, uint32_t n, const VkWriteDescriptorSet* writes, uint32_t, const VkCopyDescriptorSet*) {
+    FakeLock lock(fake_mutex);
     for (uint32_t i = 0; i < n; ++i) require(sets.count(writes[i].dstSet), "update failed/destroyed set");
     ++updates;
 }
 VKAPI_ATTR void VKAPI_CALL vkCmdBindDescriptorSets(VkCommandBuffer, VkPipelineBindPoint, VkPipelineLayout, uint32_t, uint32_t n, const VkDescriptorSet* bound, uint32_t, const uint32_t*) {
+    FakeLock lock(fake_mutex);
     require(n == 1 && sets.count(bound[0]), "bind failed/destroyed set"); ++binds;
 }
 /* RES */
@@ -112,7 +122,7 @@ thread_local uint64_t rec_value = 0, targets_serial = 0;
 // Global defaults are outside this per-recording allocation contract.
 VkBuffer zero_buffer = reinterpret_cast<VkBuffer>(uintptr_t(99)); VmaAllocation zero_alloc{};
 struct Pass {}; Pass& pass() { static thread_local Pass p; return p; }
-bool work_since_barrier = false;
+thread_local bool work_since_barrier = false;
 struct CmdBound { void reset() {} };   // (vk_draw.cpp's: what the command buffer has bound, forgotten by a new recording)
 CmdBound& bound() { static CmdBound b; return b; }
 void descriptors_disturbed() {}
@@ -123,6 +133,7 @@ int desc_reuse_level() { return 2; }   // (vk_draw.cpp: RX_VK_DESC_REUSE and the
 /* BANK_CACHE */
 std::array<std::array<BankCache, kNvnStages>, 2>& bank_cache() { static thread_local std::array<std::array<BankCache, kNvnStages>, 2> b; return b; }
 void make_dummies() {}
+void mesh_conv_begin_recording() {}   // (vk_draw.cpp: RX_VK_MESH_CONV read for the recording, its last batch let go)
 /* BEGIN */
 #define FINE_SCOPE(...) ((void)0)
 #define FINE_N(...) ((void)0)
@@ -149,7 +160,12 @@ bool bind_tail() {
     Writes& wr = dw();   // (bind_descriptors takes it at its top, above the part cut in here)
     /* DESCRIPTORS */
 }
-void begin(int slot = 0, uint64_t value = 1) { draw_begin_recording(slot, VkCommandBuffer{}, value); }
+void begin(int slot = 0, uint64_t value = 1) {
+    // vk_replay.cpp holds replay_mu across begin_recording and its draw_begin_recording call.
+    // The cut has no internal admission lock; keep its caller's contract here too.
+    std::lock_guard lock(recording_mutex);
+    draw_begin_recording(slot, VkCommandBuffer{}, value);
+}
 void cleanup() {
     for (auto& r : res) {
         for (auto& s : r.streams) destroy_buffer(s.buffer, s.alloc);

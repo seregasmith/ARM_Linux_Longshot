@@ -15,7 +15,6 @@ python -I -B tests/test_walk_key.py   (needs a C compiler)
 """
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,6 +25,9 @@ from pathlib import Path
 ENV_ON_H = str(Path(__file__).resolve().parents[1] / "gpu" / "vk" / "compat" / "longshot_env.h")
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests"))   # (python -I leaves the check's own folder off the path)
+from menu_model_fixture import menu_text  # noqa: E402
+from test_sprint import compiler_command  # noqa: E402
 
 
 def block(text, marker):
@@ -122,21 +124,29 @@ static int64_t hos_now_ns(void) { return 0; }
 static int npresses;
 static int64_t script_end_ms;
 static int64_t script_elapsed_ms(int64_t now) { (void)now; return 0; }
-static void scripted_input(uint64_t *b, int32_t s[4]) { (void)b; (void)s; }
+static void scripted_input(uint64_t *b, uint64_t *taps, int32_t s[4]) { (void)b; (void)taps; (void)s; }
 void hos_oot_autoload_input(void) {}   /* (host/oot_autoload.c: Skip title screen off) */
 int hos_control_input(uint64_t *buttons, int32_t stick[4]) { (void)buttons; (void)stick; return 0; }   /* (host/control.c: off) */
 static int game_in_front(void) { return front; }
 static volatile LONG pad_raw_now;
-static int pad_after_menu;   /* (main shares this state with the ocarina note word) */
+static uint64_t pad_after_menu, pad_raw_game;   /* (main shares this state with the ocarina note word) */
 static void player_used(void) {}
+void hos_gameplay_hud_toggle(void) {}
 """
 
 STUBS = r"""
+/* Sprint's read (tests/test_sprint.py): none here */
+static int sprint_now;
+enum { SPRINT_KEY = 1, SPRINT_PAD = 2 };
+static int pad_sprint_down(void) { return 0; }
+static int sprint_read(void) { return sprint_now; }
+static int sprint_frame_read(void) { return sprint_frame; }   /* (read_input sets it; npad_states, not cut here, reads it) */
 /* a controller's sticks and the captured mouse as the right stick, as a case sets them */
 static int32_t pad_stick[4], mouse_right[2];
 static int mouse_captured;
-static void pads_read(uint64_t *b, int32_t s[4]) { (void)b; stick_max(s, pad_stick); }
+static void pads_read(uint64_t *b, int32_t s[4], int *deck_builtin_input) { (void)deck_builtin_input; (void)b; stick_max(s, pad_stick); }
 int hos_mouse_native(void) { return -1; }
+int hos_mouse_in_game_menu(void) { return 0; }
 void hos_mouse_native_free(int free) { (void)free; }
 void hos_mouse_native_stick(int held) { (void)held; }
 static void mouse_setup(void) {}
@@ -155,8 +165,12 @@ static int fails;
 static uint64_t buttons;
 static int32_t st[4];
 static void poll(void) {
-    read_input(&buttons, st);
+    uint64_t taps = 0;
+    read_input(&buttons, &taps, st);
     CHECK(oc_consumed_pads == 0);   /* the inactive note layer must not consume the controller while walking */
+    /* Sprint's Toggle as the controls left it (on by default: it does nothing with the Sprint row off, as here); no
+       exclusive input in these cases */
+    CHECK(sprint_toggle_frame == (int)sprint_toggle_mode && sprint_toggle_frame == 1 && !sprint_excluded);
 }
 static void release(void) { memset(held, 0, sizeof held); }
 static int near_share(int32_t v, int percent) {   /* (a straight tilt: percent of 32767, within one step) */
@@ -322,14 +336,15 @@ def names(text):
 
 class WalkKeyTests(unittest.TestCase):
     def test_walk(self):
-        compiler = shutil.which("gcc") or shutil.which("clang")
-        if not compiler:
+        compiler = compiler_command("CC", "gcc", "clang")
+        if not compiler[0]:
             self.skipTest("no C compiler")
         hid = read("host", "nn_hid.c")
         code = [block(hid, "enum { B_A"), block(hid, "static int key("), block(hid, "static int kmap_down("),
-                between(hid, "static const char *const bind_names[HOS_KEY_N]", "void hos_bind("),
+                between(hid, "static const char *const bind_names[HOS_KEY_N]", "void hos_bind(int set, int button, int slot, int code) {"),
                 between(hid, "static int mouse_vk_slot(", "static int bound_down("), block(hid, "static void stick_max("),
-                block(hid, "static void oc_notes("),
+                block(hid, "static uint64_t hud_pad_mask("), block(hid, "static uint64_t bound_pad_buttons("),
+                block(hid, "static void hud_shortcut("), block(hid, "static void oc_notes("),
                 block(hid, "static int pads_in_background("), block(hid, "static int walk_held("),
                 block(hid, "enum { WALK_SPEED_DEFAULT"), block(hid, "static int walk_percent("),
                 block(hid, "static void move_keys_stick(")]
@@ -339,7 +354,7 @@ class WalkKeyTests(unittest.TestCase):
             tmp = Path(tmp)
             (tmp / "t.c").write_text(source, encoding="utf-8")
             binary = tmp / ("t.exe" if sys.platform == "win32" else "t")
-            build = subprocess.run([compiler, "-std=gnu11", "-D_CRT_SECURE_NO_WARNINGS", "-include", ENV_ON_H, "-Wall", "-Wextra", "-Werror",
+            build = subprocess.run(compiler + ["-std=gnu11", "-D_CRT_SECURE_NO_WARNINGS", "-include", ENV_ON_H, "-Wall", "-Wextra", "-Werror",
                                     "-Wno-unused-function", "-I", str(ROOT / "gpu" / "vk"), str(tmp / "t.c"), "-o", str(binary)],
                                    text=True, capture_output=True)
             self.assertEqual(build.returncode, 0, build.stderr)
@@ -352,13 +367,13 @@ class WalkKeyTests(unittest.TestCase):
                 self.assertEqual(run.returncode, 0, mode + ": " + run.stdout + run.stderr)
 
     def test_wiring(self):
-        api, hid, menu = read("gpu", "vk", "vk_api.h"), read("host", "nn_hid.c"), read("gpu", "vk", "vk_menu.cpp")
+        api, hid, menu = read("gpu", "vk", "vk_api.h"), read("host", "nn_hid.c"), menu_text(ROOT)   # (with the modules' rows: gpu/vk/menu/walk.cpp)
         header, replay = read("gpu", "vk", "vk_menu.h"), read("gpu", "vk", "vk_replay.cpp")
         self.assertIn("enum { HOS_OPT_WALK_MODE = 49, HOS_OPT_WALK_SPEED };", api)
-        self.assertRegex(api, r"HOS_KEY_OC_NOTE_X, HOS_KEY_WALK, HOS_KEY_N \};")
+        self.assertRegex(api, r"HOS_KEY_OC_NOTE_X, HOS_KEY_WALK, HOS_KEY_TOGGLE_HUD, HOS_KEY_SPRINT, HOS_KEY_N \};")
         # (the host's two copies of the names: the ini's key_walk)
         self.assertEqual(names(hid), names(menu))
-        self.assertEqual(names(hid)[-1], "walk")
+        self.assertEqual(names(hid)[-3:], ["walk", "toggle_hud", "sprint"])
         self.assertIn('{HOS_KEY_WALK, "Walk"}', menu, "the Controls page has no Walk row")
         option = replay[replay.index("t.option = "):]
         option = option[:option.index("};")]
@@ -376,11 +391,11 @@ class WalkKeyTests(unittest.TestCase):
         self.assertIn("int walk_mode = 0;", header)
         self.assertIn("rx_option(HOS_OPT_WALK_MODE, 0) == 1", block(hid, "static void read_input("))
         # (documented where the rows and the ini's keys are)
-        readme, development = read("README.md"), read("docs", "development.md")
+        settings, development = read("docs", "user", "graphics-and-controls.md"), read("docs", "dev", "reference", "switches.md")
         lo, hi = speed.groups()
         for text in ("| | Walk mode | Hold, Toggle | Hold |",
                      "| | Walk speed | %s%% to %s%%, in steps of 5 | %d%% |" % (lo, hi, default), "`walk`"):
-            self.assertIn(text, readme)
+            self.assertIn(text, settings)
         self.assertIn("| `walk_mode` | 0 Hold, 1 Toggle |", development)
 
 

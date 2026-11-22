@@ -43,8 +43,9 @@ def check_source():
         raise SystemExit("cached_compute compiles before it has its turn at the gate")
     if "if (!turn.ok()) return" not in cached:
         raise SystemExit("cached_compute compiles after a wait that was stopped")
-    # (the driver's compile of a game compute program is guarded_compute_held: only cached_compute (through create_cached) and
-    # prepare_run's warm reach it, each with a turn. A new caller would compile beside the gate. guarded_compute itself is
+    # (the driver's compile of a game compute program is guarded_compute_held: only cached_compute (through create_cached),
+    # own_cache_compute_pipeline (vk_fsr4.cpp's unrolled layers, through their own cache) and prepare_run's warm reach it, each
+    # with a turn. A new caller would compile beside the gate. guarded_compute itself is
     # reached through the two wrappers (guarded_compute_held, extern_guarded_compute) and by the renderer's own shaders, made
     # from their fixed SPIR-V with no pipeline cache, which are not game programs and are not gated)
     callers = {"guarded_compute": [], "guarded_compute_held": []}
@@ -63,12 +64,15 @@ def check_source():
             or "if (!turn.ok()) return" not in only:
         raise SystemExit("DriverOnlyBuilds compiles before it has its turn at the gate")
     if sorted(callers["guarded_compute_held"]) != sorted(["return create_cached(guarded_compute_held, ci, pl);",
+                                                          "return guarded_compute_held(cache, ci, out);",
                                                           "return guarded_compute_held(scratch, ci, pl);",
                                                           "if (turn.ok() && guarded_compute_held(own.cache(), &ci, &pl) == VK_SUCCESS && pl) {"]):
-        raise SystemExit("guarded_compute_held is reached by something else than the two gated callers: %r"
+        raise SystemExit("guarded_compute_held is reached by something else than the four gated callers: %r"
                          % callers["guarded_compute_held"])
-    # (the two wrappers: guarded_compute_held, which counts the driver running out of memory, and extern_guarded_compute)
-    wrapper_lines = ("return note_out_of_memory(guarded_compute(cache, ci, pl));", "return guarded_compute(cache, ci, pl);")
+    # (the two wrappers: guarded_compute_held, which counts the driver running out of memory, and extern_guarded_compute,
+    # which asks once more without the optimizer when the driver refuses the optimized build, #1874)
+    wrapper_lines = ("return note_out_of_memory(guarded_compute(cache, ci, pl));", "VkResult r = guarded_compute(cache, ci, pl);",
+                     "const VkResult p = guarded_compute(cache, &plain, pl);")
     wrappers = [line for line in callers["guarded_compute"] if line in wrapper_lines]
     own = [line for line in callers["guarded_compute"] if "guarded_compute(VK_NULL_HANDLE, " in line]
     if sorted(wrappers) != sorted(wrapper_lines) or len(wrappers) + len(own) != len(callers["guarded_compute"]):
@@ -102,6 +106,13 @@ def check_source():
     # (ComputeTurn reads what compute_pipeline_info or the mesh fallback described last on this thread: the back end's own
     # pipelines (vk_fsr3.cpp, vk_fsr4.cpp, some held to 32 or 64 lanes) come in with none, or they would be weighed, refused
     # (compute_refused) and logged as that game program)
+    own = function(draw, "VkResult own_cache_compute_pipeline(VkPipelineCache cache, const VkComputePipelineCreateInfo* ci, VkPipeline* out) {")
+    if own.index("const ComputeTurn turn(*ci);") > own.index("guarded_compute_held(cache, ci, out)"):
+        raise SystemExit("own_cache_compute_pipeline compiles before it has its turn at the gate")
+    if "if (!turn.ok()) return" not in own:
+        raise SystemExit("own_cache_compute_pipeline compiles after a wait that was stopped")
+    if own.find("compute_described = {};") < 0 or own.index("compute_described = {};") > own.index("const ComputeTurn turn(*ci);"):
+        raise SystemExit("own_cache_compute_pipeline reaches the gate with the description of the game program this thread made last")
     shared = function(draw, "VkResult shared_compute_pipeline(const VkComputePipelineCreateInfo* ci, VkPipeline* out) {")
     if shared.find("compute_described = {};") < 0 or shared.index("compute_described = {};") > shared.index("cached_compute(ci, out)"):
         raise SystemExit("shared_compute_pipeline reaches the gate with the description of the game program this thread made last")

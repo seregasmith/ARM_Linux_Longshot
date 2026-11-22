@@ -35,6 +35,10 @@ const void* reflex_present_id(const void* next);
 /// present waits then add their own, vk_main.cpp create_device)
 const VkPhysicalDevicePresentIdFeaturesKHR* reflex_present_id_features();
 void reflex_presented();
+/// The present whose id reflex_present_id gave was handed to the presenter thread (vk_replay.cpp): its end marker is that
+/// thread's, reflex_present_end(id) once its present returned
+void reflex_present_handed_off();
+void reflex_present_end(uint64_t id);
 /// After the present: the driver's sleep until the next frame should start, then that frame's start markers
 void reflex_sleep();
 

@@ -50,7 +50,8 @@ AUDIO = "audio data and names for the audio renderer: nothing the GPU reads"
 ALLOWED = {
     "host/hos_main.c": [
         (["A64_PTR(event", "A64_PTR(frame + 0x10)"], STACK),
-        (["A64_PTR(name_buf)", "A64_PTR(buf), event"], "an event's name, into the argument object the game made for it"),
+        (["memcpy(to, name, length + 1)", "memcpy(to, event, strlen(event) + 1)"],
+         "an event's name, into the argument object the game made for it"),
         (["A64_PTR(strings"], "the cheats' event strings, in the system region (hos_sys_alloc): the runtime's own objects"),
     ],
     "host/hos_svc.c": [
@@ -75,6 +76,13 @@ ALLOWED = {
          "directory and cache-storage entries, fixed-size records into the game's own array"),
     ],
     "host/nn_gs.c": [(["memset(GP(ARG(0)), 0, 0x40)"], OUT)],
+    "host/nn_nfp.c": [
+        (["memset(GP(ARG(0)), 0, 8)", "memset(t, 0, 0x58)", "memcpy(t, tag, 3)", "memcpy(t + 0x20, &protocol, 4)",
+          "memset(m, 0, 0x40)", "memcpy(m, tag + 0x54, 7)", "memcpy(m, &year, 2)", "memcpy(m + 8, &size, 4)",
+          "memset(m, 0, 0x100)", "memcpy(m + 0x58, &year, 2)", "memcpy(m + 0x5c, tag_name, n)"],
+         "an NFC tag's DeviceHandle, TagInfo, ModelInfo, CommonInfo or RegisterInfo: " + OUT),
+        (["memcpy(GP(ARG(0)), area, n)"], "a tag's application area, into the game's own buffer for it: nothing the GPU reads"),
+    ],
     "host/nn_hid.c": [
         (["memset(GP(e), 0, STATE_SIZE)", "memcpy(GP(e + 16), stick, 16)", "memset(GP(ARG(0)), 0, 8)", "memset(GP(e), 0, 0x60)",
           "memcpy(GP(e + 0x10), v, sizeof v)", "memcpy(GP(v), idle, sizeof idle)", "memset(GP(ARG(0)), 0, 16 + 16 * 0x28)"],
@@ -92,7 +100,9 @@ ALLOWED = {
         (["memcpy(gw(at, sizeof mark), mark, sizeof mark)"],
          "16 bytes in a command buffer's control memory, which NVN keeps for the CPU: the GPU reads command memory, not control memory"),
     ],
-    "host/oot_menu.c": [(["memcpy(GP(buf), key, n + 1)"], "an item's key, into the menu screen's own string buffer")],
+    "host/oot_high_fps.c": [(["memcpy(GP(controller + 0x3c), target, sizeof target)"],
+                            "Link's driven body's target, three floats of the game's controller object")],
+    "host/oot_menu.c": [(["memcpy(to, key, n + 1)"], "an item's key, into the menu screen's own string buffer")],
     "host/prompts.c": [
         (["memcpy(q, b + 8, (size_t)n - 8)"],
          "the font file's bytes, which the game's own (lifted, marked) code rasterizes: the GPU reads the glyphs it draws, not the font"),

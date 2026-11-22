@@ -78,8 +78,13 @@ def main():
     if not re.search(r"constexpr uint32_t kProgramCacheFormat = \d+;", cache):
         raise SystemExit("FAIL: the program cache has no format version of its own")
     stamp_fn = body(cache, "uint64_t program_cache_stamp() {")
-    if "translator_stamp()" not in stamp_fn or "kProgramCacheFormat" not in stamp_fn:
+    stamp_of = body(cache, "uint64_t program_cache_stamp_of(uint32_t format) {")
+    if "program_cache_stamp_of(kProgramCacheFormat)" not in stamp_fn or "translator_stamp()" not in stamp_of:
         raise SystemExit("FAIL: program_cache_stamp is not the translator's stamp and the cache's format")
+    # (the pipeline side outlives a format change, never a translator's: tests/test_pipelines_outlive_cache_format.py runs it)
+    ok = body(cache, "bool pipelines_stamp_ok(uint64_t stamp) {")
+    if "program_cache_stamp_of(format)" not in ok or "format < kProgramCacheFormat" not in ok:
+        raise SystemExit("FAIL: pipelines_stamp_ok does not take this translator's earlier formats")
     init = body(cache, "void disk_init() {")
     if "const uint64_t stamp = program_cache_stamp();" not in init or "kept == stamp" not in init or "is == stamp" not in init:
         raise SystemExit("FAIL: the cache file or its index is not checked against program_cache_stamp")

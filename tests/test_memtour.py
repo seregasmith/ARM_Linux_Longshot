@@ -1,6 +1,7 @@
-"""scripts/memtour.py without a game: the memory sampler against a made-up /proc, the tour against a fake control bridge
-(what it presses, in which order, how it copes with a refused teleport and with a save that never loads), and the summary
-(peaks, and each area's numbers cut out by the tour's marks).
+"""scripts/memtour.py (and the /proc reading it shares with the pipeline tour, scripts/tours/memory.py) without a game:
+the memory sampler against a made-up /proc, the tour against a fake control bridge (what it presses, in which order, how
+it copes with a refused teleport and with a save that never loads), and the summary (peaks, and each area's numbers cut
+out by the tour's marks).
 
 python -I -B tests/test_memtour.py
 """
@@ -20,7 +21,7 @@ def load(name):
     return m
 
 
-ctl = load("longshot_ctl")
+ctl = load("longshot_bridge")
 mt = load("memtour")
 
 

@@ -405,7 +405,7 @@ bool evaluate(VkCommandBuffer cmd, const TemporalFrame& f) {
         GprofSpan timed(cmd, "xess xessVKExecute (Intel's passes)");   // (RX_VK_PASS_TIMING=1: Intel's own GPU time, named)
         ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (xessVKExecute records into cmd itself: what this thread recorded through vk_work.h reaches cmd first)
         r = l.execute(s.context->context, cmd, &p);
-        note_work();   // (Intel's dispatches: full_barrier must not take the next barrier for a repeat of the one before them)
+        note_other_work();   // (Intel's dispatches: full_barrier must not take the next barrier for a repeat of the one before them)
     }
 
     const VkImageMemoryBarrier2 out[4] = {barrier(f.color.image, VK_ACCESS_2_SHADER_READ_BIT, any, R, G),

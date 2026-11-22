@@ -15,6 +15,10 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
+from menu_model_fixture import menu_model_prelude, menu_text  # noqa: E402
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
@@ -42,6 +46,7 @@ def definition(text, name):
 FIXTURE = r"""
 #include "upscaler_rows.h"
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -74,6 +79,7 @@ void restart_values(int*) {}
 struct { void note(const int*) {} } restart_state;
 bool can_mic() { return false; }
 void mic_chosen() {}
+std::atomic<int> grass_distance_now{0};   // (the Grass distance row's hook in set_row: the game thread's copy)
 int output_pick;
 int monitor_pick;
 bool output_forced() { return false; }
@@ -84,6 +90,9 @@ void menu_debug_rows(int, int) {}   // (the Debug rows that apply in play: vk_dr
 int temporal_resets = 0;
 void temporal_reset_failure() { ++temporal_resets; }
 void prompts_at_once(const Row&) {}
+struct Picture { unsigned w, h; };
+Picture picture_for(int) { return {}; }
+bool request_native_preview(Picture) { return false; }   // The Output resolution preview has its own fixture.
 int step_output_choice(int id, int dir) { return id + dir; }
 // (the Aspect ratio row moves the Output resolution to one of its shape's sizes, output_for_aspect: not what this checks)
 int output_for_aspect(int) { return opts.output_res; }
@@ -93,6 +102,7 @@ bool framegen_by_dlss_offered() { return true; }   // (the Frame generation by r
 int fg_most = 0;   // (DLSS FG's runtime's most made frames while it makes the frames, vk_dlss.cpp; 0: no cap)
 int dlss_fg_most() { return fg_most; }
 /* CAPPED */
+/* FRAMEGEN_STEP */
 const char* tx_preset(int) { return ""; }
 const char* hn_preset(int, int) { return ""; }
 const char* tx_fps_cap(int) { return ""; }
@@ -109,10 +119,10 @@ const char* hn_dlss_model(int, int) { return ""; }
 
 int main() {
     Row framegen = /* FRAMEGEN_ROW */;
+    /* FRAMEGEN_SETTING */
     Row quality = /* QUALITY_ROW */;
     Row fps_cap = /* FPS_CAP_ROW */;
     CHECK(std::strcmp(fps_cap.name, "Game frame rate cap") == 0);
-    CHECK(std::strcmp(ini_key(fps_cap), "frame_rate_cap") == 0);
     CHECK(std::strstr(fps_cap.help, "Generated frames are additional") != nullptr);
     CHECK(opts.framegen == 0);
     for (int previous = 0; previous <= 8; ++previous) {
@@ -174,8 +184,14 @@ int main() {
 
 
 def fixture(source):
-    menu = (source / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
+    # (vk_menu.cpp and its modules' rows as table lines, #1633: the frame rate cap row is gpu/vk/menu/framegen.cpp's)
+    menu = menu_text(source) if (source / "gpu" / "vk" / "menu").is_dir() else \
+        (source / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
+    framegen_module = source / "gpu" / "vk" / "menu" / "framegen.cpp"
+    if framegen_module.exists() and '.key = "frame_rate_cap"' not in framegen_module.read_text(encoding="utf-8"):
+        raise SystemExit("the game frame rate cap row is not saved as frame_rate_cap")
     header = (source / "gpu" / "vk" / "vk_menu.h").read_text(encoding="utf-8")
+    step = "int framegen_step(int now, int dir) {" in menu
     framegen = (source / "gpu" / "vk" / "vk_framegen.cpp").read_text(encoding="utf-8")
     options = re.search(r"struct Options \{.*?\n\};", header, re.S)
     tabs = re.search(r"enum MenuTab \{.*?\};", menu, re.S)
@@ -195,6 +211,10 @@ def fixture(source):
         "/* PRESET */": definition(menu, "void apply_preset"),
         "/* SET_ROW */": definition(menu, "void set_row"),
         "/* CAPPED */": block(framegen, framegen.index("int framegen_capped(")),
+        # (the row's step past DLSS FG's top: its module's step_fn, #1633; set_row's own on a checkout before the modules)
+        "/* FRAMEGEN_STEP */": block(menu, menu.index("int framegen_step(int now, int dir) {")) if step else "",
+        "/* FRAMEGEN_SETTING */": ("static menu::Setting framegen_described;\n    framegen_described.step_fn = framegen_step;\n"
+                                  "    framegen.setting = &framegen_described;") if step else "",
         "/* FRAMEGEN_ROW */": block(menu, menu.index('{TAB_GRAPHICS, "Frame generation"')),
         "/* QUALITY_ROW */": block(menu, menu.index('{TAB_GRAPHICS, "Quality preset"')),
         "/* UPSCALER_ROW */": block(menu, menu.index('{TAB_GRAPHICS, "Upscaler"')),
@@ -216,7 +236,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="framegen-preset-") as tmp:
         src = Path(tmp) / "framegen_preset.cpp"
         exe = Path(tmp) / ("framegen_preset.exe" if os.name == "nt" else "framegen_preset")
-        src.write_text(fixture(args.source), encoding="utf-8")
+        src.write_text(menu_model_prelude(args.source) + fixture(args.source), encoding="utf-8")
         if Path(args.cxx).name.lower() in ("cl", "cl.exe", "clang-cl", "clang-cl.exe"):
             command = [args.cxx, "/nologo", "/std:c++20", "/EHsc", "/I" + includes, str(src),
                        "/Fo" + str(Path(tmp) / "framegen_preset.obj"), "/Fe" + str(exe)]

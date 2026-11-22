@@ -1,9 +1,10 @@
-"""The pipeline tour (scripts/pipeline_tour.py), without the game: the Debug tab's action numbers and the teleport list it reads
-from the source, its route (the items once an age and at the passes' stops), the presses it sends, the switches and options it
-runs with, its command line (the settle's frames), its counts, merge and compare of the pipeline state lists, the memory guard,
+"""The pipeline tour (scripts/pipeline_tour.py and its parts: scripts/tours/route.py, scripts/tours/drive.py,
+scripts/tours/memory.py, scripts/tours/lists.py, scripts/tours/vkprofile.py), without the game: the Debug tab's action
+numbers and the teleport list it reads from the source, its route (the items once an age and at the passes' stops), the
+presses it sends, the switches and options it runs with, its command line (the settle's frames), its counts, merge and compare of the pipeline state lists, the memory guard,
 and the bridge driving: a fake control bridge (a Unix socket served from a thread, as
 tests/test_longshot_ctl.py's stand-in serves one) that answers the way host/control.c does, refusing, cancelling and timing out
-where the game would, with the real client (scripts/longshot_ctl.py Bridge) in between. And --vk-profile, the renderer's play
+where the game would, with the real client (scripts/longshot_bridge.py Bridge) in between. And --vk-profile, the renderer's play
 profile on the tour's route: a counting renderer told apart, RX_VK_PGO_FILE's reset after control and dump at each run's end
 against a stand-in for host/pgo_rt.c's writer, the refusals when nothing counts, and merge-profile (a stand-in llvm-profdata).
 
@@ -28,10 +29,19 @@ import threading
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
+from menu_model_fixture import menu_text  # noqa: E402
+
 RUN_ALL_SKIP = {"windows": "the tour runs on Linux (/proc, the bridge's Unix socket): checked on Linux"}
 
 ROOT = Path(__file__).resolve().parents[1]
 TOUR = ROOT / "scripts" / "pipeline_tour.py"
+bridge = drive = lists = memory = route = vkprofile = None   # (the client and the tour's parts: main imports them)
+
+
+def tour_source():
+    """The tour's source: pipeline_tour.py, then its parts in scripts/tours/"""
+    return "".join(p.read_text(encoding="utf-8") for p in [TOUR] + sorted((ROOT / "scripts" / "tours").glob("*.py")))
 
 
 def load(name, path):
@@ -51,7 +61,8 @@ def text(path):
 
 def source(tour, a):
     """What the tour reads from the source, and what it relies on there"""
-    main_c, hid, menu, ctl_c = text("host/hos_main.c"), text("host/nn_hid.c"), text("gpu/vk/vk_menu.cpp"), text("host/control.c")
+    # (the menu: vk_menu.cpp and its modules' rows, #1633)
+    main_c, hid, menu, ctl_c = text("host/hos_main.c"), text("host/nn_hid.c"), menu_text(), text("host/control.c")
     # the bridge: a teleport by index is the Debug tab's OOT_TELEPORT_ACTION + index, the age switch OOT_AGE_ACTION
     if "action = OOT_TELEPORT_ACTION + asked - 1" not in main_c or "action = OOT_AGE_ACTION" not in main_c:
         fail("host/hos_main.c no longer takes the bridge's teleport and age switch as the Debug tab's actions")
@@ -67,12 +78,12 @@ def source(tour, a):
     for field in ('",\\"event\\":%s"', '",\\"loading\\":%s"', '",\\"age\\":%s"'):
         if field not in tap:
             fail("host/oot_state_tap.c's sample no longer has %s, which status's game passes on" % field)
-    # (the presses: HOS_INPUT_SCRIPT's units, which scripts/longshot_ctl.py turns into the bridge's frame steps, as
+    # (the presses: HOS_INPUT_SCRIPT's units, which scripts/longshot_bridge.py turns into the bridge's frame steps, as
     # host/control.c's own script reading would)
-    ctl_py = text("scripts/longshot_ctl.py")
+    ctl_py = text("scripts/longshot_bridge.py")
     if 'strcmp(units, "hos")' not in ctl_c or 'args["steps"] = hos_steps(args.pop("script"))' not in ctl_py or \
             'const JNode *list = j_get(d, req, "steps");' not in ctl_c:
-        fail("host/control.c's sequence or scripts/longshot_ctl.py no longer takes HOS_INPUT_SCRIPT's units (the tour's presses)")
+        fail("host/control.c's sequence or scripts/longshot_bridge.py no longer takes HOS_INPUT_SCRIPT's units (the tour's presses)")
     if '"refused"' not in ctl_c or '"cancelled"' not in ctl_c:
         fail("host/control.c no longer replies refused or cancelled")
     # the refusals asking again cannot change are named in the game's words
@@ -80,7 +91,7 @@ def source(tour, a):
     if not whys:
         fail("host/hos_main.c's teleport refusals not found")
     for why in whys:
-        permanent = any(p in why for p in tour.PERMANENT)
+        permanent = any(p in why for p in drive.PERMANENT)
         transient = any(w in why for w in ("event is playing", "map is loading", "in progress", "not there yet"))
         if permanent == transient:
             fail("a teleport refusal neither asked again nor given up on, or both: %r" % why)
@@ -105,7 +116,7 @@ def source(tour, a):
     if not 0 < a["dungeons"] < len(a["teleports"]):
         fail("the teleport list's Dungeons section not found (vk_menu.cpp teleport_sections)")
     main_time = re.search(r"action >= (\d+) && action < (\d+)\) \{\s*oot_set_time\(c, action - (\d+)\)", main_c)
-    if not main_time or int(main_time.group(1)) != tour.TIME_ACTION or int(main_time.group(2)) < tour.TIME_ACTION + 23:
+    if not main_time or int(main_time.group(1)) != route.TIME_ACTION or int(main_time.group(2)) < route.TIME_ACTION + 23:
         fail("host/hos_main.c's clock action is not TIME_ACTION + hour")
     # the inventory: the item list's order is the action's index; kinds 0 (unlock) and 1 (a quantity)
     names = list(a["items"])
@@ -116,14 +127,14 @@ def source(tour, a):
     if a["items"][names[0]][0] != 0 or a["items"]["Item_Bomb"][1] != 1 or a["items"]["Item_Longshot"][1] != 0 or \
             a["items"]["Item_Hookshot"][1] != 0 or a["items"]["Item_Hookshot"][0] + 1 != a["items"]["Item_Longshot"][0]:
         fail("the inventory's indices or kinds are read wrong: %s" % list(a["items"].items())[:16])
-    unlock = tour.items_unlock(a)
+    unlock = route.items_unlock(a)
     count = len(re.findall(r'OOT_ITEM\("', text("gpu/vk/oot_cheat_items.h")))
     by_index = {i: name for name, (i, _) in a["items"].items()}
     for n in unlock:
         item, op = divmod(n - a["item"], 256)
         if not 0 <= item < count or item not in by_index or not (op == 200 or 0 < op - 64 <= 63):
             fail("an inventory action out of range: %d" % n)
-    if any(n.startswith(tour.QUEST_ITEMS) for n in [by_index[(x - a["item"]) // 256] for x in unlock]):
+    if any(n.startswith(route.QUEST_ITEMS) for n in [by_index[(x - a["item"]) // 256] for x in unlock]):
         fail("the quest items (the story's flags) are given")
     # the switches the tour sets are ones the game reads, and the options its menu writes
     env_src = "".join(text(p) for p in ("host/nn_vi.c", "host/nn_hid.c", "host/pad_sdl.c", "host/nn_audio.c", "host/hos_main.c",
@@ -162,7 +173,7 @@ def source(tour, a):
     # the renderer's counters (--vk-profile): RX_VK_PGO_FILE, <file>.reset and <file>.dump as host/pgo_rt.c reads them in the
     # renderer's copy, and its raw format's magic
     pgo, build = text("host/pgo_rt.c"), text("nx2/build.py")
-    if '-DPGO_ENV="RX_VK_PGO_FILE"' not in build or tour.PGO_ENV != "RX_VK_PGO_FILE" or tour.PGO_MARK != b"RX_VK_PGO_FILE\x00":
+    if '-DPGO_ENV="RX_VK_PGO_FILE"' not in build or vkprofile.PGO_ENV != "RX_VK_PGO_FILE" or vkprofile.PGO_MARK != b"RX_VK_PGO_FILE\x00":
         fail("the renderer's copy of host/pgo_rt.c no longer reads RX_VK_PGO_FILE (nx2/build.py -DPGO_ENV)")
     for want in ('snprintf(dump, sizeof dump, "%s.dump", path);', 'snprintf(reset, sizeof reset, "%s.reset", path);',
                  "memset(PGO_CNT_BEGIN, 0,", "pgo_write(path);\n            DeleteFileA(dump);", "DeleteFileA(reset);",
@@ -170,58 +181,58 @@ def source(tour, a):
         if want not in pgo:
             fail("host/pgo_rt.c no longer has %r (the tour's reset and dump)" % want)
     magic = re.search(r"(0x[0-9a-f]+)ULL,\s*/\* magic", pgo)
-    if not magic or struct.pack("<Q", int(magic.group(1), 16)) != tour.PGO_RAW_MAGIC or "ndata, 0, ncnt" not in pgo:
+    if not magic or struct.pack("<Q", int(magic.group(1), 16)) != vkprofile.PGO_RAW_MAGIC or "ndata, 0, ncnt" not in pgo:
         fail("host/pgo_rt.c's raw profile header is not the one merge-profile checks")
-    if '"longshot_vk.dll"' not in text("host/rx_backend.c") or set(tour.RENDERERS) != {"longshot_vk.so", "longshot_vk.dll"}:
+    if '"longshot_vk.dll"' not in text("host/rx_backend.c") or set(vkprofile.RENDERERS) != {"longshot_vk.so", "longshot_vk.dll"}:
         fail("the renderer module the tour looks at is not the one the game loads (host/rx_backend.c)")
 
 
 def routes(tour, a):
     """The route: a new game first, every destination as child (but the adult-only ones) and as adult, the age switched once"""
-    steps = tour.route(a)
+    steps = route.route(a)
     if steps[0] != ("newgame",) or ("items",) not in steps:
         fail("the route does not start with a new game and the items")
     visits = [(s[1], s[2]) for s in steps if s[0] == "visit"]
     for i, (name, adult_only) in enumerate(a["teleports"]):
         for age in ("child", "adult"):
-            want = not (age == "child" and adult_only) and (age, name) not in tour.LEFT_OUT
+            want = not (age == "child" and adult_only) and (age, name) not in route.LEFT_OUT
             if ((age, i) in visits) != want:
                 fail("%s (%s) is %s the route" % (name, age, "not in" if want else "in"))
     ages = [k for k, s in enumerate(steps) if s == ("age",)]
     if len(ages) != 1 or any(s[0] == "visit" and s[1] == "adult" for s in steps[:ages[0]]):
         fail("the age is not switched once, before the adult stops")
     for part in ("child", "adult"):
-        plan = tour.plan_stops(a, part)
+        plan = route.plan_stops(a, part)
         if not plan or any(age != part for age, _ in plan):
             fail("the %s part visits other ages" % part)
-    for age, name in tour.LEFT_OUT:
+    for age, name in route.LEFT_OUT:
         if name not in [n for n, _ in a["teleports"]]:
             fail("a left-out stop names no destination: %s" % name)
-    if len(tour.plan_stops(a, "all")) != len(tour.plan_stops(a, "child")) + len(tour.plan_stops(a, "adult")):
+    if len(route.plan_stops(a, "all")) != len(route.plan_stops(a, "child")) + len(route.plan_stops(a, "adult")):
         fail("the child and adult parts are not the whole route")
     for part in ("child-dungeons", "adult-dungeons"):
-        if not tour.plan_stops(a, part) or any(i < a["dungeons"] for _, i in tour.plan_stops(a, part)):
+        if not route.plan_stops(a, part) or any(i < a["dungeons"] for _, i in route.plan_stops(a, part)):
             fail("%s visits the overworld" % part)
     for age in ("child", "adult"):   # (a stop the game does not teleport out of goes last in its age)
-        names = [a["teleports"][i][0] for g, i in tour.plan_stops(a, "all") if g == age]
-        for last in tour.LAST:
-            if last in names and names.index(last) != len(names) - 1 - sum(1 for n in names[names.index(last) + 1:] if n in tour.LAST):
+        names = [a["teleports"][i][0] for g, i in route.plan_stops(a, "all") if g == age]
+        for last in route.LAST:
+            if last in names and names.index(last) != len(names) - 1 - sum(1 for n in names[names.index(last) + 1:] if n in route.LAST):
                 fail("%s is not last in the %s's stops" % (last, age))
-    resumed = tour.plan_stops(a, "child", first="Market")
-    if a["teleports"][resumed[0][1]][0] != "Market" or len(resumed) >= len(tour.plan_stops(a, "child")):
+    resumed = route.plan_stops(a, "child", first="Market")
+    if a["teleports"][resumed[0][1]][0] != "Market" or len(resumed) >= len(route.plan_stops(a, "child")):
         fail("--first Market does not start the route there")
-    for part in tour.PARTS:   # (the runs of 8 stops cover the part's route, each starting where the one before ended)
+    for part in route.PARTS:   # (the runs of 8 stops cover the part's route, each starting where the one before ended)
         runs = tour.chunks(a, part, 8)
-        covered = sum((tour.plan_stops(a, part, stops, first) for first, stops in runs), [])
-        if covered != tour.plan_stops(a, part):
+        covered = sum((route.plan_stops(a, part, stops, first) for first, stops in runs), [])
+        if covered != route.plan_stops(a, part):
             fail("the %s part's runs of 8 stops are not its route" % part)
     if tour.chunks(a, "opening", 8) != [(None, None)]:
         fail("the opening part is not one run")
-    if len([s for s in tour.route(a, stops=3) if s[0] == "visit"]) != 3:
+    if len([s for s in route.route(a, stops=3) if s[0] == "visit"]) != 3:
         fail("--stops 3 is not three stops")
-    over = tour.route(a, "gameover")
-    if over[-1][0] != "gameover" or a["teleports"][over[-1][1]][0] != tour.GAME_OVER_AT:
-        fail("the gameover part does not go to %s" % tour.GAME_OVER_AT)
+    over = route.route(a, "gameover")
+    if over[-1][0] != "gameover" or a["teleports"][over[-1][1]][0] != route.GAME_OVER_AT:
+        fail("the gameover part does not go to %s" % route.GAME_OVER_AT)
     items_where(tour, a)
 
 
@@ -231,33 +242,33 @@ def items_where(tour, a):
     the same whichever game visits it; and play uses them there and nowhere else, settling each stop by the run's frames"""
     import types
     names = [n for n, _ in a["teleports"]]
-    plan = tour.plan_stops(a, "all")
-    if set(tour.ITEMS_ONCE) != {"child", "adult"}:
-        fail("the items are not used once for each age: %s" % tour.ITEMS_ONCE)
-    for age, name in tour.ITEMS_ONCE.items():
-        first = tour.plan_stops(a, age + "-overworld")[0]
+    plan = route.plan_stops(a, "all")
+    if set(route.ITEMS_ONCE) != {"child", "adult"}:
+        fail("the items are not used once for each age: %s" % route.ITEMS_ONCE)
+    for age, name in route.ITEMS_ONCE.items():
+        first = route.plan_stops(a, age + "-overworld")[0]
         if names[first[1]] != name:
             fail("the %s's items are not at the first stop of its overworld (%s, not %s)" % (age, name, names[first[1]]))
-    for name, why in tour.ITEMS_PASSES.items():
+    for name, why in route.ITEMS_PASSES.items():
         if name not in names or not any(names[i] == name for _, i in plan) or not why.strip():
             fail("an item stop the route does not visit, or with no reason: %s (%r)" % (name, why))
-    stops = tour.item_stops(a)
+    stops = route.item_stops(a)
     for age in ("child", "adult"):
         at = [names[i] for g, i in stops if g == age]
-        want = [names[i] for g, i in plan if g == age and (names[i] == tour.ITEMS_ONCE[age] or names[i] in tour.ITEMS_PASSES)]
-        if at != want or at.count(tour.ITEMS_ONCE[age]) != 1:
+        want = [names[i] for g, i in plan if g == age and (names[i] == route.ITEMS_ONCE[age] or names[i] in route.ITEMS_PASSES)]
+        if at != want or at.count(route.ITEMS_ONCE[age]) != 1:
             fail("the %s's item stops: %s, wanted %s" % (age, at, want))
-    if len(stops) > 20 or len({tour.pause_pick(k)[0] for k in range(len(stops))}) != len(stops):
+    if len(stops) > 20 or len({route.pause_pick(k)[0] for k in range(len(stops))}) != len(stops):
         fail("the item stops' picks are not all different (%d stops)" % len(stops))
     if len(stops) >= len(plan) // 3:
         fail("the items are used at %d of %d stops: not once an age and at the passes' stops" % (len(stops), len(plan)))
     # (play, without the game: which stops press the items, and the settle's frames as the run's options give them)
     with tempfile.TemporaryDirectory() as d:
-        g = tour.Game(None, d, os.path.join(d, "none.bin"), dry=True)
+        g = drive.Game(None, d, os.path.join(d, "none.bin"), dry=True)
         seen, rows = [], []
         g.press = lambda script, label=None: seen.append(("press", label))
         g.settle = lambda quiet, most, step=15: seen.append(("settle", quiet, most))
-        tour.play(g, a, tour.route(a), rows, lambda label: (seen.append(("count", label)), rows.append({"stop": label})),
+        drive.play(g, a, route.route(a), rows, lambda label: (seen.append(("count", label)), rows.append({"stop": label})),
                   types.SimpleNamespace(settle_quiet=150, settle_max=600))
         g.steps.close()
     pressed, used, picks, settles = [], set(), [], set()
@@ -287,9 +298,9 @@ def presses(tour):
     known = set(re.findall(r'\{"([A-Z]+)", (?:B_|-1)', hid))
     if not {"A", "B", "PLUS", "ZL", "ZR", "LUP", "RLEFT"} <= known:
         fail("host/nn_hid.c's button names not read: %s" % sorted(known))
-    texts = [(tour.LOOK, tour.LOOK_SPAN), (tour.ACT, tour.ACT_SPAN), (tour.PAUSE_TOUR, tour.PAUSE_SPAN), (tour.DIVE, tour.DIVE_SPAN),
-             (tour.UNDERWATER_GEAR, tour.GEAR_SPAN), (tour.BOOTS_OFF, tour.BOOTS_SPAN)]
-    texts += [tour.pause_pick(k) for k in range(25)] + [(u, 1.0) for u in tour.UNSTICK]
+    texts = [(route.LOOK, route.LOOK_SPAN), (route.ACT, route.ACT_SPAN), (route.PAUSE_TOUR, route.PAUSE_SPAN), (route.DIVE, route.DIVE_SPAN),
+             (route.UNDERWATER_GEAR, route.GEAR_SPAN), (route.BOOTS_OFF, route.BOOTS_SPAN)]
+    texts += [route.pause_pick(k) for k in range(25)] + [(u, 1.0) for u in route.UNSTICK]
     for script, span in texts:
         for press in script.split(","):
             m = re.fullmatch(r"([\d.]+):([A-Z+]+)(?:/(\d+))?", press)
@@ -297,9 +308,9 @@ def presses(tour):
                 fail("a press nn_hid.c does not read: %s" % press)
             if float(m.group(1)) + int(m.group(3) or 200) / 1000 > span + 1e-6:
                 fail("a press past its step's span (%g s): %s" % (span, press))
-    if len({tour.pause_pick(k)[0] for k in range(20)}) != 20:
+    if len({route.pause_pick(k)[0] for k in range(20)}) != 20:
         fail("the item picks do not differ from stop to stop")
-    if any("A" in p.split(":", 1)[1].split("/")[0].split("+") for p in tour.ACT.split(",")):
+    if any("A" in p.split(":", 1)[1].split("/")[0].split("+") for p in route.ACT.split(",")):
         fail("the item use presses A (next to someone it starts a conversation)")
 
 
@@ -313,7 +324,7 @@ def cli(tour, a):
     if t.parts != "opening,child-overworld,dungeons,adult-overworld" or t.chunk != 8 or t.nice != 19 or not t.publish:
         fail("tour's defaults: %s" % t)
     for parts in t.parts.split(","):
-        if parts not in tour.PARTS:
+        if parts not in route.PARTS:
             fail("a default part that is not one: %s" % parts)
     for argv in (["run", "--game", "g", "--out", "o", "--part", "nope"], ["frobnicate"]):
         try:
@@ -336,7 +347,7 @@ def cli(tour, a):
     ran = subprocess.run([sys.executable, "-I", str(TOUR), "run", "--game", "x", "--out", "x", "--dry-run", "--part", "child",
                           "--stops", "3"], capture_output=True, text=True)
     lines = ran.stdout.splitlines()
-    first = "visit %s (child): teleport 0" % a["teleports"][0][0] + (", sword, shield, item 1" if ("child", 0) in tour.item_stops(a)
+    first = "visit %s (child): teleport 0" % a["teleports"][0][0] + (", sword, shield, item 1" if ("child", 0) in route.item_stops(a)
                                                                      else "")
     if ran.returncode or lines[0] != "newgame" or not lines[1].startswith("items: ") or len(lines) != 5 or lines[2] != first:
         fail("run --dry-run: %s%s" % (ran.stdout, ran.stderr))
@@ -351,7 +362,7 @@ def cli(tour, a):
     if "HOS_HEADLESS" in env or env.get("HOS_WINDOW_SIZE") != "960x540" or env["HOS_OOT_PROTECT_HEARTS"] != "0" or \
             env["HOS_SKIP_OPENING"] != "1" or "HOS_AUDIO" in env or env.get("RX_VK_FORCE_MESH_FALLBACK") != "1":
         fail("the run's switches: %s" % env)
-    for part in tour.PARTS:   # (the speed settings in every part's game, the opening's too)
+    for part in route.PARTS:   # (the speed settings in every part's game, the opening's too)
         env = tour.run_env(p.parse_args(["run", "--game", "g", "--out", "o", "--part", part] + (["--skip-opening"] if part != "opening"
                                                                                              else [])))
         for k, v in (("HOS_HEADLESS", "1"), ("HOS_OUTPUT_RES", "640x360"), ("HOS_NO_PACING", "1"), ("HOS_FPS_MAX", "1000"),
@@ -362,9 +373,9 @@ def cli(tour, a):
         if tour.BASE_INI.get(k) != v:
             fail("the runs' options: %s=%s, not %s" % (k, tour.BASE_INI.get(k), v))
     # the settle: in frames, shorter than the 150 it was, an option of run and tour that the tour passes to its runs
-    if (r.settle_quiet, r.settle_max) != (tour.SETTLE_QUIET, tour.SETTLE_MAX) or not 30 <= tour.SETTLE_QUIET < 150 or \
-            tour.SETTLE_MAX < 4 * tour.SETTLE_QUIET:
-        fail("the settle's defaults: %d quiet frames, %d at most" % (tour.SETTLE_QUIET, tour.SETTLE_MAX))
+    if (r.settle_quiet, r.settle_max) != (route.SETTLE_QUIET, route.SETTLE_MAX) or not 30 <= route.SETTLE_QUIET < 150 or \
+            route.SETTLE_MAX < 4 * route.SETTLE_QUIET:
+        fail("the settle's defaults: %d quiet frames, %d at most" % (route.SETTLE_QUIET, route.SETTLE_MAX))
     old = p.parse_args(["run", "--game", "g", "--out", "o", "--settle-quiet", "150", "--settle-max", "600"])
     if (old.settle_quiet, old.settle_max) != (150, 600):
         fail("run --settle-quiet 150 --settle-max 600: %s %s" % (old.settle_quiet, old.settle_max))
@@ -379,12 +390,12 @@ def cli(tour, a):
     t.copy, t.out_dir = "/g-tour", "/o"
     cmd = tour.run_command(t, "dungeons", "play-dungeons-1", "Fire Temple (child)", 3, True)
     want = ["run", "--game", "/g-tour", "--out", "/o", "--name", "play-dungeons-1", "--part", "dungeons", "--nice", "19",
-            "--settle-quiet", str(tour.SETTLE_QUIET), "--settle-max", str(tour.SETTLE_MAX), "--env", "X=1",
+            "--settle-quiet", str(route.SETTLE_QUIET), "--settle-max", str(route.SETTLE_MAX), "--env", "X=1",
             "--mem", "soft_mb=5000", "--first", "Fire Temple (child)", "--stops", "3", "--skip-opening", "--cpus", "6-11"]
     if cmd[3:] != want:
         fail("the tour's run: %s" % cmd[3:])
     # --vk-profile: off by default (the runs' commands and switches as above); on, each run is given the folder
-    if r.vk_profile is not None or t.vk_profile is not None or tour.PGO_ENV in tour.run_env(r):
+    if r.vk_profile is not None or t.vk_profile is not None or vkprofile.PGO_ENV in tour.run_env(r):
         fail("--vk-profile is on by default")
     t.vk_profile = "/prof"
     if tour.run_command(t, "dungeons", "play-dungeons-1", None, None, True)[-2:] != ["--vk-profile", "/prof"]:
@@ -395,17 +406,17 @@ def cli(tour, a):
         fail("cpu_list")
 
 
-def lists(tour, states, rec):
+def list_tools(tour, states, rec):
     """The counts and the merge, through nx2/pipeline_states.py (whatever its format); the options file; the report; --publish"""
     head = states.MAGIC + struct.pack("<I", states.SIZE)
     with tempfile.TemporaryDirectory() as d:
         one, two, out = (os.path.join(d, n) for n in ("one.bin", "two.bin", "out.bin"))
         open(one, "wb").write(head + rec(1, 2, 3) + rec(1, 2, 4))
         open(two, "wb").write(head + rec(1, 2, 4) + rec(5, 0, 3))
-        n, programs, recs = tour.list_counts(states, one)
+        n, programs, recs = lists.list_counts(states, one)
         if (n, programs, len(recs)) != (2, 1, 2):
             fail("list_counts: %d pipelines, %d programs, expected 2 and 1" % (n, programs))
-        if tour.list_counts(states, os.path.join(d, "none.bin"))[:2] != (0, 0):
+        if lists.list_counts(states, os.path.join(d, "none.bin"))[:2] != (0, 0):
             fail("a missing list is not empty")
         ran = subprocess.run([sys.executable, "-I", str(TOUR), "merge", "--out", out, one, two], capture_output=True, text=True)
         if ran.returncode or "1 not in the lists before it" not in ran.stdout:
@@ -413,10 +424,10 @@ def lists(tour, states, rec):
         if states.read(out) != [rec(1, 2, 3), rec(1, 2, 4), rec(5, 0, 3)]:
             fail("merge did not write the three different pipelines in order")
         # compare: what the old list has that the new lacks (lost), and the other way round
-        diff = tour.list_diff(states, one, two)
+        diff = lists.list_diff(states, one, two)
         if (diff["new"], diff["old"], diff["lost"], diff["gained"]) != (2, 2, {rec(5, 0, 3)}, {rec(1, 2, 3)}):
             fail("list_diff: %s" % diff)
-        if tour.list_diff(states, out, one)["lost"]:
+        if lists.list_diff(states, out, one)["lost"]:
             fail("list_diff: the merge lost a pipeline of one of its lists")
         ran = subprocess.run([sys.executable, "-I", str(TOUR), "compare", one, two], capture_output=True, text=True)
         if ran.returncode or "lost): 1 pipelines" not in ran.stdout or "gained): 1 pipelines" not in ran.stdout:
@@ -468,7 +479,7 @@ def lists(tour, states, rec):
 # ---- a fake bridge ----
 
 class FakeGame:
-    """The game as its bridge shows it (docs/control.md): frames advance with the waits, the title, then Link after some A
+    """The game as its bridge shows it (docs/dev/reference/control-bridge.md): frames advance with the waits, the title, then Link after some A
     presses, events that end, teleports refused while an event plays, a map that is not left, and the age switch"""
     def __init__(self, bancs):
         self.bancs, self.frame, self.map, self.age, self.event_until, self.loading = bancs, 100, None, "child", 0, False
@@ -496,7 +507,7 @@ class FakeGame:
                 r.update(state="play" if self.map else "menu" if self.frame >= self.title_at else "intro",
                          draws=400.0 if self.frame >= self.title_at else 5.0, map=self.map, version="v0.0.0-test",
                          renderer="Vulkan: Fake GPU, driver 1")
-                if self.map:   # (the snapshot is of this frame, or of the last before a stale spell: docs/control.md)
+                if self.map:   # (the snapshot is of this frame, or of the last before a stale spell: docs/dev/reference/control-bridge.md)
                     taken = self.frame if self.frame >= self.stale_until else self.stale_from
                     r["game"] = {"event": event, "loading": self.loading, "age": self.age, "frame": taken}
             elif cmd == "press":
@@ -504,7 +515,7 @@ class FakeGame:
                 if req.get("buttons") == "A" and self.frame >= self.title_at:
                     self.a_presses += 1
                 r.update(queued=1, frames=req.get("frames", 8))
-            elif cmd == "sequence":   # (steps in frames, as scripts/longshot_ctl.py sends HOS units; or a script in them)
+            elif cmd == "sequence":   # (steps in frames, as scripts/longshot_bridge.py sends HOS units; or a script in them)
                 if isinstance(req.get("steps"), list) and req["steps"]:
                     self.inputs.append(req["steps"])
                     span = max(s["at"] + s["frames"] for s in req["steps"])
@@ -594,15 +605,14 @@ def bridge_driving(tour, a, states, rec):
         fake = FakeGame(a["bancs"])
         path = os.path.join(d, "control.sock")
         srv = serve(fake, path)
-        ctl = tour.ctl_module()
-        b = ctl.Bridge(path, 5)
+        b = bridge.Bridge(path, 5)
         live = os.path.join(d, "live.txt")
         open(live, "w").close()
         lst = os.path.join(d, tour.LIST)
         os.makedirs(os.path.dirname(lst), exist_ok=True)
         open(lst, "wb").write(states.MAGIC + struct.pack("<I", states.SIZE) + rec(1, 2, 3))
-        g = tour.Game(b, d, lst, live, cheat_gap=0)
-        phases = tour.new_game(g)
+        g = drive.Game(b, d, lst, live, cheat_gap=0)
+        phases = drive.new_game(g)
         if set(phases) != {"title", "player", "control"} or fake.map != "LinkHouse" or fake.frame < fake.event_until:
             fail("new game: %s, in %s at frame %d (its event until %d)" % (phases, fake.map, fake.frame, fake.event_until))
         if not any(r.get("cmd") == "press" and r.get("wait") is False for r in fake.requests):
@@ -610,7 +620,7 @@ def bridge_driving(tour, a, states, rec):
         # a teleport refused twice (an event playing) and asked again; then in the map, its arrival's event over
         child_stop = next(i for i, (c, _) in enumerate(a["bancs"]) if c)
         fake.refuse[child_stop] = 2
-        st = tour.teleport(g, child_stop, a["bancs"][child_stop][0], "child")
+        st = drive.teleport(g, child_stop, a["bancs"][child_stop][0], "child")
         if st["map"] != a["bancs"][child_stop][0] or fake.map != st["map"] or st["event"] or st["loading"]:
             fail("the teleport did not arrive: %s" % st)
         if sum(1 for r in fake.requests if r.get("cmd") == "teleport") != 3:
@@ -621,8 +631,8 @@ def bridge_driving(tour, a, states, rec):
                 fail("a teleport not by the destination's index: %s" % r)
         # the presses go as HOS_INPUT_SCRIPT's units, the reply once they are over
         before = fake.frame
-        g.press(tour.LOOK)
-        if fake.inputs[-1] not in (tour.LOOK, ctl.hos_steps(tour.LOOK)) or fake.frame - before < int((tour.LOOK_SPAN - 0.2) * 60):
+        g.press(route.LOOK)
+        if fake.inputs[-1] not in (route.LOOK, bridge.hos_steps(route.LOOK)) or fake.frame - before < int((route.LOOK_SPAN - 0.2) * 60):
             fail("the look around is not one sequence over its span")
         # the items: the Debug tab's actions in the live file, one a line
         before = fake.frame
@@ -636,9 +646,9 @@ def bridge_driving(tour, a, states, rec):
         adult_only = next(i for i, (c, _) in enumerate(a["bancs"]) if c is None)
         n = len(fake.requests)
         try:
-            tour.teleport(g, adult_only, a["bancs"][adult_only][1], "child")
+            drive.teleport(g, adult_only, a["bancs"][adult_only][1], "child")
             fail("a teleport with no map for the age arrived")
-        except tour.Failed as e:
+        except drive.Failed as e:
             if "no map" not in str(e):
                 raise
         if sum(1 for r in fake.requests[n:] if r.get("cmd") == "teleport") != 1:
@@ -648,24 +658,34 @@ def bridge_driving(tour, a, states, rec):
         fake.stuck.add(other)
         n = len(fake.requests)
         try:
-            tour.map_change(g, "teleport", lambda st: st["map"] == a["bancs"][other][0], 10 ** 9, arrive_s=1, to=other)
+            drive.map_change(g, "teleport", lambda st: st["map"] == a["bancs"][other][0], 10 ** 9, arrive_s=1, to=other)
             fail("a teleport that never moved arrived")
-        except tour.Failed as e:
+        except drive.Failed as e:
             if "five times" not in str(e):
                 raise
         if sum(1 for r in fake.requests[n:] if r.get("cmd") == "teleport") != 5:
             fail("an unmoved teleport is not sent five times")
+        # the same with the usual 60 s for an arrival: a send the game did not take is waited for NOT_TAKEN_S, not 60 s
+        start = fake.frame
+        try:
+            drive.map_change(g, "teleport", lambda st: st["map"] == a["bancs"][other][0], 10 ** 9, arrive_s=60, to=other)
+            fail("a teleport that never moved arrived")
+        except drive.Failed as e:
+            if "five times" not in str(e):
+                raise
+        if fake.frame - start > 5 * 60 * (drive.NOT_TAKEN_S + 10):
+            fail("a send the game did not take waited %d frames over five sends: arrive_s, not NOT_TAKEN_S" % (fake.frame - start))
         fake.stuck.clear()
         fake.pending = None
         # the age: switched, reloaded, then the adult's map; asked again for the adult: nothing to do
-        st = tour.switch_age(g, "adult")
+        st = drive.switch_age(g, "adult")
         if st["age"] != "adult" or fake.age != "adult":
             fail("the age switch: %s" % st)
-        st = tour.switch_age(g, "adult")
+        st = drive.switch_age(g, "adult")
         if st["age"] != "adult":
             fail("the age switch to the age Link is: %s" % st)
         # an adult stop now arrives at its adult map
-        st = tour.teleport(g, adult_only, a["bancs"][adult_only][1], "adult")
+        st = drive.teleport(g, adult_only, a["bancs"][adult_only][1], "adult")
         if st["map"] != a["bancs"][adult_only][1]:
             fail("the adult's teleport: %s" % st)
         # the settle: no new pipeline for the quiet frames, then on
@@ -674,12 +694,12 @@ def bridge_driving(tour, a, states, rec):
         if not 150 <= fake.frame - before <= 200:
             fail("settle took %d frames, wanted about 150" % (fake.frame - before))
         before = fake.frame
-        g.settle(tour.SETTLE_QUIET, tour.SETTLE_MAX)
-        if not tour.SETTLE_QUIET <= fake.frame - before <= tour.SETTLE_QUIET + 50:
-            fail("the default settle took %d frames, wanted about %d" % (fake.frame - before, tour.SETTLE_QUIET))
+        g.settle(route.SETTLE_QUIET, route.SETTLE_MAX)
+        if not route.SETTLE_QUIET <= fake.frame - before <= route.SETTLE_QUIET + 50:
+            fail("the default settle took %d frames, wanted about %d" % (fake.frame - before, route.SETTLE_QUIET))
         # a snapshot kept from before a load (game.frame behind the reply's) is not taken for control
         # (older than the STALE_FRAMES presents a snapshot may trail its reply by: one taken at Link's update, a frame or two before)
-        fake.stale_from, fake.stale_until = fake.frame - tour.STALE_FRAMES - 1, fake.frame + 200
+        fake.stale_from, fake.stale_until = fake.frame - drive.STALE_FRAMES - 1, fake.frame + 200
         g.calm(lambda st: True, 2000)
         if fake.frame < fake.stale_until:
             fail("calm took a stale snapshot (game.frame %d, reply %d) for control" % (fake.stale_from, fake.frame))
@@ -688,12 +708,12 @@ def bridge_driving(tour, a, states, rec):
         adult_stop = next(i for i, (_, adult) in enumerate(a["bancs"]) if adult and i != adult_only)
         fake.refuse_text = "the game refused the teleport: another teleport is still in progress (one every 8 s)"
         fake.refuse[adult_stop] = 12   # (720 frames of refusals: past the 240 after which a busy game is pressed at)
-        st = tour.teleport(g, adult_stop, a["bancs"][adult_stop][1], "adult")
+        st = drive.teleport(g, adult_stop, a["bancs"][adult_stop][1], "adult")
         fake.refuse_text = None
         if st["map"] != a["bancs"][adult_stop][1] or sum(1 for r in fake.requests if r.get("cmd") == "sequence") != presses:
             fail("the teleport's 8 s refusal is pressed at (unstick), where it is only waited out: %s" % st)
         g.steps.close()
-        tour.stop_game(None, b)
+        drive.stop_game(None, b)
         b.close()
         srv.close()
 
@@ -742,8 +762,8 @@ def folder_kept(tour):
         # the executable: bin/'s in a builder's folder, whose top-level longshot starts the launcher
         open(os.path.join(game, "longshot"), "w").close()
         os.makedirs(os.path.join(game, "bin"))
-        if tour.game_exe(game) != os.path.join(game, "bin", "longshot.exe" if os.name == "nt" else "longshot"):
-            fail("game_exe starts the builder's launcher, not bin/'s game: %s" % tour.game_exe(game))
+        if bridge.game_exe(game) != os.path.join(game, "bin", "longshot.exe" if os.name == "nt" else "longshot"):
+            fail("game_exe starts the builder's launcher, not bin/'s game: %s" % bridge.game_exe(game))
     for bad in ("0-3,", "x", "5-2"):
         try:
             tour.cpu_list(bad)
@@ -753,7 +773,7 @@ def folder_kept(tour):
                 raise
     if tour.cpu_list("0-3, 12") != {0, 1, 2, 3, 12}:
         fail("cpu_list")
-    src = TOUR.read_text(encoding="utf-8")
+    src = tour_source()
     body = src.split("\ndef run(args):", 1)[1].split("\ndef ", 1)[0]
     if "try:\n        touched = True\n        set_aside(game, aside)" not in body or \
             body.index("cpu_list(args.cpus)") > body.index("set_aside(game, aside)"):
@@ -761,7 +781,7 @@ def folder_kept(tour):
     if "except KeyboardInterrupt:" not in body or "hold_stops()" not in body.split("finally:", 1)[1][:40]:
         fail("a stopped run does not write its report, or a second stop can cut its putting back short")
     # the environment: the shell's Longshot switches are not the run's
-    env = tour.run_environ({"PATH": "/bin", "RX_VK_NO_STATE_LIST": "1", "HOS_FPS_MAX": "30", "HOME": "/h"}, {"HOS_FPS_MAX": "1000"})
+    env = drive.run_environ({"PATH": "/bin", "RX_VK_NO_STATE_LIST": "1", "HOS_FPS_MAX": "30", "HOME": "/h"}, {"HOS_FPS_MAX": "1000"})
     if env != {"PATH": "/bin", "HOME": "/h", "HOS_FPS_MAX": "1000"}:
         fail("run_environ: %s" % env)
     if '"HOS_ENV_FILE": no_env' not in src or '[exe, "--user", user]' not in src:
@@ -807,44 +827,44 @@ def memory_guard(tour, a):
     """The memory guard: /proc's numbers read, a game not started without memory (waiting, then giving up), a running one
     stopped past its limits, and the tour going on from where a stopped game was"""
     info = "MemTotal: 31000000 kB\nMemAvailable: %d kB\nSwapTotal: 60000000 kB\nSwapFree: %d kB\n"
-    free, swap = tour.meminfo(info % (10 * 1048576, 60000000 - 2 * 1048576))
+    free, swap = memory.meminfo(info % (10 * 1048576, 60000000 - 2 * 1048576))
     if abs(free - 10) > 1e-9 or abs(swap - 2) > 1e-9:
         fail("meminfo: %s %s" % (free, swap))
-    if tour.meminfo("MemTotal: 1 kB\n") != (None, None):
+    if memory.meminfo("MemTotal: 1 kB\n") != (None, None):
         fail("meminfo without MemAvailable")
-    if tour.held_mb("VmRSS:\t9000000 kB\nRssAnon:\t1048576 kB\nRssFile:\t5000000 kB\nRssShmem:\t2097152 kB\n") != 3072:
+    if memory.held_mb("VmRSS:\t9000000 kB\nRssAnon:\t1048576 kB\nRssFile:\t5000000 kB\nRssShmem:\t2097152 kB\n") != 3072:
         fail("held_mb is not anonymous + shared memory (the file pages can be dropped)")
-    mem = dict(tour.MEM)
-    if tour.start_problem(mem, (mem["min_free_gb"] + 1, 0)) is not None or tour.start_problem(mem, (None, None)) is not None:
+    mem = dict(memory.MEM)
+    if memory.start_problem(mem, (mem["min_free_gb"] + 1, 0)) is not None or memory.start_problem(mem, (None, None)) is not None:
         fail("a game may not start with memory free")
-    if not tour.start_problem(mem, (mem["min_free_gb"] - 1, 0)) or not tour.start_problem(mem, (20, mem["max_swap_gb"] + 1)):
+    if not memory.start_problem(mem, (mem["min_free_gb"] - 1, 0)) or not memory.start_problem(mem, (20, mem["max_swap_gb"] + 1)):
         fail("a game starts without memory or with swap full")
-    if tour.run_problem(mem, (10, 1), mem["hard_mb"] - 1) is not None:
+    if memory.run_problem(mem, (10, 1), mem["hard_mb"] - 1) is not None:
         fail("a game within its limits stopped")
     for info, held in (((10, 1), mem["hard_mb"] + 1), ((mem["floor_gb"] - 0.5, 1), 1000), ((10, mem["max_swap_gb"] + 5), 1000)):
-        if not tour.run_problem(mem, info, held):
+        if not memory.run_problem(mem, info, held):
             fail("a game past a limit not stopped: %s, %s MB" % (info, held))
     if not mem["soft_mb"] < mem["hard_mb"] < mem["scope_gb"] * 1024 or mem["min_free_gb"] <= mem["floor_gb"]:
         fail("the limits are out of order: %s" % mem)
     now, looks = [0.0], iter([(2, 0), (2, 0), (12, 0)])
     sleep = lambda s: now.__setitem__(0, now[0] + s)
-    if tour.wait_memory(dict(mem, wait_s=100), read=lambda: next(looks), sleep=sleep, clock=lambda: now[0], say=lambda *x, **k: 0):
+    if memory.wait_memory(dict(mem, wait_s=100), read=lambda: next(looks), sleep=sleep, clock=lambda: now[0], say=lambda *x, **k: 0):
         fail("wait_memory gave up though the memory came")
     now[0] = 0.0
-    why = tour.wait_memory(dict(mem, wait_s=100), read=lambda: (1, 0), sleep=sleep, clock=lambda: now[0], say=lambda *x, **k: 0)
+    why = memory.wait_memory(dict(mem, wait_s=100), read=lambda: (1, 0), sleep=sleep, clock=lambda: now[0], say=lambda *x, **k: 0)
     if not why or now[0] < 100 or now[0] > 120:
         fail("wait_memory did not give up after its wait (%s, %s s)" % (why, now[0]))
-    if tour.scope_prefix(dict(mem, scope_gb=0)) != []:
+    if memory.scope_prefix(dict(mem, scope_gb=0)) != []:
         fail("a scope though scope_gb is 0")
     ok = type("R", (), {"returncode": 0})
     bad = type("R", (), {"returncode": 1})
     if tour.shutil.which("systemd-run") and not os.environ.get("OOT_NO_SCOPE"):
-        pre = tour.scope_prefix(mem, run=lambda *x, **k: ok)
+        pre = memory.scope_prefix(mem, run=lambda *x, **k: ok)
         if pre[:3] != ["systemd-run", "--user", "--scope"] or "MemoryMax=%dG" % mem["scope_gb"] not in pre or pre[-1] != "--":
             fail("the scope: %s" % pre)
-        if tour.scope_prefix(mem, run=lambda *x, **k: bad) != []:
+        if memory.scope_prefix(mem, run=lambda *x, **k: bad) != []:
             fail("a scope that does not start is used")
-    plan = ["%s (%s)" % (a["teleports"][i][0], age) for age, i in tour.plan_stops(a, "child-overworld")]
+    plan = ["%s (%s)" % (a["teleports"][i][0], age) for age, i in route.plan_stops(a, "child-overworld")]
     calls = []
 
     def start(script):
@@ -873,7 +893,7 @@ def memory_guard(tour, a):
         fail("a part goes on after a failed game")
     args = type("A", (), {"mem": ["soft_mb=5000", "floor_gb=2.5"], "no_mem_guard": False})()
     m = tour.mem_settings(args)
-    if m["soft_mb"] != 5000 or m["floor_gb"] != 2.5 or m["hard_mb"] != tour.MEM["hard_mb"]:
+    if m["soft_mb"] != 5000 or m["floor_gb"] != 2.5 or m["hard_mb"] != memory.MEM["hard_mb"]:
         fail("--mem: %s" % m)
     if tour.mem_settings(type("A", (), {"mem": [], "no_mem_guard": True})()) is not None:
         fail("--no-mem-guard still guards")
@@ -883,7 +903,7 @@ def memory_guard(tour, a):
     except SystemExit as e:
         if "nope" not in str(e):
             raise
-    src = TOUR.read_text(encoding="utf-8")
+    src = tour_source()
     if "threading" in src:
         fail("the tour runs games at once (one game can hold 14 GB)")
     sleeps = re.findall(r"^.*\btime\.sleep\(.*$", src, re.M)
@@ -902,17 +922,17 @@ def worth(tour, states, rec):
         rows = [{"stop": "new game: x", "took": 50, "pipelines": 10}, {"stop": "A", "took": 20, "pipelines": 22,
                  "marks": [["arrive", 15], ["look", 20]]}, {"stop": "B", "took": 30, "pipelines": 30}]
         json.dump({"meta": {}, "stops": rows}, open(os.path.join(d, "report.json"), "w"))
-        steps = tour.run_steps(states, d)
+        steps = lists.run_steps(states, d)
         (r2,), _ = states.as_v2([r], force=True)
         if [(k, len(v)) for k, _, v in steps] != [("new game: x", 10), ("A", 12), ("B", 8)] or steps[1][2] != set(r2[10:22]):
             fail("run_steps: %s" % [(k, len(v)) for k, _, v in steps])
-        sub = tour.run_steps(states, d, sub=True)
+        sub = lists.run_steps(states, d, sub=True)
         if [(k, len(v)) for k, _, v in sub] != [("new game: x", 10), ("A / arrive", 5), ("A / look", 5), ("A / settle", 2), ("B", 8)]:
             fail("run_steps --sub: %s" % [(k, len(v)) for k, _, v in sub])
     s = lambda *ids: {i for i in ids}
     runs = [[("new game: x", 50, s(1)), ("B", 20, s(2, 3, 4)), ("D", 10, s(1, 2))],
             [("new game: x", 50, s(1)), ("C", 40, s(2, 3, 4)), ("E", 10, s(*range(10, 30)))]]
-    rows = {r["step"]: r for r in tour.worth(runs, against=s(4), floor=2)}
+    rows = {r["step"]: r for r in lists.worth(runs, against=s(4), floor=2)}
     if not rows["new game: x"]["kept"] or rows["D"]["kept"] or not rows["E"]["kept"] or rows["E"]["only"] != 20:
         fail("worth: %s" % rows)
     if rows["B"]["kept"] == rows["C"]["kept"] or not rows["B"]["kept"]:   # (the slower of two equal steps goes)
@@ -954,10 +974,10 @@ def vk_profile(tour, a):
         counting, plain, none = (os.path.join(d, n) for n in ("counting", "plain", "none"))
         for folder in (counting, plain, none):
             os.makedirs(folder)
-        open(os.path.join(counting, "longshot_vk.so"), "wb").write(b"x" * ((1 << 20) - 5) + tour.PGO_MARK + b"y" * 100)
+        open(os.path.join(counting, "longshot_vk.so"), "wb").write(b"x" * ((1 << 20) - 5) + vkprofile.PGO_MARK + b"y" * 100)
         open(os.path.join(plain, "longshot_vk.so"), "wb").write(b"x" * 5000 + b"RX_VK_PGO\x00HOS_PGO\x00")
-        if tour.counting_renderer(counting) != os.path.join(counting, "longshot_vk.so") or tour.counting_renderer(plain) or \
-                tour.counting_renderer(none):
+        if vkprofile.counting_renderer(counting) != os.path.join(counting, "longshot_vk.so") or vkprofile.counting_renderer(plain) or \
+                vkprofile.counting_renderer(none):
             fail("a counting renderer is not told apart from another")
         # run and tour refuse a game whose renderer does not count, before anything in its folder is touched
         open(os.path.join(plain, "longshot"), "w").close()
@@ -979,56 +999,56 @@ def vk_profile(tour, a):
         file = os.path.join(d, "vk.profraw")
         for stale in (file, file + ".dump", file + ".reset"):
             open(stale, "w").close()
-        prof = tour.Profile(file, out, "play-child-0", wait_s=5)
+        prof = vkprofile.Profile(file, out, "play-child-0", wait_s=5)
         if any(os.path.exists(f) for f in (file, file + ".dump", file + ".reset")):
             fail("an earlier run's counter files are kept")
-        meta, why = tour.profile_end(prof, True)
+        meta, why = vkprofile.profile_end(prof, True)
         if why or meta["file"] or meta["reset"] or os.path.exists(file + ".dump"):
             fail("counters never cleared after control are dumped, or the run failed for it: %s %s" % (meta, why))
         writer = CountingWriter(file)
         prof.reset()
         if writer.cleared != 1 or not prof.was_reset or os.path.exists(file + ".reset"):
             fail("the counters are not cleared on request (%d)" % writer.cleared)
-        meta, why = tour.profile_end(prof, True)
+        meta, why = vkprofile.profile_end(prof, True)
         to = os.path.join(out, "play-child-0.profraw")
-        if why or meta["file"] != to or not os.path.isfile(to) or os.path.exists(file) or writer.dumps != 1 or tour.raw_problem(to):
+        if why or meta["file"] != to or not os.path.isfile(to) or os.path.exists(file) or writer.dumps != 1 or vkprofile.raw_problem(to):
             fail("the counters are not written and moved to <dir>/<name>.profraw: %s %s" % (meta, why))
-        meta, why = tour.profile_end(prof, False)
+        meta, why = vkprofile.profile_end(prof, False)
         if why or meta["file"] or writer.dumps != 1:
             fail("a game that ended is asked for its counters: %s" % meta)
         writer.done.set()
         # a renderer that takes neither request: the reset fails the run, a dump that never comes fails it too
-        lone = tour.Profile(os.path.join(d, "lone.profraw"), out, "play-adult-0", wait_s=0.3)
+        lone = vkprofile.Profile(os.path.join(d, "lone.profraw"), out, "play-adult-0", wait_s=0.3)
         try:
             lone.reset()
             fail("a reset nothing took passed")
-        except tour.Failed as e:
+        except drive.Failed as e:
             if "RX_VK_PGO=gen" not in str(e) or os.path.exists(lone.file + ".reset"):
                 raise
         lone.was_reset = True
-        meta, why = tour.profile_end(lone, True)
+        meta, why = vkprofile.profile_end(lone, True)
         if not why or "RX_VK_PGO=gen" not in why or meta["file"] or os.path.exists(os.path.join(out, "play-adult-0.profraw")) or \
                 os.path.exists(lone.file + ".dump"):
             fail("a dump nothing wrote does not fail the run: %s %s" % (meta, why))
-        if tour.profile_end(None, True) != (None, None):
+        if vkprofile.profile_end(None, True) != (None, None):
             fail("a run without --vk-profile has a profile")
     # the reset comes once the new game has given control, before the items; none without --vk-profile
     for with_profile in (True, False):
-        order, saved = [], tour.new_game
-        tour.new_game = lambda g: order.append("control") or {}
+        order, saved = [], drive.new_game
+        drive.new_game = lambda g: order.append("control") or {}
         try:
             prof = types.SimpleNamespace(reset=lambda: order.append("reset")) if with_profile else None
             g = types.SimpleNamespace(mem=None, dry=False, profile=prof, note=lambda w: None,
                                       cheat=lambda n: order.append("cheat") if "cheat" not in order else None,
                                       frames=lambda n: None)
             rows = []
-            tour.play(g, a, [("newgame",), ("items",)], rows, lambda label: (order.append("count"), rows.append({"stop": label})),
+            drive.play(g, a, [("newgame",), ("items",)], rows, lambda label: (order.append("count"), rows.append({"stop": label})),
                       None)
         finally:
-            tour.new_game = saved
+            drive.new_game = saved
         if order != (["control", "reset", "count", "cheat", "count"] if with_profile else ["control", "count", "cheat", "count"]):
             fail("the counters are not cleared right after control (%s): %s" % ("on" if with_profile else "off", order))
-    src = TOUR.read_text(encoding="utf-8")
+    src = tour_source()
     if "env[PGO_ENV] = os.path.join(run_dir, \"vk.profraw\")" not in src or "g.profile = Profile(env[PGO_ENV], vk_out, args.name)" \
             not in src or "profile_end(g.profile, proc is not None and proc.poll() is None, hard)" not in src:
         fail("the run does not set RX_VK_PGO_FILE for the game, or does not write its counters at its end")
@@ -1051,7 +1071,7 @@ def vk_profile(tour, a):
             return types.SimpleNamespace(returncode=0, stdout="")
         args = types.SimpleNamespace(dir=prof, out=None, publish=True, llvm_profdata="/kit/llvm-profdata")
         try:
-            tour.merge_profile(args, root, fake_run)
+            vkprofile.merge_profile(args, root, fake_run)
             fail("merge-profile merged an empty folder")
         except SystemExit as e:
             if "no .profraw" not in str(e):
@@ -1063,12 +1083,12 @@ def vk_profile(tour, a):
             json.dump({"name": "play-%s-%d" % (part, k), "part": part, "seconds": 600, "completed": k == 0,
                        "version": "v0.0.0-test", "renderer": "Vulkan: Fake GPU, driver 1"}, open(raw[:-8] + ".json", "w"))
             raws.append(raw)
-        tour.merge_profile(args, root, fake_run)
+        vkprofile.merge_profile(args, root, fake_run)
         merged = os.path.join(root, "work", "longshot_vk.profdata")
         if calls[0] != ["/kit/llvm-profdata", "merge", "-o", merged] + sorted(raws):
             fail("merge-profile's command: %s" % calls[0])
         data = open(merged, "rb").read()
-        if lzma.decompress(open(os.path.join(root, tour.VK_PROFILE), "rb").read()) != data or \
+        if lzma.decompress(open(os.path.join(root, vkprofile.VK_PROFILE), "rb").read()) != data or \
                 "preset=9 | lzma.PRESET_EXTREME" not in src:
             fail("--publish does not write the merged profile as xz -9e")
         note = open(os.path.join(prof, "README-note.md"), encoding="utf-8").read()
@@ -1076,23 +1096,23 @@ def vk_profile(tour, a):
                      "play-dungeons-1", time.strftime("%Y-%m-%d", time.gmtime())[:4]):
             if want not in note:
                 fail("the profile's note lacks %r:\n%s" % (want, note))
-        os.remove(os.path.join(root, tour.VK_PROFILE))
-        tour.merge_profile(types.SimpleNamespace(dir=prof, out=os.path.join(d, "own.profdata"), publish=False,
+        os.remove(os.path.join(root, vkprofile.VK_PROFILE))
+        vkprofile.merge_profile(types.SimpleNamespace(dir=prof, out=os.path.join(d, "own.profdata"), publish=False,
                                                  llvm_profdata="/kit/llvm-profdata"), root, fake_run)
-        if not os.path.isfile(os.path.join(d, "own.profdata")) or os.path.exists(os.path.join(root, tour.VK_PROFILE)):
+        if not os.path.isfile(os.path.join(d, "own.profdata")) or os.path.exists(os.path.join(root, vkprofile.VK_PROFILE)):
             fail("merge-profile --out without --publish")
         for bad, why in ((b"not a profile at all, no" + bytes(16), "not an LLVM raw profile"),
                          (RAW_MAGIC + struct.pack("<QQQ", 10, 0, 0) + bytes(64), "no counted functions")):
             open(os.path.join(prof, "zz.profraw"), "wb").write(bad)
             try:
-                tour.merge_profile(args, root, fake_run)
+                vkprofile.merge_profile(args, root, fake_run)
                 fail("merge-profile merged a file that is %s" % why)
             except SystemExit as e:
                 if why not in str(e):
                     raise
         os.remove(os.path.join(prof, "zz.profraw"))
         try:
-            tour.merge_profile(args, root, lambda cmd, **kw: types.SimpleNamespace(returncode=1, stdout=""))
+            vkprofile.merge_profile(args, root, lambda cmd, **kw: types.SimpleNamespace(returncode=1, stdout=""))
             fail("merge-profile passed though llvm-profdata failed")
         except SystemExit as e:
             if "wrote no profile" not in str(e):
@@ -1168,9 +1188,12 @@ def game_copy(tour):
 
 
 def main():
-    tour = load("pipeline_tour", TOUR)
-    a = tour.actions()
-    states = tour.state_tool()
+    global bridge, drive, lists, memory, route, vkprofile
+    tour = load("pipeline_tour", TOUR)   # (it puts scripts/ on the path: its parts are imported from there)
+    import longshot_bridge as bridge
+    from tours import drive, lists, memory, route, vkprofile
+    a = route.actions()
+    states = lists.state_tool()
 
     def rec(vs, fs, topo):
         r = bytearray(states.SIZE)
@@ -1182,7 +1205,7 @@ def main():
     routes(tour, a)
     presses(tour)
     cli(tour, a)
-    lists(tour, states, rec)
+    list_tools(tour, states, rec)
     bridge_driving(tour, a, states, rec)
     folder_kept(tour)
     memory_guard(tour, a)

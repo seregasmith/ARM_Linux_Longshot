@@ -109,7 +109,7 @@ int a64_call_miss(Ctx *c, uint64_t target) {
 
 /* HOS_HLE_STATS=1 (off by default): about every 5 s, how often each HLE function (hos.h's HLE) and each host call ran in
    the measured clock span, most called first: "hle: <total> calls of <n> functions in <elapsed> s", then "<count> <name>;"
-   (HLE functions by their full mangled name). scripts/cpu_report.py --calls reads them. HLE functions called from host
+   (HLE functions by their full mangled name). scripts/perf.py cpu --calls reads them. HLE functions called from host
    code (one HLE function calling another) count too; the sdk's NVN exports count as their host call (nvn2_dispatch). */
 int hos_hle_stats;
 static HleCount *volatile hos_hle_list;

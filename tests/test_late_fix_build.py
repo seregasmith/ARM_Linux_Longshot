@@ -162,6 +162,7 @@ void vk_timeline_wait(uint64_t value) {
     if (while_waiting) while_waiting();
 }
 std::atomic<uint64_t> mem_rec_part{0};   // (the part of the submission being recorded: vk_replay.cpp's Recording::part)
+@RECPART@
 std::vector<uint64_t> part_waits;        // (the parts the replay waited for)
 int part_wait_result = 1;                // (vk_part_wait's: 1 done, 0 ran out, -1 cannot be waited for)
 std::function<void()> while_part_waiting;   // (the part's fix runs on the GPU)
@@ -705,9 +706,14 @@ def main():
                .replace('@SHADOWS_FREED@', block(text, 'void late_fix_shadows_freed() {'))
                .replace('@CPUREAD@', section(text, 'constexpr uint64_t kPartWaitGuard', 'void late_fix_cpu_read(')
                         + block(text, 'void late_fix_cpu_read(uint32_t page, VkBuffer buffer, uint8_t* slot) {'))
-               .replace('@FORGET@', block(text, 'void shadows_forget_written() {')))
+               .replace('@FORGET@', block(text, 'void shadows_forget_written() {'))
+               # (the part a read is noted in: the recording's)
+               .replace('@RECPART@', section(text, 'uint64_t rec_part() {', 'void note_in_place_read(')))
     env = {k: v for k, v in os.environ.items()
-           if k not in ('RX_VK_LATE_FIX', 'RX_VK_PARALLEL')}
+           if k != 'RX_VK_LATE_FIX'}
+    # (these cases count a late page's own stamp block; the rest of its pool's, made ahead by default, are
+    # tests/test_late_stamps_ahead.py's)
+    env['RX_VK_LATE_STAMPS_AHEAD'] = '0'
     with tempfile.TemporaryDirectory(prefix='late-fix-build-') as tmp:
         src = Path(tmp) / 'late_fix_build.cpp'
         exe = Path(tmp) / 'late_fix_build.exe'

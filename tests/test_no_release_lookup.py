@@ -1,4 +1,4 @@
-"""The builders no longer update themselves (docs/releases.md): the Longshot Launcher reads Longshot's signed releases, and
+"""The builders no longer update themselves (docs/dev/reference/releases.md): the Longshot Launcher reads Longshot's signed releases, and
 installs and updates each version's builder. What is left in the builders is command-line only, and none of it asks a server
 for a release: no GitHub link, no release lookup, no game update check (host/hos_update.c is gone), and none of the old
 self-update's hooks. The builders' windows, which had the version buttons, are gone too."""

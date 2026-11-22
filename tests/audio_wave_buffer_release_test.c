@@ -18,6 +18,17 @@ static void *hos_guest_range(uint64_t a, uint64_t n) { return a < sizeof guest &
 #define HLE(sym) void imp_##sym(Ctx *c)
 #define AUT(...) ((void)0)
 static void hos_log(const char *format, ...) { (void)format; }
+/* The sound a wave buffer starts (host/audio_source.c stands behind this in the game): the class the test names, for
+   the samples' address it expects; -1 for a buffer that starts no asset. */
+enum { AUDIO_SOURCE_NONE };
+static int hos_pad_speaker_active(void) { return 1; }
+static void hos_audio_source_load_async(void) {}
+static int hos_audio_source_ready(void) { return 1; }
+static int source_answer = -1, source_asked;
+static uint64_t source_data;
+static int hos_audio_source_of(uint64_t data, uint32_t *crc) { source_asked++, source_data = data, *crc = 0x1234; return source_answer; }
+static int hos_audio_source_trace(void) { return 0; }
+static const char *hos_audio_source_name(int cls) { (void)cls; return ""; }
 
 /* Single-threaded test boundaries: the mixer's frames run between the game's calls, as its thread can. */
 static int lock_depth;
@@ -106,7 +117,23 @@ static void stopped_releases_at_the_update(void) {
     CHECK(!released(0));
 }
 
+/* Classes change when each queued buffer starts, including a streamed continuation. */
+static void class_follows_the_sound(void) {
+    reset();
+    source_asked = 0, source_answer = 3;
+    CHECK(call(APPEND, object(0), BUFFER) == 1);
+    source_answer = AUDIO_SOURCE_NONE;
+    CHECK(call(APPEND, object(0), BUFFER) == 1);
+    commit();
+    CHECK(source_asked == 2 && source_data == SAMPLES && voices[0].source == 0);
+    CHECK(next_source_frame(&voices[0]) && voices[0].source == 3);
+    for (int i = 1; i < LENGTH; i++) CHECK(next_source_frame(&voices[0]) && voices[0].source == 3);
+    CHECK(next_source_frame(&voices[0]) && voices[0].source == AUDIO_SOURCE_NONE);
+    source_answer = -1;
+}
+
 int main(void) {
+    class_follows_the_sound();
     finished_between_updates();
     stopped_releases_at_the_update();
     free(cmds);

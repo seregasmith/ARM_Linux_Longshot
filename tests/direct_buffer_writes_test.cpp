@@ -23,7 +23,6 @@ static Pool pool;
 static Pool* last_pool = nullptr;
 static std::mutex pools_mu;
 static std::atomic<uint64_t> pools_gen{1};
-static std::atomic<bool> par_active{false};
 static thread_local TlPool tl_pools[1024];
 static uint64_t mirror_epoch = 7, mem_rec_value = 21;
 static bool mirrors = true, mirror_upload = true, have_pool = true, mapping_valid = true;
@@ -31,17 +30,14 @@ static std::vector<Pool*> mirror_wanted;
 static std::vector<WriteBack> writebacks;
 static std::unordered_map<uint64_t, std::pair<int64_t, int>> direct_by_pool;
 static std::unordered_map<uint64_t, uint64_t> direct_bytes_by_pool;
-static unsigned lookups, made, synced, texture_writes, hazards;
+static unsigned lookups, made, synced, texture_writes;
 static int64_t st_async_copies;
-static uint64_t hazard_lo, hazard_hi;
 static constexpr uint64_t virtual_base = 1ull << 40;
 static void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
-struct ParLock { ParLock() {} ~ParLock() {} };
 static void texture_gpu_wrote(uint64_t, uint64_t) { ++texture_writes; }
 static void big_note(uint64_t, uint64_t, int) {}   // (RX_VK_LOG_BIG_POOLS: tests/test_big_pools.py)
-static void rb_hazard_locked(uint64_t lo, uint64_t hi) { ++hazards; hazard_lo = lo; hazard_hi = hi; }
 // (gpu/vk/wb_learn.h's table: every write-back queued here; tests/test_wb_learn.py runs its rules)
 static bool wb_leave_out(uint64_t, uint64_t, std::vector<std::pair<uint64_t, uint64_t>>&) { return false; }
 static bool wb_skips_log() { return false; }
@@ -54,8 +50,7 @@ static Pool* pool_of(uint64_t guest, uint64_t size) {
     return have_pool && guest >= pool.lo && guest <= pool.hi && size <= pool.hi - guest ? &pool : nullptr;
 }
 static bool mirror_make(Pool&) { ++made; return false; }
-static void mirror_sync(Pool& p) { ++synced; p.synced_epoch = mirror_epoch; p.sync_seg = 0; }
-static uint64_t texture_segment() { return 0; }
+static void mirror_sync(Pool& p) { ++synced; p.synced_epoch = mirror_epoch; }
 static void publish_cap_ranges() { throw std::runtime_error("unexpected mirror publication"); }
 static void logf(const char*, ...) {}
 static bool import_in_background(uint64_t, uint64_t) { throw std::runtime_error("unexpected asynchronous import"); }
@@ -120,8 +115,6 @@ int main(int argc, char** argv) {
         if (mode == "no_recording") mem_rec_value = 0;
         const bool written = mode != "readonly";
         const BufferRef ref = gpu_buffer_bind(gpu, size, written);
-        require(hazards == (mode == "mirror_on" ? 1u : 0u), "changed mirrored-write hazard notification");
-        if (hazards) require(hazard_lo == guest && hazard_hi == guest + size, "changed mirrored-write hazard range");
         if (mode == "invalid_pool" || mode == "invalid_mapping") {
             require(!ref && !pool.last_value && !pool.direct_write_epoch && writebacks.empty(),
                     "invalid binding changed pool bookkeeping");

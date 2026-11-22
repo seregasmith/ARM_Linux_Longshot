@@ -91,7 +91,9 @@ def check_sources():
     vk = ROOT / "gpu" / "vk"
     xess = (vk / "vk_xess.cpp").read_text(encoding="utf-8")
     header = (vk / "vk_xess.h").read_text(encoding="utf-8")
-    menu = (vk / "vk_menu.cpp").read_text(encoding="utf-8")
+    # (the Upscaler row's lines: the upscaler module's, gpu/vk/menu/upscaler.cpp, #1633; vk_menu.cpp's before the modules)
+    upscaler = vk / "menu" / "upscaler.cpp"
+    menu = (upscaler if upscaler.exists() else vk / "vk_menu.cpp").read_text(encoding="utf-8")
     rules = (vk / "xess_rules.h").read_text(encoding="utf-8")
     api = (ROOT / "third_party" / "xess" / "inc" / "xess" / "xess.h").read_text(encoding="utf-8")
     build = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")

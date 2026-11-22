@@ -10,7 +10,7 @@ driver_env_choose out of hos_main.c and runs it:
  - a name with no file there, an empty value, or no variable: nothing changes, nothing is said;
  - RADV_FORCE_VRS (a rate set by hand) and Mesa's cache variables are never touched;
 and checks it runs after longshot_env.txt is read and before the window (SDL) may load Vulkan, that game_main says it again
-once its log is open, and docs/development.md's row.
+once its log is open, and the switch's row in gpu/vk/switches.def.
 python -I -B tests/test_driver_env_choose.py [--cxx c++]
 """
 import argparse
@@ -74,9 +74,10 @@ def main():
     game = function(src, "static int game_main(int argc, char **argv) {")
     if "driver_env_log();" not in game or game.index("driver_env_log();") < game.index("freopen(path"):
         problems.append("game_main does not say what driver_env_choose did once its log is open")
-    docs = (ROOT / "docs" / "development.md").read_text(encoding="utf-8")
-    if "`RX_VK_HALF_RATE_SHADING=1`" not in docs:
-        problems.append("docs/development.md does not name RX_VK_HALF_RATE_SHADING=1")
+    row = next((l for l in (ROOT / "gpu" / "vk" / "switches.def").read_text(encoding="utf-8").splitlines()
+                if l.startswith("SW(RX_VK_HALF_RATE_SHADING,")), "")
+    if "=1 keeps RADV's forced-VRS variable" not in row:
+        problems.append("gpu/vk/switches.def: RX_VK_HALF_RATE_SHADING's row does not say what =1 does")
     with tempfile.TemporaryDirectory(prefix="longshot-driver-env-") as folder:
         tmp = Path(folder)
         (tmp / "t.cpp").write_text(HARNESS % function(src, "static void driver_env_choose(void) {"), encoding="utf-8")

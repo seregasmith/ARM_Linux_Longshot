@@ -1,9 +1,8 @@
 // (longshot) The start's wait for workers that build pipelines in the driver before the title, bounded by their progress:
 // a build the driver takes minutes over, or never finishes, must not hold the start for good behind a screen that shows
-// nothing moving. vk_draw.cpp precompile_at_create (RX_VK_LOAD=create, the default): on an RX 5600 XT and an RX 5700 XT
-// (AMD's Windows driver 26.5.2 and 26.10.1, the mesh programs through the compute fallback) every start of rc.7 sat at 0%,
-// "Loading the shader cache", until the window was closed (Longshot #1373, #1405), while RX_VK_LOAD=start, whose precompile
-// has had this bound since 2026-11-08 ("stuck at 99%" on an RX 5700 XT), reached the title on the same install.
+// nothing moving. vk_draw.cpp precompile_at_create (RX_VK_LOAD=create, the default): on RDNA 1 cards (AMD's Windows driver,
+// the mesh programs through the compute fallback) a start without it can sit at 0%, "Loading the shader cache", for good.
+// RX_VK_LOAD=start's precompile has the same bound.
 // Standard library only: tests/test_bounded_wait.py
 #pragma once
 #include <atomic>

@@ -49,7 +49,7 @@
 
 void hos_log(const char *fmt, ...);
 int rx_option(int id, int otherwise);
-const char *hos_version(void);   /* hos_main.c */
+const char *hos_version(void);   /* host/version.c */
 int hos_oot_current_map(char *out, size_t cap);   /* (hos_main.c: the map Link was last seen in) */
 int hos_oot_state(int *event, int *loading, int *child);
 int hos_oot_stats(int *life, int *max_life, int *rupees, int *tokens, int *pieces);   /* (hos_main.c: -1 each when not known) */

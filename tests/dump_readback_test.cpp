@@ -36,8 +36,8 @@ std::vector<std::string> lines;
 bool coherent=false, implicit_host=false;
 int invalidations=0;
 int waits=0;
-std::atomic<bool> par_active{false};
-std::atomic<uint64_t> work_epoch{0};
+thread_local uint64_t work_epoch=0;   // (vk_work.h's counts, as vk_texture.cpp defines them: full_barrier reads and sets them)
+thread_local bool other_work_since_barrier=true;
 VkCommandBuffer last_barrier_cmd{};
 uint64_t last_barrier_epoch=UINT64_MAX;
 std::atomic<int64_t> st_barriers_left_out{0}, st_barriers_made{0};

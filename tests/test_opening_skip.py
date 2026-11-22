@@ -17,6 +17,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
+from menu_model_fixture import menu_text  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
 import oot_patches  # noqa: E402
@@ -162,7 +165,7 @@ def main():
     source = (ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")
     api = (ROOT / "gpu" / "vk" / "vk_api.h").read_text(encoding="utf-8")
     menu_h = (ROOT / "gpu" / "vk" / "vk_menu.h").read_text(encoding="utf-8")
-    menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
+    menu = menu_text()   # (vk_menu.cpp and its modules' rows, #1633)
     replay = (ROOT / "gpu" / "vk" / "vk_replay.cpp").read_text(encoding="utf-8")
 
     fn = block(source, "int hos_oot_opening(Ctx *c, int mode) {")

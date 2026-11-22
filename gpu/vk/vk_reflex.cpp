@@ -16,14 +16,14 @@
 // markers belong to the game's frame, at do_present), and its display thread shows each set later, made frames first: a set
 // keeps the game frame it was made at (reflex_frame), and its game frame alone is presented with that present id and the
 // present markers (reflex_present_frame); made frames get neither. Present ids only go up: one that would not is left off.
-// Without Reflex under frame generation its held-back frame added its whole delay (an RTX 5080 at 4x: +12 to +18 ms from
-// input to the screen against frame generation off with Reflex on, PR 2118's review).
+// Without Reflex under frame generation its held-back frame adds its whole delay (+12 to +18 ms from input to the screen at
+// 4x against frame generation off with Reflex on).
 //
 // Each queue submit carries the game frame its GPU work belongs to (VkLatencySubmissionPresentIdNV, reflex_submit_id): the
 // game's rendering the frame being made, a batch the frame of its first command buffer, a present's copy the frame it shows,
-// frame generation's made frames none. Without it the driver guessed the frame of each submit; with frame generation the
-// display thread's copies and DLSS-G's work sit between the game's frames, and its "GPU end" of a frame read 243 to 442 ms
-// against ~21 ms from simulation start to present end (an RTX 5080 at 4x, PR 2118's review). A batch (RX_VK_BATCH,
+// frame generation's made frames none. Without it the driver guesses the frame of each submit; with frame generation the
+// display thread's copies and DLSS-G's work sit between the game's frames, and its "GPU end" of a frame reads hundreds of ms
+// against ~21 ms from simulation start to present end. A batch (RX_VK_BATCH,
 // vk_replay.cpp) is tagged with the frame of its first command buffer, read when the batch starts: one that spans two game
 // frames counts as the first's, and one begun before the frame's sleep returned goes untagged. An approximation that only
 // batching makes, and batching is on by default only with RADV, which has no Reflex.
@@ -99,13 +99,13 @@ void mark(VkLatencyMarkerNV m, uint64_t id = 0) {
     r.marker(dev.device, r.swapchain, &i);
 }
 
-// doc: docs/design.md#13-frame-generations-presents-as-rules (rule 6: under FIFO the made frames do not queue)
+// doc: docs/dev/reference/architecture.md#frame-generations-presents (rule 6: under FIFO the made frames do not queue)
 /// (longshot) Under FIFO (V-Sync On; Auto with DLSS Frame Gen) with a fixed frame generation multiplier, the game's frames
 /// no faster than the multiplier's share of refresh - refresh^2/3600: 157 a second at 165 Hz, the rate NVIDIA's own Reflex
 /// keeps a G-SYNC display under with V-Sync, RX_VK_FG_FIFO_CAP=1. At the refresh or past it FIFO shows one frame a refresh
 /// and the sets queue
-/// behind it: an RTX 5090 at 165 Hz showed the game frame 40-51 ms after its hand-over at 3x on main and 65-82 ms with each
-/// frame at its own time, against 15 and 22 ms at 2x, under the refresh (the latency A/B of #1442, RX_VK_FG_LATENCY_LOG).
+/// behind it: at 165 Hz the game frame shows 40-80 ms after its hand-over at 3x, against 15-22 ms at 2x, under the refresh
+/// (RX_VK_FG_LATENCY_LOG).
 /// 0: no minimum (not FIFO, no fixed multiplier, no frames made lately (DLSS-G paused in the game's menus and movies, which
 /// then keep the game's own rate), or the refresh not known). On the game's thread before Reflex's lock: once a second
 /// display_refresh_mhz asks Windows
@@ -115,7 +115,7 @@ uint32_t fifo_min_interval_us() {
     // catch-up alone, vk_framegen.cpp fifo_catch_up)
     static const char* cap_env = getenv("RX_VK_FG_FIFO_CAP");
     if (!cap_env || !*cap_env || env_value_off(cap_env)) return 0;
-    const int framegen = framegen_now();   // (the multiplier as it runs: DLSS FG's runtime caps a saved 8x at 6x, #1486)
+    const int framegen = framegen_now();   // (the multiplier as it runs: DLSS FG's runtime caps a saved 8x at 6x)
     if (dev.swap_mode != VK_PRESENT_MODE_FIFO_KHR || framegen < 2 || !framegen_on()) return 0;
     const FgMaker made_by = framegen_maker();
     if (made_by == FgMaker::None || made_by == FgMaker::DlssPaused) return 0;
@@ -327,6 +327,19 @@ void reflex_presented() {
     r.presenting = 0;
 }
 
+void reflex_present_handed_off() {
+    Reflex& r = rx();
+    std::lock_guard lk(r.mu);
+    r.presenting = 0;   // (its end is the presenter thread's: reflex_present_end)
+}
+
+void reflex_present_end(uint64_t id) {
+    Reflex& r = rx();
+    std::lock_guard lk(r.mu);
+    if (!on() || !id) return;
+    mark(VK_LATENCY_MARKER_PRESENT_END_NV, id);
+}
+
 void reflex_sleep() {
     Reflex& r = rx();
     uint64_t generation, value;
@@ -346,6 +359,7 @@ void reflex_sleep() {
     w.semaphoreCount = 1, w.pSemaphores = &r.wake, w.pValues = &value;
     {
         const gpu_wait_stats::Exclude pacing;   // (the driver schedules simulation; not completion of GPU resource work)
+        const rec::Settled settled;   // (RX_VK_RECORDER_PARTS: the driver signals it, no part of the replay's)
         vkWaitSemaphores(dev.device, &w, 100000000ull);   // (100 ms at most: a driver that never wakes it does not stop the game)
     }
     std::lock_guard lk(r.mu);

@@ -7,7 +7,7 @@ mesa_shader_cache_db alone. This checks:
    them, the records of the environments that built the pipelines and what a start says against them;
  - vk_draw.cpp: the count goes through it and is bounded; the start logs the environment and compares it with the records; the
    precompile, the warm pass and the prediction record theirs;
- - docs/development.md says what the lines mean.
+ - docs/dev/developing.md says what the lines mean.
 python -I -B tests/test_driver_cache_env.py [--cxx c++]
 """
 import argparse
@@ -51,9 +51,9 @@ def check_sources():
                "void predict_run(void (*progress)(size_t done, size_t total)) {"):
         if "driver_env_note()" not in block(draw, fn):
             problems.append(fn.split("(")[0] + " does not record the environment it built in (driver_env_note)")
-    docs = (ROOT / "docs" / "development.md").read_text(encoding="utf-8")
+    docs = (ROOT / "docs" / "dev" / "developing.md").read_text(encoding="utf-8")
     if "vk: driver shader cache:" not in docs or "longshot_driver_env.txt" not in docs:
-        problems.append("docs/development.md does not explain the driver shader cache lines")
+        problems.append("docs/dev/developing.md does not explain the driver shader cache lines")
     return problems
 
 

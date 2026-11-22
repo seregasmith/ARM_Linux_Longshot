@@ -1,4 +1,4 @@
-"""Validate binary capture adjacency without optional image-analysis packages."""
+"""scripts/flash.py framelog: binary capture adjacency, validated without optional image-analysis packages."""
 import importlib.util
 from pathlib import Path
 import struct
@@ -7,8 +7,8 @@ import sys
 import tempfile
 import unittest
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "framelog.py"
-spec = importlib.util.spec_from_file_location("framelog", SCRIPT)
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "flash.py"
+spec = importlib.util.spec_from_file_location("flash", SCRIPT)
 log = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(log)
 
@@ -63,7 +63,7 @@ class CaptureTests(unittest.TestCase):
 
     def test_isolated_cli_and_legacy_output_argument(self):
         self.capture([0, 1, 3])
-        result = subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), str(self.path),
+        result = subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), "framelog", str(self.path),
                                  str(self.path.with_suffix(".png")), "--inspect"],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -71,7 +71,7 @@ class CaptureTests(unittest.TestCase):
         self.assertIn("missing 1 frames", result.stdout)
         self.assertFalse(self.path.with_suffix(".png").exists())
         self.capture([])
-        result = subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), str(self.path), "--inspect"],
+        result = subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), "framelog", str(self.path), "--inspect"],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 2)
         self.assertIn("need at least 3", result.stderr)

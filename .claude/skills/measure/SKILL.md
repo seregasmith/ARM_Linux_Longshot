@@ -1,101 +1,70 @@
 ---
 name: measure
-description: Measure a Longshot change or a switch in the game against main - fps, frame time, GPU time, memory, a log line - and write the numbers up for the pull request's Measurements and docs/tested/. Use when the user asks to measure, benchmark or A/B a change or a switch, when a perf, fix or feat pull request needs its before and after, or before marking such a pull request ready.
+description: Measure a Longshot change or a switch in the game against main - fps, frame time, GPU time, memory, a log line - and write the numbers up for the pull request's Measurements. Use when the user asks to measure, benchmark or A/B a change or a switch, when a perf, fix or feat pull request needs its before and after, or before marking such a pull request ready.
 ---
 
 # Measure a change against main
 
-What counts, and how a Measurements section reads, is [CONTRIBUTING.md](../../../CONTRIBUTING.md#measurements); the
-builds are [Testing a change against a base](../../../docs/development.md#testing-a-change-against-a-base); the run
-files are [docs/tested/README.md](../../../docs/tested/README.md). This is the order to do it in, and the mistakes that
-have cost the team whole sessions.
+What counts and how the section reads: [standards](../../../docs/dev/standards.md#measurements). The command:
+[Measure a change](../../../docs/dev/developing.md#measure-a-change). This is the order, and the mistakes that have
+cost whole sessions.
 
-**Bases, packs, runtimes, run folders and frame dumps are built from the game: they never leave the PC.** Log lines and
-screenshots are fine. A run needs the person's own game dump; with none on this PC, say so and stop.
+**Bases, packs, runtimes, run folders and frame dumps never leave the PC**; log lines and screenshots are fine. A run
+needs the person's own game dump: with none here, say so and stop. Ask before each `dev.py ab` (it runs the game).
 
 ## 1. Before the first run
 
-- **Measure the commits the pull request will have.** Land review fixes and the rebase first: numbers from an older
-  commit have to be measured again. `pack` counts uncommitted and untracked files too, so commit and keep the tree
-  clean, and the hash in the table names what ran.
-- **Know what holds the frame.** Run once with the profiling switches and read where the time goes before choosing what
-  to measure: `RX_VK_PASS_TIMING=1` (GPU time by pass), the `vk: <n> presents, <fps> fps; a frame: ...` line,
-  `vk: host time in GPU resource waits` (what the CPU waited for), `HOS_THREAD_TIMES=5` and
-  [docs/cpu-profile.md](../../../docs/cpu-profile.md) for the CPU. A GPU-time saving moves no fps while the frame waits
-  on a readback or the CPU: then measure it alone and together with what lifts that bound. Time a profile doesn't
-  label is work nobody named, not idle time.
-- **Pick the scene and the settings players use**, not ones that flatter the change: the settings the Quality preset
-  Auto picks on this PC and the device's own resolution, at 100% render resolution when GPU time is the point. Two
-  setups (handheld default and native, say) are two comparisons, never mixed.
+- **Measure the commits the pull request will have**: land review fixes and the rebase first and commit; `dev.py ab`
+  refuses uncommitted files (the pack counts them, so the hash would not name what ran).
+- **Know what holds the frame**: one profiled run first (`HOS_PROFILE=1`, read with `scripts/perf.py report`;
+  [profiling](../../../docs/dev/reference/profiling.md)). A GPU saving moves no fps while the frame waits on the CPU or
+  a readback.
+- **Pick the scene and settings players use**: `dev.py ab --scenes`; the defaults Auto picks on this PC, or
+  `--options <a copy of a player's longshot_options.ini>`. Two setups are two comparisons, never mixed.
+- `--dry-run` first: it prints the sides, the runtimes, the scene and the order without running anything.
 
-## 2. Build both sides from one base
+## 2. Run it
 
-```
-python -I scripts/dev_packs.py base ../base-main --romfs <romfs> --exefs <exefs> [--seed <an older game folder>]
-python -I scripts/dev_packs.py pack ../base-main my-change --tree <the branch's checkout>
-python -I scripts/dev_packs.py rt   ../base-main ../rt-main                (no pack: main)
-python -I scripts/dev_packs.py rt   ../base-main ../rt-my-change my-change
+```sh
+python -I scripts/dev.py ab --scene hyrule-field            # a change: this checkout against its base
+python -I scripts/dev.py ab --env RX_VK_X=0 --scene market  # a switch: set against unset
 ```
 
-- The base is the pull request's merge base (`git merge-base forge/main HEAD`), so main's column names that commit.
-  Agents on one PC share a base: ask before moving it, and wait while `<base>/dev_packs.busy` exists. On an older base,
-  build that merge base as a pack of its own and compare the two packs; never the change's pack against the bare older
-  base, which would count every commit in between as the change's.
-- Warm the base for your scenes (`dev_packs.py warm`), so neither side compiles pipelines while it is measured.
-- A switch needs no build: one runtime, the switch unset against set. Check that unset logs what main logs.
+- It builds what is missing (base, pack, runtimes), runs every game through the queue in `timing` mode, A, B, A, B,
+  warms each run up until no frame waits for a pipeline, and checks that both sides ran the same settings.
+- The base is where this checkout left `main`; agents on one PC share it: ask before moving it.
+- A switch: check that unset logs what `main` logs. A switch wired to `HOS_AB` is flipped within each run.
+- More runs (`--runs 5`) or longer ones (`--seconds 120`) when the verdict is "within the spread" and the gap matters.
+- Exit status 3 (the sides differed) names what differed: fix the setup, don't `--allow` it away unless the change
+  itself adds that row.
 
-## 3. Pin the settings, and check what ran
+## 3. What it can't do, by hand
 
-- Start every run from the same options file (`HOS_OPTIONS_FILE=<a copy kept for this>`), not the player's: a harness
-  that silently picked up a lower resolution once turned a 15 fps scene into 20 and a gain into nothing.
-- Frame generation off (or report the game's own fps, never the shown one); the cap off (`HOS_FPS_MAX=1000`) or stated;
-  no overlays, ReShade or shader-cache tools. A change to how frames are shown (frame generation, Frame pacing, V-Sync,
-  the present path) is measured with them on, on the screen: the next bullet.
-- **Frame pacing is measured on the screen, not in the log** ([design.md section 13](../../../docs/design.md#13-frame-generations-presents-as-rules)).
-  The log's `frame interpolation: ... shown on time` and `shown apart` counts are the display thread's present calls; a
-  present can still wait for the GPU after its call (2026-11-16: no late frame in the log, 32% of the frames on the screen
-  under 2 ms). Run PresentMon 2.x on the game during the same scripted camera turn (`PresentMon --process_name
-  longshot.exe --timed <s> --terminate_after_timed --output_file <csv>`), and report per run: the share of frames whose
-  `DisplayedTime` is under 2 ms, the frames shown 2 ms or more a second, and `DisplayedTime`'s median, p10, p90 and
-  stdev. For where a frame waited: `DisplayLatency` minus `CPUBusy` (its call to the screen) against `DisplayLatency`
-  minus `GPULatency` + `GPUTime` (its GPU work's end to the screen).
-- With frame generation on, read which engine made the frames: `DLSS Frame Gen (NGX): of the last 600 presents <n> made
-  by DLSS-G`, in the measured stretch only. The title screen, file select and load draw no scene, so DLSS-G has no
-  inputs there and the built-in maker makes those frames (`without new inputs`): a count over the whole log mixes them in.
-  Say in the run's row which engine made the measured frames.
-- Read back from each run's `longshot_log.txt` what it actually used (output and render size, upscaler, preset, frame
-  generation, the switches it names) and write those, not what you meant to set.
-- Steam's Game Mode sets `RADV_FORCE_VRS_CONFIG_FILE`, which keys every RADV pipeline differently: a cache warmed
-  outside Game Mode misses, and the run compiles for many minutes. Warm and measure in the same kind of session, and
-  say which.
-- Profiling and counting switches (`RX_VK_PASS_TIMING`, `HOS_HLE_STATS`, `HOS_SAMPLE*`) stay out of the runs whose
-  numbers you report, or are the same on both sides and said so.
+- **Frame pacing is measured on the screen**, with PresentMon during the same scripted route, not from the log
+  ([architecture](../../../docs/dev/reference/architecture.md#frame-generations-presents)).
+- A route that moves: `dev.py ab --route <route>` (a route of `assets/routes/`, recorded once with `dev.py route record`);
+  it refuses a run whose replay diverged. Record a route for it if none goes where you need
+  ([replay a recording](../../../docs/dev/developing.md#replay-a-recording)).
+- A place no scene, save or route reaches: `dev.py queue run NAME --mode timing -- <your run>`, the
+  same save and route each time (the control bridge, `HOS_INPUT_PLAY` or `HOS_INPUT_SCRIPT`), `HOS_OPTIONS_FILE` pinned, interleaved, at
+  least two runs each, the median; read back each log's `vk: switches set` line.
+- With frame generation on (`--framegen`), count which engine made the frames in the measured stretch only.
+- Steam's Game Mode changes RADV's pipeline keys: warm and measure in the same kind of session. A handheld or laptop
+  keeps the same power settings.
+- An older base: build the merge base as a pack too and compare the two packs.
 
-## 4. Run
+## 4. Write it up
 
-- The same save, spot and route each time: a scripted route through the [control bridge](../../../docs/control.md)
-  (`scripts/longshot_ctl.py`) or `HOS_INPUT_SCRIPT`, standing still or moving, the same length.
-- Interleave: main, change, main, change, after a warm-up run of each. At least two runs each; more when the gap is
-  small next to the spread between runs. A device that throttles (a handheld, a laptop) stays on the same power and
-  clock settings for both.
-- Take the median. When the runs of the two sides overlap, the verdict is "within the spread", not a gain.
-- Keep the run folders and logs on the PC until the pull request is merged.
+- Paste `measurements.md` from the run folder (`dev.py ab` prints its path): **Verdict:**, **Setup:** (add the driver),
+  the table, the log lines. A switch: the default it ships at and the numbers that chose it.
+- Overlapping runs are "within the spread", not a gain. Keep the run folders until the pull request merges.
+- Rebased onto a newer `main` later: measure again, or say why the numbers still hold.
+- `forge.py pr update <n> --body-file <file> --comment "..."`.
 
-## 5. Write it up
-
-- Measurements, as the template has it: the **Verdict:** first, then Hardware, Scene, Method, How to reproduce, and a
-  table whose columns are `Before: main @ <hash>` and `After: this PR @ <hash>` (a variant: `After, RX_VK_X=0: this
-  PR @ <hash>`), each run's number and the median, then the log lines the numbers come from. A before column that
-  isn't main gets a `Baseline:` line.
-- One file under `docs/tested/` for each measured run, named with your public handle, then
-  `python -I -B tests/test_tested_configurations.py`. Commit them on their own.
-- Rebased onto a newer `main` afterwards: measure again, or say in the comment why the numbers still hold.
-- `python -I ../Tooling/scripts/forge.py pr update <n> --body-file <file> --comment "..."` with what was measured.
-
-## 6. Stop and ask the person you work for
+## 5. Stop and ask
 
 - Before using a device someone plays on, or moving a shared base.
-- When a run needs eyes (flicker, a missing object) or hands (a route the bridge can't drive).
-- When the numbers don't back the description's claim: report them as they are and ask what to change.
-- When the hardware the change needs isn't here: the pull request's *Must be tested* names it for the Test Farm or a
-  tester, and it stays WIP.
+- When a run needs eyes (flicker) or hands (a route the bridge can't drive and no recording has: ask the person you
+  work for to record one, Debug tab, Input recording).
+- When the numbers don't back the claim: report them as they are.
+- When the hardware isn't here: *Still to test* names it for the Test Farm or a tester.

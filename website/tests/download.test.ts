@@ -11,10 +11,11 @@ const rel = (tag_name, draft, prerelease, files = ["windows-x64-setup.exe", "win
 });
 
 test("the version order", () => {
-  const order = ["v1.0.0-rc.1", "v1.0.0-rc.2", "v1.0.0-rc.10", "v1.0.0", "v1.0.1-rc.1", "v1.0.1", "v1.1.0", "v10.0.0"];
-  const cmp = (a, b) => { const x = versionKey(a), y = versionKey(b); for (let i = 0; i < 5; i++) if (x[i] !== y[i]) return x[i] - y[i]; return 0; };
+  const order = ["v1.0.0", "v1.0.1", "v1.0.10", "v1.1.0", "v10.0.0"];
+  const cmp = (a, b) => { const x = versionKey(a), y = versionKey(b); for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] - y[i]; return 0; };
   assert.deepEqual([...order].reverse().sort(cmp), order);
   assert.equal(versionKey("nightly-1-aaaaaaaa"), null);
+  assert.equal(versionKey("v1.1.0-rc.1"), null);   // (an old release candidate: no version)
 });
 
 test("what each channel offers", () => {
@@ -22,19 +23,18 @@ test("what each channel offers", () => {
                 rel("nightly-9-aaaaaaaa", false, true), rel("nightly-12-bbbbbbbb", false, true), rel("nightly-100-cccccccc", true, true),
                 rel("tools", false, true), rel("v0.9.0", false, false)];
   assert.equal(newest(rels, "stable").tag_name, "v1.0.0");                 // (drafts never)
-  assert.equal(newest(rels, "rc").tag_name, "v1.1.0-rc.1");
   assert.equal(newest(rels, "nightly").tag_name, "nightly-12-bbbbbbbb");   // (by count, not by text)
   rels.push(rel("v1.1.0", false, false));
-  assert.equal(newest(rels, "rc").tag_name, "v1.1.0");                     // (rc offers the stable once it is out)
+  assert.equal(newest(rels, "stable").tag_name, "v1.1.0");                 // (the old v1.1.0-rc.N on no channel)
   rels.push(rel("v1.2.0", false, true));                                   // (a vX.Y.Z marked pre-release is no stable)
   assert.equal(newest(rels, "stable").tag_name, "v1.1.0");
 });
 
-test("the best channel: stable, else rc, else nightly", () => {
+test("the best channel: stable, else nightly", () => {
   const rels = [rel("nightly-10-968b7963", false, true)];
   assert.deepEqual(best(rels).map((x) => x && (x.tag_name || x)), ["nightly", "nightly-10-968b7963"]);
   rels.push(rel("v1.0.0-rc.1", false, true));
-  assert.equal(best(rels)[0], "rc");
+  assert.equal(best(rels)[0], "nightly");   // (an old release candidate is on no channel)
   rels.push(rel("v1.0.0", false, false));
   assert.equal(best(rels)[0], "stable");
   assert.deepEqual(best([]), [null, null]);
@@ -54,16 +54,16 @@ test("version metadata uses the redirect channel rules and only that release's a
     rel('v1.1.0-rc.2', false, true), rel('v9.0.0', true, false), rel('nightly-12-aaaaaaaa', false, true)];
   const result = launcherVersions(releases);
   assert.equal(result.bestChannel, best(releases)[0]);
-  for (const channel of ['stable', 'rc', 'nightly']) {
+  for (const channel of ['stable', 'nightly']) {
     assert.equal(result.channels[channel].tag, newest(releases, channel).tag_name);
     assert.equal(result.channels[channel].downloads.windows, assetOf(newest(releases, channel), 'windows').browser_download_url);
   }
   assert.equal(result.channels.stable.downloads.linux, undefined);
-  assert.deepEqual(launcherVersions([]), { bestChannel: null, channels: { stable: null, rc: null, nightly: null } });
+  assert.deepEqual(launcherVersions([]), { bestChannel: null, channels: { stable: null, nightly: null } });
 });
 
 test("version endpoint uses the cached list, returns CDN files and reports upstream errors as JSON", async (t) => {
-  const release = rel('v1.0.0-rc.1', false, true);
+  const release = rel('v1.0.0', false, false);
   release.assets[0].browser_download_url = 'https://git.magicbean.dev/attachments/windows';
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'caches');
   Object.defineProperty(globalThis, 'caches', { configurable: true, value: { default: { match: async () => Response.json([release]) } } });
@@ -75,8 +75,9 @@ test("version endpoint uses the cached list, returns CDN files and reports upstr
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('Cache-Control'), 'no-store');
   const data = await response.json();
-  assert.equal(data.channels.rc.tag, 'v1.0.0-rc.1');
-  assert.equal(data.channels.rc.downloads.windows, 'https://git-cdn.magicbean.dev/attachments/windows');
+  assert.equal(data.channels.stable.tag, 'v1.0.0');
+  assert.equal(data.channels.stable.downloads.windows, 'https://git-cdn.magicbean.dev/attachments/windows');
+  assert.equal(data.channels.rc, undefined);
   t.mock.method(globalThis.caches.default, 'match', async () => { throw new Error('offline'); });
   const failed = await worker.fetch(request, env, ctx);
   assert.equal(failed.status, 502);
@@ -127,6 +128,19 @@ test('launcher metadata carries the displayed file size from the same release', 
   assert.equal(metadata.channels.stable.url, release.html_url);
 });
 
+
+test('the old rc channel\'s links go to stable', async t => {
+  // (release candidates are gone; old release pages still link /download/launcher/rc)
+  const releases = [rel('v1.0.0', false, false), rel('v1.1.0-rc.1', false, true), rel('nightly-12-aaaaaaaa', false, true)];
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'caches');
+  Object.defineProperty(globalThis, 'caches', { configurable: true, value: { default: { match: async () => Response.json(releases) } } });
+  t.after(() => { if (previous) Object.defineProperty(globalThis, 'caches', previous); else delete globalThis.caches; });
+  for (const [path, to] of [['/download/launcher/rc/linux', 'v1.0.0/x86_64.AppImage'], ['/download/launcher/rc', 'v1.0.0']]) {
+    const response = await worker.fetch(new Request('https://preview.example' + path), {}, { waitUntil() {} });
+    assert.equal(response.status, 302, path);
+    assert(response.headers.get('Location').endsWith(to), path + ' -> ' + response.headers.get('Location'));
+  }
+});
 
 test('download HTML pins files and release notes to its displayed release and preserves the CDN', async t => {
   const release = rel('v1.0.0', false, false);

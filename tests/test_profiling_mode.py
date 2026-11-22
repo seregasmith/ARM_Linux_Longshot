@@ -1,6 +1,6 @@
 """The profiling mode (HOS_PROFILE=1, host/profiling.c), without the game: the packed sample format written by
-hos_sample_write (cut out of profiling.c and compiled with a stub) reads back through scripts/samples.py as the plain
-format's lines, and scripts/profile_report.py reads a made-up profile folder (presents, frame trace, packed samples, events,
+hos_sample_write (cut out of profiling.c and compiled with a stub) reads back through scripts/profiling/samples.py as the
+plain format's lines, and scripts/perf.py report reads a made-up profile folder (presents, frame trace, packed samples, events,
 cpu.csv, a log) into a report that names the stutter, the main thread's hot function and the long wait for a virtual core.
 Then the source checks: the switch is read after longshot_env.txt in both mains, the old HOS_RECORD_STUTTERS says what took
 its place, both samplers write through hos_sample_write and start the mode, the renderer's frame trace goes into the folder
@@ -13,6 +13,7 @@ import gzip
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -22,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(ROOT / "scripts"))
 from srccut import between, block  # noqa: E402
-import samples  # noqa: E402
+from profiling import samples  # noqa: E402
 
 PLAIN = [
     "# t0_ns 1000000000",
@@ -131,9 +132,9 @@ def report():
                                         encoding="utf-8")
         (d / "game.log").write_text("[hos host] prof: threads in 5 s: sead::MainThread 60%; ARes_Loading_0 12%;\n",
                                     encoding="utf-8")
-        out = subprocess.run([sys.executable, "-I", "-B", str(ROOT / "scripts/profile_report.py"), str(d), "--maps", str(t)],
+        out = subprocess.run([sys.executable, "-I", "-B", str(ROOT / "scripts/perf.py"), "report", str(d), "--maps", str(t)],
                              capture_output=True, text=True, encoding="utf-8")
-        need(out.returncode == 0, "profile_report.py failed:\n" + out.stdout + out.stderr)
+        need(out.returncode == 0, "perf.py report failed:\n" + out.stdout + out.stderr)
         rep = (d / "report.md").read_text(encoding="utf-8")
         need("**Frames:** 60 in" in rep or "**Frames:** 59 in" in rep, "the frame count is not in the report")
         need("1 frames of 50 ms or more" in rep, "the stutter is not counted")
@@ -171,7 +172,10 @@ def sources():
     main = (ROOT / "host/hos_main.c").read_text(encoding="utf-8")
     need(main.count("    load_longshot_env();\n    hos_profiling_env();") == 2, "HOS_PROFILE=1 is not read after longshot_env.txt "
          "in both mains")
-    need('{"HOS_RECORD_STUTTERS", "HOS_PROFILE=1' in main, "HOS_RECORD_STUTTERS does not name what took its place")
+    # (a switch done with is a GONE row of the switches' table, #1309: what a run that still sets it is told)
+    gone = (ROOT / "gpu/vk/switches.def").read_text(encoding="utf-8")
+    need(re.search(r'^GONE\(HOS_RECORD_STUTTERS, "[^"]*", "[^"]*HOS_PROFILE=1', gone, re.M),
+         "HOS_RECORD_STUTTERS does not name what took its place")
     need("record_stutters_env" not in main, "HOS_RECORD_STUTTERS is still read")
     prof = (ROOT / "host/profiling.c").read_text(encoding="utf-8")
     env = block(prof, "void hos_profiling_env(void)")
@@ -192,8 +196,16 @@ def sources():
     threads = (ROOT / "host/hos_thread.c").read_text(encoding="utf-8")
     need('hos_profiling_event("vcore_wait' in block(threads, "static void vc_long_wait(HosThread *t, int64_t waited, int how, unsigned m)"),
          "a long wait for a virtual core is not an event")
-    for script in ("crit.py", "hotlist.py", "vkprof.py", "chain.py", "cpu_report.py"):
-        need("samples.lines(" in (ROOT / "scripts" / script).read_text(encoding="utf-8"), script + " does not read packed samples")
+    # (every reader of a sample file goes through samples.py, whose readers read the packed format too through
+    # samples.lines: none opens one itself)
+    for module, reader in (("analyses.py", "samples.records("), ("chain.py", "samples.lines("), ("cpu.py", "samples.records("),
+                           ("report.py", "samples.timed("), ("trace.py", "samples.timed(")):
+        need(reader in (ROOT / "scripts/profiling" / module).read_text(encoding="utf-8"),
+             module + " does not read packed samples")
+    sample_reader = (ROOT / "scripts/profiling/samples.py").read_text(encoding="utf-8")
+    for name in ("records", "timed"):
+        body = sample_reader.split("def %s(path):" % name, 1)[-1].split("\ndef ", 1)[0]
+        need("for line in lines(path):" in body, "samples.%s does not read packed samples" % name)
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
 // alone: no Vulkan, no system calls (tests/test_gpu_clock.cpp).
 //
 // The Deck's automatic clocks hold its GPU at about 1040 MHz of its 1600 in play, while the GPU is what the frame waits for:
-// 99% busy, the APU at about 9 W of its 15 W cap (Kokiri Forest, 2026-11-14, docs/steam-deck-playbook.md). An amdgpu context may ask
+// 99% busy, the APU at about 9 W of its 15 W cap (Kokiri Forest, 2026-11-14, docs/user/steam-deck-playbook.md). An amdgpu context may ask
 // the driver for a stable power state, as profilers do (RADV's RADV_PROFILE_PSTATE): no privilege, only the render node every
 // user has. On the Deck's APU the peak state holds the GPU at 1300 MHz: 13.9 fps where automatic clocks gave 11.7 (three
 // interleaved runs each), the APU at about 13.4 W, still under its cap. The driver gives the level back when the context goes

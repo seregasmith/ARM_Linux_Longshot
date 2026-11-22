@@ -39,10 +39,10 @@ __pycache__/
 build-linux/
 *.so
 
-# ---- a checkout's own development builds on Windows (scripts/dev_build.py) ----
+# ---- a checkout's own development builds on Windows (scripts/dev.py) ----
 build-windows/
 
-# ---- NVIDIA's DLSS SDK (scripts/ngx_sdk.py): NVIDIA's files, never committed ----
+# ---- NVIDIA's DLSS SDK (scripts/fetch.py dlss): NVIDIA's files, never committed ----
 ngx-sdk/
 test-results/
 _deps/
@@ -55,3 +55,6 @@ _deps/
 .vscode/
 .idea/
 CppProperties.json
+
+# .NET build output
+**/obj/

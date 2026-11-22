@@ -3,13 +3,12 @@ import starlight from '@astrojs/starlight';
 import { unified } from '@astrojs/markdown-remark';
 import { repository, siteUrl, editUrl } from './src/site.ts';
 import { repoAssets } from './src/repo-docs/assets.ts';
-import { remarkTestedConfigurations } from './src/repo-docs/tested-configurations.ts';
 import { rehypeKeyboardScroll } from './src/repo-docs/keyboard-scroll.ts';
 
 export default defineConfig({
   site: siteUrl,
   trailingSlash: 'always',
-  markdown: { processor: unified({ remarkPlugins: [remarkTestedConfigurations], rehypePlugins: [rehypeKeyboardScroll] }) },
+  markdown: { processor: unified({ rehypePlugins: [rehypeKeyboardScroll] }) },
   integrations: [repoAssets(), starlight({
     expressiveCode: { plugins: [{
       name: 'Keyboard scroll fallback',
@@ -36,6 +35,7 @@ export default defineConfig({
         { label: 'Steam Deck', slug: 'install/steam-deck' },
         { label: 'System requirements', slug: 'requirements' },
         { label: 'Settings', slug: 'settings' },
+        { label: 'Advanced setup', slug: 'settings/advanced' },
         { label: 'Updates & saves', slug: 'saves' },
         { label: 'Transfer a save', slug: 'saves/transfer' },
         { label: 'Mods', slug: 'mods' },
@@ -56,6 +56,7 @@ export default defineConfig({
       { label: 'About', items: [
         { label: 'About Longshot', slug: 'about' },
         { label: 'Team MagicBean', slug: 'about/team' },
+        { label: 'Privacy', slug: 'privacy' },
       ] },
     ],
   })],

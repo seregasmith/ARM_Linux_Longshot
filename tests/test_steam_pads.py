@@ -57,7 +57,13 @@ int main(void) {
     CHECK(steam_pads_motion_only(0x28de, 0, 0) == 0);                     /* no stand-in: plays as before */
     CHECK(steam_pads_motion_only(0x28de, 0xfa9962907718ULL, 1) == 0);    /* the stand-in itself */
     CHECK(steam_pads_motion_only(0x054c, 0, 1) == 0);                     /* another maker's pad */
-    puts("ok: Steam's ignore list without Valve's pads, and their motion-only rule");
+    /* the Deck's built-in controls: Valve's, the Deck's product id, no Steam handle */
+    CHECK(steam_pads_deck_builtin(0x28de, 0x1205, 0) == 1);
+    CHECK(steam_pads_deck_builtin(0x28de, 0x1205, 0xfa9962907718ULL) == 0);   /* Steam's stand-in for them */
+    CHECK(steam_pads_deck_builtin(0x28de, 0x1002, 0) == 0);                   /* a Steam Controller */
+    CHECK(steam_pads_deck_builtin(0x054c, 0x1205, 0) == 0);                   /* another maker's product id */
+    CHECK(steam_pads_deck_builtin(0, 0, 0) == 0);                             /* unknown identity */
+    puts("ok: Steam's ignore list without Valve's pads, their motion-only rule, and the Deck's built-in controls");
     return 0;
 }
 '''.replace("STEAM_LIST", STEAM_LIST)

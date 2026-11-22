@@ -16,6 +16,7 @@ enum class Patch : u64;
 class Block;
 class Inst;
 class Value;
+struct Program;
 } // namespace Shader::IR
 
 namespace Shader::Backend::SPIRV {
@@ -115,6 +116,7 @@ void EmitWriteGlobalS16(EmitContext& ctx, Id address, Id value);
 void EmitWriteGlobal32(EmitContext& ctx, Id address, Id value);
 void EmitWriteGlobal64(EmitContext& ctx, Id address, Id value);
 void EmitWriteGlobal128(EmitContext& ctx, Id address, Id value);
+Id EmitStorageBufferLength(EmitContext& ctx, const IR::Value& binding);
 Id EmitLoadStorageU8(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset);
 Id EmitLoadStorageS8(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset);
 Id EmitLoadStorageU16(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset);
@@ -644,6 +646,9 @@ Id EmitShuffleButterfly(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id
 Id EmitQuadBroadcast(EmitContext& ctx, Id value, Id lane);
 Id EmitMatrixMulAddF16(EmitContext& ctx, Id a, Id b, Id c);
 void DefineSoftwareMatrixFunction(EmitContext& ctx);
+bool DefineWmma16MatrixFunction(EmitContext& ctx, const IR::Program& program);
+void DefineWmma16PairFunction(EmitContext& ctx, const IR::Program& program);
+void EmitMatrixMulAddF16Fused(EmitContext& ctx, IR::Inst* inst);
 Id EmitQuadSwap(EmitContext& ctx, Id value, Id direction);
 Id EmitFSwizzleAdd(EmitContext& ctx, Id op_a, Id op_b, Id swizzle);
 Id EmitDPdxFine(EmitContext& ctx, Id op_a);

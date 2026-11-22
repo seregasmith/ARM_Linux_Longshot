@@ -40,5 +40,7 @@ assets/saves/
 | Name | Where it stands |
 |---|---|
 | `kokiri-start` | Kokiri Forest, Link's house, right after the opening (a new game, control just given) |
+| `market-entrance` | Castle Town Market, child Link in the town's gate facing the Market, by day |
+| `castle-gate` | Hyrule Field at Castle Town's gate, child Link on the drawbridge's town end facing the Field, by day |
 
-How to make one: [docs/saves-script.md](../../docs/saves-script.md#saves-in-the-repository).
+How to make one: [docs/dev/reference/saves.md](../../docs/dev/reference/saves.md#saves-in-the-repository).

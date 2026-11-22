@@ -17,7 +17,7 @@ to 82 ms on the timeline (the latency A/B of #1442, RX_VK_FG_LATENCY_LOG).
   made frame. 6x at 43 game frames a second on 165 Hz: 1 to 3 of 5 out a set, where without it the game was held to 27.5
   frames a second and each game frame shown 138 ms after its hand-over.
 
-The real functions are cut out and run with stubs. docs/design.md section 13, rule 6.
+The real functions are cut out and run with stubs. docs/dev/reference/architecture.md, frame generation's presents, rule 6.
 
     python -I -B tests/test_framegen_fifo_cap.py [--cxx clang++]
 """

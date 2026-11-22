@@ -29,10 +29,15 @@ def main():
     measurement = block(menu, 'float measure_help(')
     assert 'mic_help_text(r.help)' in measurement and 'mic_meter_height(c, width)' in measurement
     # Navigating from Test to Gain must not release the test (capture lifetime remains Audio/page/focus based).
-    lifetime = block(menu, 'void mic_test_tick(')
-    assert 'cur_tab != TAB_AUDIO' in lifetime and 'page != 0' in lifetime
-    assert 'tab_selected' not in lifetime
-    help_constant = between(menu, 'constexpr const char* kMicLevelHelp', '\nconst char* tx_percent(')
+    # (the test's lifetime: the Audio module's, gpu/vk/menu/audio.cpp (#1633), by vk_menu.cpp's menu_on_tab: open, the Audio
+    # tab, no page of it)
+    module = (ROOT/'gpu/vk/menu/audio.cpp').read_text(encoding='utf-8')
+    lifetime = block(module, 'void mic_test_tick(', where='gpu/vk/menu/audio.cpp')
+    on_tab = block(menu, 'bool menu_on_tab(')
+    assert '!menu_on_tab("audio")' in lifetime and 'cur_tab' in on_tab and 'page == 0' in on_tab
+    assert 'tab_selected' not in lifetime and 'tab_selected' not in on_tab
+    # (the constant through its end, whatever follows it: #1633 moved its neighbours into modules)
+    help_constant = between(menu, 'constexpr const char* kMicLevelHelp', '";\n') + '";'
     fixture = r'''
 #include <algorithm>
 #include <cassert>

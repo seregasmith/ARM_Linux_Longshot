@@ -42,10 +42,17 @@ void destroy_image(VkImage,VmaAllocation) {}
 void destroy_buffer(VkBuffer,VmaAllocation) {}
 VKAPI_ATTR void VKAPI_CALL vkDestroyImageView(VkDevice,VkImageView,const VkAllocationCallbacks*) {}
 /* SETUP */
-void present_image(VkImage,uint32_t,uint32_t,const int*,VkImageView) { presented++; }
+struct OutputTrialSource { uint64_t generation{}; };
+enum class OutputPath { Unavailable };
+static OutputTrialSource trial;
+static std::atomic<uint64_t> output_kept_generation;
+static bool framegen_on() { return false; }
+static void make_output_trial_frame(OutputTrialSource, uint64_t, OutputPath) {}
+void present_image_with_trial(VkImage,uint32_t,uint32_t,const int*,VkImageView,bool,bool,OutputTrialSource) { presented++; }
 void tick() {
     VkImage src=reinterpret_cast<VkImage>(uintptr_t(0xff)); const char* shots="test";
     uint32_t sw=1720,sh=720; const int* crop=nullptr; VkImageView direct_view{}; bool interpolated=false;
+    [[maybe_unused]] bool source_srgb=false, direct_scale=false;
     /* GATE */ { capture_entries++; }
     /* PRESENT_TAIL */
 }

@@ -201,6 +201,19 @@ def source_problems():
         problems.append("tune::close does not stop the jobs and wait for the one building")
     if "void fsr4_close() { tune::close(); }" not in src or src.count("void fsr4_close()") != 2:
         problems.append("fsr4_close is not defined in both builds (with and without FSR)")
+    for fn, real in [("create_buffer", "real_cb"), ("create_shader_module", "real_csm"),
+                     ("create_compute_pipelines", "real_ccp")]:
+        body = function_body(src, "VKAPI_ATTR VkResult VKAPI_CALL " + fn + "(")
+        if "suppressed" not in body or "return " + real not in body:
+            problems.append(fn + " does not pass through while the new context is untuned")
+    if "suppressed" in function_body(src, "VKAPI_ATTR void VKAPI_CALL cmd_dispatch("):
+        problems.append("cmd_dispatch is suppressed too: the old Auto context's tail would not be served")
+    make = function_body(src, "std::shared_ptr<Context> make_context(")
+    if "tune::suppress" not in make or make.find("tune::suppress") > make.find("l.create("):
+        problems.append("make_context does not set tune::suppress before l.create")
+    prep = function_body(src, "int prepare(")
+    if "s.context->model != want" not in prep or "make_context(ow, oh, hdr, want)" not in prep:
+        problems.append("prepare does not rebuild when the FSR 4 model changes")
     main_cpp = (VK / "vk_main.cpp").read_text(encoding="utf-8")
     closer = function_body(main_cpp, "void mkwvk_close_asked(void)")
     if "fsr4_close();" not in closer or closer.find("fsr4_close();") > closer.find("pipeline_cache_close();"):

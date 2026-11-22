@@ -12,7 +12,7 @@
 // interpolation's images, the scratch ones) where it was. A priority is a memory object's, so a pool's block has its pool's.
 //
 // Measured on one PC (an RTX 4090 on NVIDIA 621.24, Windows 11; the game standing in Hyrule Field while other processes
-// took the VRAM; docs/tested/2026-11-14-memory-priority-*): the textures' lower priority looks like what helps, from one
+// took the VRAM): the textures' lower priority looks like what helps, from one
 // run each: 0.5,0.25 did as well as 1,0.25, and 1,0.5 (the render targets raised alone) lost its gain within 90 s and ended
 // slower than with the switch unset. No small card has run it yet, which is why it is off.
 #pragma once

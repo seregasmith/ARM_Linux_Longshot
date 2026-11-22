@@ -13,6 +13,7 @@ RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
 from srccut import block
+from menu_model_fixture import menu_text  # noqa: E402
 
 PREFIX = r'''
 #include "monitor_choice.h"
@@ -37,6 +38,9 @@ bool monitor_missing=false;
 bool menu_refresh=false;
 struct Row { int *value; int hi; };
 Row rows[]={{&monitor_pick,0}};
+// (what the display module asks the renderer, vk_menu.cpp's: the row's top, a redraw)
+void menu_row_top(const int* value,int hi) { for (Row& r : rows) if (r.value==value) r.hi=hi; }
+void menu_redraw() { menu_refresh=true; }
 '''
 
 FIXTURE = r'''
@@ -91,7 +95,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cxx", default="clang++")
     args = p.parse_args()
-    menu = (ROOT / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8")
+    # (vk_menu.cpp and its modules, #1633: output_name_key, the device names' cleaning, is gpu/vk/menu/audio.cpp's)
+    menu = menu_text(ROOT)
     funcs = ["bool can_monitors()", "const char* tx_fullscreen_monitor(int value)",
              "std::string output_name_key(const char* text)", "void refresh_monitors()", "void monitor_chosen()"]
     source = PREFIX + "\n".join(block(menu, name) for name in funcs) + FIXTURE
@@ -101,7 +106,9 @@ def main():
     assert 'key == "fullscreen_monitor_id"' in save
     assert 'key == "fullscreen_monitor_name"' in save
     assert 'if (!strcmp(line, "fullscreen_monitor_id")) monitor_want = monitor_choice::id_key(eq + 1)' in menu
-    assert 'if (r.value == &monitor_pick) monitor_chosen();' in block(menu, "void set_row(Row& r, int v, int dir, bool keep = true)")
+    # (the choice told to the host: the row's own on_change, gpu/vk/menu/display.cpp, #1633)
+    display = (ROOT / "gpu/vk/menu/display.cpp").read_text(encoding="utf-8")
+    assert '.on_change = MENU_HOOK([](int) { monitor_chosen(); })' in display
     follow = block(menu, "void outputs_follow_screen()")
     assert "previous_monitor == current_monitor" in follow  # equal-sized different monitors refresh modes
     assert '"Fullscreen monitor", &monitor_pick' in menu

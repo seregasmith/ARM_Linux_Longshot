@@ -19,6 +19,7 @@
 #include "imgui_internal.h"   // (RegisterUserTexture: the logo)
 #include "backends/imgui_impl_vulkan.h"
 #include "vk_game_font.h"   // (third_party/zstd: the game's font files)
+#include "colour_vision.h"
 #include "vk_menu.h"        // (opts.hdr_white: the overlays' white on an HDR10 display)
 #include "vk_menu_i18n.h"   // (the menu's language: the letters its fonts need, script_fonts)
 #if __has_include("longshot_logo.h")
@@ -221,14 +222,13 @@ struct Dead {   // (no longer used by anything recorded after `at`: gone once th
     uint64_t value = retired_value();   // (with no window: the timeline value past its last use)
 };
 std::vector<Dead> dead;
-// doc: docs/design.md#13-frame-generations-presents-as-rules (rule 4: what a copy reads lives through the slots)
+// doc: docs/dev/reference/architecture.md#frame-generations-presents (rule 4: what a copy reads lives through the slots)
 // (in a window, what a present's copy used is let go this many presents later. present_image waits for a frame slot's last
 // copy before the overlays record into it, so at present M the copies up to M less its slots are done: 3 slots, and while
-// frame generation's sets are on the game's timeline a slot per frame of two sets, up to kPresentSlotsMax (present_slots_for,
-// #1362); one more as a spare, as the backend's vertex buffers (ii.ImageCount). At 4, frame generation at 3x and up (6 to 8
-// slots, a set's copies on the GPU behind the game's next frame) let the staging buffers and the old atlas go while copies
-// could still read them, the font atlas grown at the start-up screen or new glyphs with the menu open: a likely cause of a
-// tester's lost device on an RTX 5080, not reproduced on an RTX 5090, where a test-only log showed the early let-gos)
+// frame generation's sets are on the game's timeline a slot per frame of two sets, up to kPresentSlotsMax (present_slots_for);
+// one more as a spare, as the backend's vertex buffers (ii.ImageCount). A fixed 4 would, at frame generation 3x and up (6 to 8
+// slots, a set's copies on the GPU behind the game's next frame), let the staging buffers and the old atlas go while copies
+// could still read them (the font atlas grown at the start-up screen or new glyphs with the menu open): a lost device)
 constexpr int64_t kFramesLater = kPresentSlotsMax + 1;
 void reap(bool all) {
     for (size_t i = 0; i < dead.size();) {
@@ -520,11 +520,33 @@ void idle() {
     reap(false);   // (staging buffers and old textures let go while nothing shows too)
 }
 
-void record_to(VkCommandBuffer cmd, VkImage image, VkImageView view, uint32_t w, uint32_t h) {
+void record_to(VkCommandBuffer cmd, VkImage image, VkImageView view, uint32_t w, uint32_t h, int mode) {
     ImGui::Render();
     ImDrawData* dd = ImGui::GetDrawData();
     presents++;
     reap(false);
+    if (colour_vision::enabled(mode)) {
+        // The menu reuses a small palette across many vertices. Alpha is independent of correction.
+        struct Entry { ImU32 original = IM_COL32_A_MASK, corrected = 0; };
+        Entry palette[128];
+        for (ImDrawList* list : dd->CmdLists) {
+            for (ImDrawVert& v : list->VtxBuffer) {
+                const ImU32 c = v.col & ~IM_COL32_A_MASK;
+                const ImU32 r = c >> IM_COL32_R_SHIFT & 255;
+                const ImU32 g = c >> IM_COL32_G_SHIFT & 255;
+                const ImU32 b = c >> IM_COL32_B_SHIFT & 255;
+                if (r == g && g == b) continue;
+                auto& entry = palette[(11 * r + 37 * g + 53 * b) % 128];
+                if (entry.original != c) {
+                    const auto rgb = colour_vision::correct_srgb({r / 255.0f, g / 255.0f, b / 255.0f}, mode);
+                    entry = {c, (ImU32)(rgb[0] * 255.0f + 0.5f) << IM_COL32_R_SHIFT |
+                                (ImU32)(rgb[1] * 255.0f + 0.5f) << IM_COL32_G_SHIFT |
+                                (ImU32)(rgb[2] * 255.0f + 0.5f) << IM_COL32_B_SHIFT};
+                }
+                v.col = (v.col & IM_COL32_A_MASK) | entry.corrected;
+            }
+        }
+    }
     if (srgb_target) linearize(dd);
     else if (dev.hdr) hdr10(dd);   // (the overlays at the paper white, not at the display's peak with the wrong primaries)
     if (!image || !view) return;
@@ -562,9 +584,9 @@ void record_to(VkCommandBuffer cmd, VkImage image, VkImageView view, uint32_t w,
            VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
 }
 
-void record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
+void record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h, int mode) {
     const bool has = index < dev.swap_views.size() && dev.swap_views[index];
-    record_to(cmd, has ? dev.swap_images[index] : VK_NULL_HANDLE, has ? dev.swap_views[index] : VK_NULL_HANDLE, w, h);
+    record_to(cmd, has ? dev.swap_images[index] : VK_NULL_HANDLE, has ? dev.swap_views[index] : VK_NULL_HANDLE, w, h, mode);
 }
 
 } // namespace mkwvk::ui

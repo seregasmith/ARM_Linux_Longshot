@@ -36,10 +36,17 @@
 #endif
 #include "options_path.h"   /* (longshot_options.ini, au_menu_output) */
 #include "audio_output_devices.h"
+#include "audio_source.h"   /* (the sounds' classes, for the controller speaker: host/audio_source.c) */
+#include "pad_speaker.h"    /* (the DualSense's speaker: the classes the player sends there) */
 #ifndef LONGSHOT_ENV_H   /* (env_on: the switches' one rule) */
 #include "../gpu/vk/compat/longshot_env.h"
 #endif
 
+void hos_audio_source_load_async(void);                   /* (audio_source.c) read the player's archives on a worker */
+int hos_audio_source_ready(void);
+int hos_audio_source_of(uint64_t data, uint32_t *crc);    /* a wave buffer's asset: its class, -1 when it starts none */
+int hos_audio_source_trace(void);
+const char *hos_audio_source_name(int cls);
 void hos_system_event_init(uint64_t key, int autoclear);
 void hos_system_event_signal(uint64_t key);
 
@@ -59,7 +66,7 @@ enum { K_VOICE = 1, K_MIX, K_SPLITTER, K_SINK, K_POOL, K_EFFECT, K_CONFIG, K_AUX
 enum { FMT_INVALID, FMT_PCM8, FMT_PCM16, FMT_PCM24, FMT_PCM32, FMT_FLOAT, FMT_ADPCM };
 enum { PLAY_STARTED, PLAY_STOPPED, PLAY_PAUSED };
 enum { DEST_NONE, DEST_MIX, DEST_SPLITTER };
-typedef struct { uint64_t buffer, size; int32_t start, end; int loop; uint64_t context; } WB;
+typedef struct { uint64_t buffer, size; int32_t start, end; int loop; uint64_t context; int source; } WB;
 
 typedef struct {
     int used, released, final_mix, buffers;    /* (released: by the game, until the next update applies it) */
@@ -107,6 +114,7 @@ typedef struct {
     float split_bq_z[MAX_SPLIT_DESTS][2][MAX_CH][2];
     uint64_t split_bq_epoch[MAX_SPLIT_DESTS][2];
     int dropped;
+    int source;                                /* the class of the sound it plays (audio_source.h: 0 none), for the controller speaker */
 } Voice;
 
 static CRITICAL_SECTION lock;
@@ -183,6 +191,7 @@ static WB read_wb(uint64_t p) {
     w.end = (int32_t)G32(p + 0x14);
     w.loop = *(uint8_t *)GP(p + 0x18);
     w.context = G64(p + 0x20);
+    w.source = -1;
     return w;
 }
 
@@ -270,6 +279,7 @@ static int next_source_frame(Voice *v) {
         const WB w = v->wbc[0];
         if (!v->started_wb) {
             v->pos = w.start;
+            if (w.source >= 0) v->source = w.source;
             v->started_wb = 1;
             if (v->format == FMT_ADPCM) {
                 adpcm_seek(v, &w);
@@ -511,6 +521,91 @@ static void biquad_frame(float *samples, const float b[3], const float a[2], flo
     z[1] = z1;
 }
 
+/* ---- the controller speaker (host/pad_speaker.c): the frame's sounds of the classes sent there, mono ---- */
+static float speaker_frame[FRAME];
+static int speaker_on;   /* this frame: the pad plays (hos_pad_speaker_active when the frame began) */
+
+/* How loud a voice's channel reaches its destination: the largest of its volumes to the destination's buffers (a
+   sound placed in the world keeps its distance on the pad; where it is, left or right, a single speaker cannot say). A sound of several channels plays as their mean.
+   vol: the channel's row of volumes; n: the destination's buffers */
+static float speaker_gain(const float *vol, int n) {
+    float g = 0.0f;
+    for (int b = 0; b < n && b < MAX_BUF; b++) {
+        const float a = vol[b] < 0 ? -vol[b] : vol[b];
+        if (a > g) g = a;
+    }
+    return g;
+}
+
+/* A classed voice's frame for the pad. out: its channels after its own volume and filters. HOS_PAD_SPEAKER_ONLY: the pad
+   alone plays it, and it is left out of the game's mixes; HOS_PAD_SPEAKER_BOTH: the TV plays it too (held back by the
+   Controller sync below 0: tv_stage); HOS_PAD_SPEAKER_OFF: the game's mixes alone. */
+static void speaker_voice(const Voice *v, float out[][FRAME], const int *pad) {
+    if (!speaker_on) return;
+    for (int ch = 0; ch < v->channels && ch < MAX_CH; ch++) {
+        float g = 0.0f;
+        if (v->dest_kind == DEST_MIX && mixes[v->dest].used) {
+            g = speaker_gain(v->vol[ch], mixes[v->dest].buffers) * mixes[v->dest].volume;
+        } else if (v->dest_kind == DEST_SPLITTER && splitters[v->dest].used) {
+            const Splitter *s = &splitters[v->dest];
+            for (int d = 0; d < s->dests; d++) {
+                const int mi = s->dest_mix[d];
+                if (mi < 0 || !mixes[mi].used) continue;
+                const float a = speaker_gain(s->vol[d][ch], mixes[mi].buffers) * mixes[mi].volume;
+                if (a > g) g = a;
+            }
+        }
+        if (g == 0.0f) continue;
+        g /= (float)v->channels;   /* (a stereo sound's two sides are one sound: their mean, not their sum) */
+        for (int i = 0; i < FRAME; i++) if (pad[i] != HOS_PAD_SPEAKER_OFF) speaker_frame[i] += out[ch][i] * g;
+    }
+}
+
+/* ---- the Controller sync below 0 (host/pad_speaker.c): the TV's copy of the Controller + TV sounds held back ----
+   For a pad that plays later than the TV. Each mix such a sound plays into gets a delay line a buffer: the frame's held
+   sounds go into its stage, the stage into the line, and the line's sound of tv_delay samples ago into the mix, where
+   it goes on as the rest of the mix does (sub mixes, effects, the sink). Only those sounds wait: music, voices and the
+   rest of the TV's sound do not. HOS_PAD_SPEAKER_TV_DELAY=0: never held back (the earlier way). */
+#define TVD_LEN 8192   /* (samples a buffer holds back at most, a power of two: 170 ms; the sync goes to -100 ms) */
+typedef struct {
+    int buffers, at;
+    float (*line)[TVD_LEN];
+    float (*stage)[FRAME];
+} TvDelay;
+static TvDelay tvd[MAX_MIXES];
+static int tv_delay;   /* this frame: samples (0: nothing held back) */
+
+static float (*tv_stage(int mi))[FRAME] {   /* NULL: the mix's own buffers (no memory, no buffers) */
+    TvDelay *d = &tvd[mi];
+    const int n = mixes[mi].buffers < 0 ? 0 : mixes[mi].buffers > MAX_BUF ? MAX_BUF : mixes[mi].buffers;
+    if (d->line && d->buffers != n) free(d->line), free(d->stage), d->line = NULL, d->stage = NULL;
+    if (!d->line && n > 0) {
+        d->line = calloc((size_t)n, sizeof *d->line), d->stage = calloc((size_t)n, sizeof *d->stage);
+        if (!d->line || !d->stage) free(d->line), free(d->stage), d->line = NULL, d->stage = NULL;
+        d->buffers = n, d->at = 0;
+    }
+    return d->stage;
+}
+
+static void tv_delay_frame(void) {   /* after the voices: each line takes its stage and gives back its oldest */
+    for (int mi = 0; mi < MAX_MIXES; mi++) {
+        TvDelay *d = &tvd[mi];
+        if (!d->line) continue;
+        if (!mixes[mi].used || d->buffers > mixes[mi].buffers) {   /* (the mix gone or made again: its line goes with it) */
+            free(d->line), free(d->stage), memset(d, 0, sizeof *d);
+            continue;
+        }
+        const int back = tv_delay > 0 ? tv_delay : 0;
+        for (int b = 0; b < d->buffers; b++) {
+            float *line = d->line[b];
+            for (int i = 0; i < FRAME; i++) line[(d->at + i) & (TVD_LEN - 1)] = d->stage[b][i];
+            for (int i = 0; i < FRAME; i++) mixes[mi].buf[b][i] += line[(d->at + i - back) & (TVD_LEN - 1)];
+            memset(d->stage[b], 0, sizeof d->stage[b]);
+        }
+        d->at = (d->at + FRAME) & (TVD_LEN - 1);
+    }
+}
+
 static void render_voice(Voice *v) {
     /* (a started voice without a destination still plays, as on the DSP: its buffers run out and are released) */
     if (v->state != PLAY_STARTED) return;
@@ -523,7 +618,9 @@ static void render_voice(Voice *v) {
     }
     const double step = (double)v->rate * (v->pitch > 0 ? v->pitch : 1.0) / RATE;
     float out[MAX_CH][FRAME];
+    int pad[FRAME];
     int any = 0;
+    int last_source = -1, pad_mode = HOS_PAD_SPEAKER_OFF, ocarina = 0;
     /* volumes ramp from the last frame's to the new ones over the frame, as the console's DSP does (a jump clicks) */
     const float vol0 = v->ramp_volume, dvol = (v->volume - v->ramp_volume) / FRAME;
     for (int i = 0; i < FRAME; i++) {
@@ -534,9 +631,16 @@ static void render_voice(Voice *v) {
             if (!next_source_frame(v)) memset(v->cur, 0, sizeof v->cur);
             else any = 1;
         }
+        if (speaker_on && v->source != last_source) {
+            last_source = v->source;
+            pad_mode = last_source > AUDIO_SOURCE_NONE ? hos_pad_speaker_mode(last_source) : HOS_PAD_SPEAKER_OFF;
+            if (pad_mode != HOS_PAD_SPEAKER_OFF && last_source == AUDIO_SOURCE_OCARINA) ocarina = 1;
+        }
+        pad[i] = pad_mode;
         const float t = (float)v->frac, gain = vol0 + dvol * (float)(i + 1);
         for (int ch = 0; ch < v->channels; ch++) out[ch][i] = (v->prev[ch] + (v->cur[ch] - v->prev[ch]) * t) * gain;
     }
+    if (ocarina) hos_pad_speaker_ocarina_seen();
     v->ramp_volume = v->volume;
     (void)any;
     /* the biquad filters (transposed direct form II, as the DSP's) */
@@ -545,14 +649,19 @@ static void render_voice(Voice *v) {
         for (int ch = 0; ch < v->channels && ch < MAX_CH; ch++)
             biquad_frame(out[ch], v->bq_b[f], v->bq_a[f], v->bq_z[f][ch]);
     }
+    if (speaker_on) speaker_voice(v, out, pad);
     if (v->dest_kind == DEST_MIX && mixes[v->dest].used) {
         Mix *m = &mixes[v->dest];
+        float (*delayed)[FRAME] = tv_delay > 0 ? tv_stage(v->dest) : NULL;
         for (int ch = 0; ch < v->channels; ch++)
             for (int b = 0; b < m->buffers; b++) {
                 const float g0 = v->ramp_vol[ch][b], g1 = v->vol[ch][b];
                 if (g0 == 0.0f && g1 == 0.0f) continue;
                 const float dg = (g1 - g0) / FRAME;
-                for (int i = 0; i < FRAME; i++) m->buf[b][i] += out[ch][i] * (g0 + dg * (float)(i + 1));
+                if (!speaker_on) {
+                    for (int i = 0; i < FRAME; i++) m->buf[b][i] += out[ch][i] * (g0 + dg * (float)(i + 1));
+                } else for (int i = 0; i < FRAME; i++) if (pad[i] != HOS_PAD_SPEAKER_ONLY)
+                    (delayed && pad[i] == HOS_PAD_SPEAKER_BOTH ? delayed : m->buf)[b][i] += out[ch][i] * (g0 + dg * (float)(i + 1));
             }
     } else if (v->dest_kind == DEST_SPLITTER && splitters[v->dest].used) {
         Splitter *s = &splitters[v->dest];
@@ -560,6 +669,7 @@ static void render_voice(Voice *v) {
             const int mi = s->dest_mix[d];
             if (mi < 0 || !mixes[mi].used) continue;
             Mix *m = &mixes[mi];
+            float (*delayed)[FRAME] = tv_delay > 0 ? tv_stage(mi) : NULL;
             for (int f = 0; f < 2; f++)
                 if (v->split_bq_epoch[d][f] != s->bq_epoch[d][f]) {
                     memset(v->split_bq_z[d][f], 0, sizeof v->split_bq_z[d][f]);
@@ -578,7 +688,10 @@ static void render_voice(Voice *v) {
                     const float g0 = s->ramp[d][ch][b], g1 = s->vol[d][ch][b];
                     if (g0 == 0.0f && g1 == 0.0f) continue;
                     const float dg = (g1 - g0) / FRAME;
-                    for (int i = 0; i < FRAME; i++) m->buf[b][i] += samples[i] * (g0 + dg * (float)(i + 1));
+                    if (!speaker_on) {
+                        for (int i = 0; i < FRAME; i++) m->buf[b][i] += samples[i] * (g0 + dg * (float)(i + 1));
+                    } else for (int i = 0; i < FRAME; i++) if (pad[i] != HOS_PAD_SPEAKER_ONLY)
+                        (delayed && pad[i] == HOS_PAD_SPEAKER_BOTH ? delayed : m->buf)[b][i] += samples[i] * (g0 + dg * (float)(i + 1));
                 }
             }
         }
@@ -597,8 +710,18 @@ static void render_frame(int16_t *pcm, int channels) {   /* 240 frames of the de
             const int rows = mixes[m].buffers < 0 ? 0 : mixes[m].buffers > MAX_BUF ? MAX_BUF : mixes[m].buffers;
             memset(mixes[m].buf, 0, (size_t)rows * sizeof mixes[m].buf[0]);
         }
+    speaker_on = hos_pad_speaker_active();
+    if (speaker_on) memset(speaker_frame, 0, sizeof speaker_frame);
+    {
+        static int tvd_on = -1;
+        if (tvd_on < 0) tvd_on = env_int("HOS_PAD_SPEAKER_TV_DELAY", 1) != 0;
+        tv_delay = tvd_on ? hos_pad_speaker_tv_delay() : 0;
+        if (tv_delay > TVD_LEN - FRAME) tv_delay = TVD_LEN - FRAME;
+    }
     for (int i = 0; i < MAX_VOICES; i++)
         if (voices[i].used) render_voice(&voices[i]);
+    tv_delay_frame();
+    /* (the controller's frame is written by renderer_main, after the player's volume and Mute in background) */
     for (int i = 0; i < MAX_SPLITTERS; i++)   /* (the splitters' volume ramps: once a frame, whichever voices use them) */
         if (splitters[i].used)
             for (int d = 0; d < splitters[i].dests; d++)
@@ -773,8 +896,8 @@ static void au_opened(HWAVEOUT w) {
 /* (longshot) The channels of a mix format that are 5.1 speakers: its channel count when its mask names a centre and a
    pair behind or beside the player (5.1 back or side, 7.1), else 2. A device with more channels than speakers (an
    audio interface's outputs, a Scarlett's 8 with mask 0; quad without a centre; no mask at all) was counted by its
-   channels: the game mixed 5.1, and what it puts in the centre (voices, the ocarina, Link's own sounds) and behind went
-   to outputs nothing listens to, silent (issue 2182). As stereo, the game's own mix down keeps every sound. */
+   channels would have the game mix 5.1, and what it puts in the centre (voices, the ocarina, Link's own sounds) and behind
+   go to outputs nothing listens to, silent. As stereo, the game's own mix down keeps every sound. */
 static int au_layout_channels(int channels, int extensible, unsigned long mask) {
     if (channels <= 2 || !extensible) return 2;
     const unsigned long front = 0x7, back = 0x30, side = 0x600;   /* FL FR FC; BL BR; SL SR (ksmedia.h SPEAKER_) */
@@ -830,7 +953,7 @@ static int au_device_channels(void) {
 #else
 static int au_device_channels(void) { return hos_sdl_audio_channels(); }
 #endif
-/* (longshot) The Insert menu's Audio output (gpu/vk/vk_menu.cpp): audio_output= in longshot_options.ini (host/options_path.c),
+/* (longshot) The Insert menu's Audio output (gpu/vk/menu/audio.cpp): audio_output= in longshot_options.ini (host/options_path.c),
    0 Auto, 1 Stereo, 2 5.1, 3 Mono (stereo with a live final average). A number past them is the nearest, as the menu reads
    it. Read from the file, as host/nn_applet.c reads the Handheld profile: the game asks for its speakers only once,
    at its start */
@@ -1305,6 +1428,7 @@ static void apply(const Cmd *k) {   /* (with the lock held) */
             if (v->pending_wb > 0) v->pending_wb--;
             if (v->nwb < MAX_WB) {
                 v->wbc[v->nwb] = k->wb;
+                v->wbc[v->nwb].source = k->i0;
                 v->wb[v->nwb++] = k->wbp;
             } else {
                 release_wb(v, k->wbp);
@@ -1403,7 +1527,7 @@ static int64_t audio_mix_deadline(int64_t now, int64_t next, int64_t period) {
     return next;
 }
 
-/* ---- the player's volume (the Insert menu's Audio tab, gpu/vk/vk_menu.cpp) ------------------------------------- */
+/* ---- the player's volume (the Insert menu's Audio tab, gpu/vk/menu/volume.cpp) --------------------------------- */
 /* The frame's samples (frames x channels, interleaved) scaled from `from`, the gain the last frame ended at, to `want`,
    step by step over the frame, so a change does not click. The gains are 0 to 1: nothing clips. Returns the gain the
    frame ended at. tests/test_audio_volume.py */
@@ -1414,6 +1538,13 @@ static float audio_apply_gain(int16_t *pcm, int frames, int channels, float from
         for (int c = 0; c < channels; c++) pcm[i * channels + c] = (int16_t)lrintf((float)pcm[i * channels + c] * g);
     }
     return want;
+}
+
+/* The same ramp on the controller speaker's mono frame (host/pad_speaker.c), so Volume and Mute in background reach the
+   sounds sent there as they reach the TV's: Controller only and Controller + TV alike. tests/test_audio_volume.py */
+static void audio_apply_gain_mono(float *s, int frames, float from, float want) {
+    if (from == 1.0f && want == 1.0f) return;
+    for (int i = 0; i < frames; i++) s[i] *= from + (want - from) * (float)(i + 1) / (float)frames;
 }
 
 /* Whether the game's window counts as in front, as host/nn_hid.c's game_in_front decides it: the game's own window does,
@@ -1487,9 +1618,18 @@ static DWORD WINAPI renderer_main(void *p) {
         render_frame(pcm, out_channels);
         au_unlock();
         if (gain_frames-- <= 0) gain_want = audio_player_gain(), gain_frames = 20;   /* (the menu read every 100 ms) */
-        gain = audio_apply_gain(pcm, FRAME, out_channels, gain, gain_want);
+        const float gain_from = gain;
+        gain = audio_apply_gain(pcm, FRAME, out_channels, gain_from, gain_want);
+        if (speaker_on) {   /* (every frame, silence too: the pad's stream runs on) */
+            audio_apply_gain_mono(speaker_frame, FRAME, gain_from, gain_want);
+            hos_pad_speaker_write(speaker_frame, FRAME);
+        }
         int rx_option(int id, int otherwise);
         audio_mono(pcm, FRAME, out_channels, rx_option(HOS_OPT_AUDIO_OUTPUT, 0) == 3);
+        if (hos_pad_speaker_headphones_all()) {   /* (headphones in the pad's jack take all the sound, as on the console: the TV is silent) */
+            hos_pad_speaker_write_stereo(pcm, FRAME, out_channels);
+            memset(pcm, 0, sizeof(int16_t) * FRAME * (size_t)out_channels);
+        }
         output_frame(pcm);
         elapsed_frames++;
         if (renderer_event) hos_system_event_signal(renderer_event);
@@ -1921,6 +2061,7 @@ HLE(_ZN2nn5audio17SetVoicePlayStateEPNS0_9VoiceTypeENS1_9PlayStateE) {
     au_unlock();
 }
 HLE(_ZN2nn5audio16AppendWaveBufferEPNS0_9VoiceTypeEPKNS0_10WaveBufferE) {
+    if (hos_pad_speaker_active()) hos_audio_source_load_async();
     au_lock();
     Voice *v = voice_of(ARG(0));
     int ok = 0;
@@ -1944,7 +2085,12 @@ HLE(_ZN2nn5audio16AppendWaveBufferEPNS0_9VoiceTypeEPKNS0_10WaveBufferE) {
                 }
             }
         }
-        const Cmd k = {.op = OP_VOICE_APPEND, .idx = (int)(v - voices), .wbp = ARG(1), .wb = checked};   /* (as checked) */
+        Cmd k = {.op = OP_VOICE_APPEND, .idx = (int)(v - voices), .wbp = ARG(1), .wb = checked};   /* (as checked) */
+        uint32_t crc = 0;
+        k.i0 = !hos_pad_speaker_active() ? -1 : !hos_audio_source_ready() ? AUDIO_SOURCE_NONE
+                 : hos_audio_source_of(k.wb.buffer, &crc);   /* (the sound's class, by the archive its samples lie in) */
+        if (k.i0 > AUDIO_SOURCE_NONE && hos_audio_source_trace())
+            hos_log("audio: voice %d plays %08x: %s", k.idx, crc, hos_audio_source_name(k.i0));
         v->pending_wb++;
         submit(&k);
         ok = 1;

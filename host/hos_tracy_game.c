@@ -1,4 +1,4 @@
-/* (longshot) LONGSHOT_TRACY: the text of the zones in the lifted game code (nx2/tracy_funcs.py, docs/development/tracy.md):
+/* (longshot) LONGSHOT_TRACY: the text of the zones in the lifted game code (nx2/tracy_funcs.py, docs/dev/reference/profiling.md, Tracy):
    a listed function's zone says who called it and what object it ran on; a dispatch point's zone (an indirect call of a
    function listed with `calls`) says which function it called, f_<target>, and on what object.
 

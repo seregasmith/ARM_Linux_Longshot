@@ -7,10 +7,13 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 
 RUN_ALL_ARGS = ["--cc", "gcc"]
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests"))
+from menu_model_fixture import menu_text  # noqa: E402
 
 
 def read(path):
@@ -76,7 +79,7 @@ int main(void) {
     assert re.search(r"int audio_output\s*=\s*0;", read("gpu/vk/vk_menu.h"))
     assert re.search(
         r'\{TAB_AUDIO, "Speaker layout", &opts.audio_output, 0, 3, 1, tx_audio_output,\s*'
-        r'"[^"]+", hn_audio_output, true, true\}', read("gpu/vk/vk_menu.cpp"))
+        r'"[^"]+", hn_audio_output, true, true\}', menu_text(ROOT))   # (the menu's rows, the modules' too: #1633)
     assert "mono_audio" not in read("gpu/vk/vk_menu.h")
     assert '"Mono audio"' not in read("gpu/vk/vk_menu.cpp")
     assert "HOS_OPT_MONO_AUDIO" not in read("gpu/vk/vk_api.h")

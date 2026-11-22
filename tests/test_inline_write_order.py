@@ -1,6 +1,7 @@
 """Overlapping inline GPU writes retain stream order, including with barrier deduplication.
 
-Compile the real gpu_write (with gpu_piece_bind and gpu_put), full_barrier, note_work and work wrappers with a recording spy.
+Compile the real gpu_write (with gpu_piece_bind and gpu_put), full_barrier, vk_work.h's work counts (note_work,
+note_other_work) and its wrappers with a recording spy as the recorder's packers (the driver's calls with the recorder off).
 Unaligned writes are copied from the recording's stream, in order with the rest; only writes no import holds fall back to the
 CPU. No GPU or game files. Removing the write's barrier or its work count must fail.
 """
@@ -40,8 +41,6 @@ std::vector<uint8_t> memory(131104);
 struct Range { uint64_t lo, hi; };
 std::vector<Range> pending;
 unsigned hazards, updates, copies, barriers, fallbacks;
-std::atomic<uint64_t> work_epoch{0};
-std::atomic<bool> par_active{false};
 std::atomic<int64_t> st_barriers_left_out{0}, st_barriers_made{0};
 VkCommandBuffer last_barrier_cmd{};
 uint64_t last_barrier_epoch = 0;
@@ -69,7 +68,8 @@ BufferRef stream_copy(const void* src, uint64_t n) {
     return {stream, at};
 }
 void guest_cpu_write(uint64_t, const void*, uint64_t) { ++fallbacks; }
-namespace rec {
+}
+namespace mkwvk::rec {   // (the recorder's packers, which vk_work.h's wrappers call after their count: the spy)
 void rx_vkCmdPipelineBarrier2(VkCommandBuffer cmd, const VkDependencyInfo* d) {
     assert(cmd == cb && d->memoryBarrierCount == 1);
     const auto& b = *d->pMemoryBarriers;
@@ -94,6 +94,7 @@ void rx_vkCmdCopyBuffer(VkCommandBuffer cmd, VkBuffer src, VkBuffer target, uint
     std::memcpy(memory.data() + r->dstOffset, stream_bytes.data() + r->srcOffset, r->size);
 }
 }
+namespace mkwvk {
 '''
 
 SUFFIX = r'''
@@ -153,9 +154,21 @@ def main():
     if len(declarations) != 1:
         raise SystemExit("vk_texture.h: full_barrier declaration not found once")
     work = (vk / "vk_work.h").read_text(encoding="utf-8")
-    note = block(work, "inline void note_work()")
+    # (vk_work.h's counts: the thread's work_epoch and other_work_since_barrier, declared in its first namespace mkwvk
+    # block, and note_work / note_other_work; defined here as vk_texture.cpp defines them. The profiler's glue declared there
+    # too, stubbed off as with RX_VK_PASS_TIMING under 3)
+    if "namespace mkwvk {" not in work or "} // namespace mkwvk" not in work:
+        raise SystemExit("vk_work.h: its namespace mkwvk block not found")
+    note = work[work.index("namespace mkwvk {") + len("namespace mkwvk {"):work.index("} // namespace mkwvk")]
+    for want in ("extern thread_local uint64_t work_epoch;", "extern thread_local bool other_work_since_barrier;",
+                 "inline void note_work()", "inline void note_other_work()"):
+        if want not in note:
+            raise SystemExit("vk_work.h: not found: " + want)
+    note += "thread_local uint64_t work_epoch = 0;\nthread_local bool other_work_since_barrier = true;\n"
+    note += ("bool gprof_glue_on() { return false; }\nGprofGlue::GprofGlue(VkCommandBuffer c, const char* l) : cmd(c), label(l) {}\n"
+             "GprofGlue::~GprofGlue() {}\n")
     wrappers = []
-    for name in ("vkCmdPipelineBarrier2", "vkCmdUpdateBuffer", "vkCmdCopyBuffer"):
+    for name in ("MKWVK_CMD0_", "MKWVK_CMD0", "MKWVK_GLUE", "vkCmdPipelineBarrier2", "vkCmdUpdateBuffer", "vkCmdCopyBuffer"):
         lines = [line for line in work.splitlines() if line.startswith("#define " + name + "(")]
         if len(lines) != 1:
             raise SystemExit("vk_work.h: wrapper not found once: " + name)
@@ -163,7 +176,7 @@ def main():
     source = PREFIX + note + "\n}\n" + "\n".join(wrappers) + "\nnamespace mkwvk {\n" + declarations[0] + "\n" + barrier + write + SUFFIX
     variants = [("current", source, 0),
                 ("missing_barrier", source.replace("full_barrier(cmd);", ""), 1),
-                ("missing_work_count", source.replace("::mkwvk::note_work(), ::mkwvk::rec::rx_vkCmdUpdateBuffer", "::mkwvk::rec::rx_vkCmdUpdateBuffer"), 1)]
+                ("missing_work_count", source.replace('(::mkwvk::note_other_work(), MKWVK_GLUE("vkCmdUpdateBuffer"', '(MKWVK_GLUE("vkCmdUpdateBuffer"'), 1)]
     with tempfile.TemporaryDirectory(prefix="inline-write-") as tmp:
         for name, text, expected in variants:
             if name != "current" and text == source:
