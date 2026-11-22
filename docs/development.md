@@ -588,6 +588,10 @@ It writes `report.md` into the folder:
   barriers and dispatches before each fallback draw are kind `fallback` (`fallback prog <key>` among the labels), and an
   indirect mesh draw's argument conversion with its barriers is kind `meshconv`: neither is counted in `dispatch` or
   `barrier`, or left as time between the spans.
+  With `RX_VK_PASS_TIMING=2`, each 600-present report selects its two most expensive fallback programs for the
+  next window. Their `fallback-stage` lines break the parent time into buffer preparation (including the wait
+  for the previous draw), the optional task dispatch, and the mesh dispatch. Each dispatch includes its following
+  barrier. These lines are subdivisions of the existing fallback total.
 
 It also writes the profile for a profiler's own viewer (`scripts/profile_trace.py`, which makes them alone too; both
 viewers read the file in the browser, nothing is uploaded):

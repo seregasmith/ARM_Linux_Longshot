@@ -47,6 +47,8 @@ std::unordered_map<std::string, Agg> totals[2];   // label -> what its spans too
 double active_ns[2], sum_ns[2];                   // (the command buffers' first timestamp to last, and what their spans took)
 int64_t recs[2], dropped;
 int acc_frames = 0;
+uint64_t fallback_keys[2];
+size_t fallback_count = 0;
 
 Stream* find(VkCommandBuffer cmd) {
     if (!pool || cur < 0 || !cmd) return nullptr;
@@ -146,6 +148,30 @@ void gprof_run(VkCommandBuffer cmd, uint64_t key) {
     st->run = (int)st->spans.size() - 1, st->run_key = key;
 }
 
+bool gprof_detail_fallback(uint64_t key) {
+    return std::find(fallback_keys, fallback_keys + fallback_count, key) != fallback_keys + fallback_count;
+}
+
+void gprof_fallback_stage(VkCommandBuffer cmd, uint64_t key, const char* stage) {
+    Stream* st = find(cmd);
+    if (!st || st->outer < 0) return;
+    // The first stage shares the outer start, each transition takes one timestamp, and gprof_end closes both.
+    // gprof_begin reserved four queries: outer start, two transitions, outer end.
+    uint32_t q = st->spans[st->outer].qb;
+    if (st->run >= 0) {
+        q = stamp(*st, cmd);
+        st->spans[st->run].qe = q;
+    }
+    char label[48];
+    snprintf(label, sizeof label, "fallback-stage %016llx %s", (unsigned long long)key, stage);
+    Span sp;
+    sp.label = label;
+    sp.qb = q;
+    sp.nested = true;
+    st->spans.push_back(std::move(sp));
+    st->run = (int)st->spans.size() - 1;
+}
+
 void gprof_collect(int slot) {
     if (!pool || slot < 0 || slot >= kSlots) return;
     Slot& s = slots[slot];
@@ -205,12 +231,16 @@ void gprof_report(int frames) {
         int k;
         Agg a;
     };
-    std::vector<Row> rows, cats, progs;
+    std::vector<Row> rows, cats, progs, fallback_stages;
     std::map<std::string, Agg> by_cat[2];
     for (int k = 0; k < 2; k++)
         for (const auto& [label, a] : totals[k]) {
             if (label.compare(0, 5, "prog ") == 0) {
                 progs.push_back({label, k, a});
+                continue;
+            }
+            if (label.compare(0, 15, "fallback-stage ") == 0) {
+                fallback_stages.push_back({label, k, a});
                 continue;
             }
             rows.push_back({label, k, a});
@@ -233,6 +263,20 @@ void gprof_report(int frames) {
         const Row& r = rows[i];
         logf("vk:   %c %7.3f ms  %6.1f x  %7.1f us  %8.1f items  %6.2f MB  %s", r.k ? 'u' : 'm', r.a.ns / f / 1e6, r.a.n / f,
              r.a.ns / std::max<int64_t>(r.a.n, 1) / 1e3, r.a.items / f, r.a.bytes / f / mb, r.name.c_str());
+    }
+    if (level() >= 2) {
+        fallback_count = 0;
+        for (const Row& r : rows) {
+            constexpr char prefix[] = "fallback prog ";
+            if (r.k || r.name.compare(0, sizeof(prefix) - 1, prefix) != 0) continue;
+            fallback_keys[fallback_count++] = std::strtoull(r.name.c_str() + sizeof(prefix) - 1, nullptr, 16);
+            if (fallback_count == 2) break;
+        }
+    }
+    if (!fallback_stages.empty()) {
+        std::sort(fallback_stages.begin(), fallback_stages.end(), by_ns);
+        for (const Row& r : fallback_stages)
+            logf("vk:   %s  %.3f ms/frame  %.1f calls/frame", r.name.c_str(), r.a.ns / f / 1e6, r.a.n / f);
     }
     if (!progs.empty()) {
         logf("vk:   the 20 programs whose runs of draws took the most (RX_VK_PASS_TIMING=2: a timestamp at each change of program):");

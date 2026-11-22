@@ -27,6 +27,9 @@ bool gprof_begin(VkCommandBuffer cmd);
 void gprof_end(VkCommandBuffer cmd, const std::string& label, int items = 1, uint64_t bytes = 0);
 /// A draw of program key into the open pass (RX_VK_PASS_TIMING=2): the run of draws of one program is timed
 void gprof_run(VkCommandBuffer cmd, uint64_t key);
+/// Level 2 subdivides the two most expensive fallback programs from the preceding reporting window.
+bool gprof_detail_fallback(uint64_t key);
+void gprof_fallback_stage(VkCommandBuffer cmd, uint64_t key, const char* stage);
 /// The slot's work completed: its spans are added to the totals
 void gprof_collect(int slot);
 /// Every 120 presents (frames of them): every 600, the report

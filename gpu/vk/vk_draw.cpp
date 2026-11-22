@@ -7907,6 +7907,8 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
     char label[32] = "";
     if (gprof_on()) snprintf(label, sizeof label, "fallback prog %016llx", (unsigned long long)p.key);
     GprofSpan span(cmd, label);
+    const bool detail = span.on && gprof_detail_fallback(p.key);
+    if (detail) gprof_fallback_stage(cmd, p.key, "prepare");
     // (the shared pair: the last fallback draw on it, of any program of this thread, has read it before it is reset)
     full_barrier(cmd);
     const uint32_t groups{(uint32_t)std::clamp(d.groups[0], 0, (int)capacity)};
@@ -7968,12 +7970,12 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
         return true;
     };
     if (p.fallback_task) {
+        if (detail) gprof_fallback_stage(cmd, p.key, "task");
         if (!send(stages[0], false)) return false;
         full_barrier(cmd);
-        if (!send(stages[1], true)) return false;
-    } else {
-        if (!send(stages[0], true)) return false;
     }
+    if (detail) gprof_fallback_stage(cmd, p.key, "mesh");
+    if (!send(stages[p.fallback_task ? 1 : 0], true)) return false;
     full_barrier(cmd);   // (the records and the draw's command, which the draw reads as indirect arguments)
     fallback_warp_counters(cmd, *f);
     return true;
