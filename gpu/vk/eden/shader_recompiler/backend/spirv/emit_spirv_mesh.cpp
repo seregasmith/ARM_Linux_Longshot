@@ -257,40 +257,42 @@ void Loop(EmitContext& ctx, Id var, Id first, Id end, u32 step, Func&& body) {
 /// The Soa layout's records (MeshFallbackLayout): record k of the workgroup's, base + k, is corner k % corners of primitive
 /// k / corners, its index byte at 4 + k. The threads take the records in turn, and each line's words are neighbours: line l of
 /// record r at H + l * fit + r.
-/// (longshot) Two loops, not unrolled: thread t takes records t, t + threads, ... below taken, and writes each one's lines in
-/// turn, so at each step the threads write one line's neighbouring words, as the unrolled form did. Unrolled, a thread had a
-/// store of its own for every line of every record it could take (348 for 126 primitives of 3 corners and 28 lines), which
-/// Mesa's Intel compiler took minutes and gigabytes over, as it did the Aos form's (MeshFallbackEpilogue)
+/// Keep the loops rolled: emitting a store for each possible corner and attribute made weak drivers compile these
+/// stages for minutes. Calculate each region's starting address once per corner and write the validity word directly.
+/// Each attribute loop then copies one line per iteration, with neighbouring lanes writing neighbouring records.
 void WriteFallbackLines(EmitContext& ctx, Id base, Id taken) {
     const MeshInfo& mesh{ctx.mesh_info};
     const u32 corners{mesh.Corners()};
-    const u32 words{FallbackRecordWords(mesh)};
-    const u32 fit{MeshFallbackFit(words)};
+    const u32 fit{MeshFallbackFit(FallbackRecordWords(mesh))};
     const u32 vertex_lines{static_cast<u32>(mesh.vertex_lines.size())};
     const u32 primitive_lines{static_cast<u32>(mesh.primitive_lines.size())};
     const Id records{PushU64(ctx, ctx.mesh_fallback_records_member_index)};
-    const Id first{ctx.OpIAdd(ctx.U32[1], ctx.Const(MESH_FALLBACK_HEADER_WORDS), base)};   // (line 0 of record base)
+    const Id first{ctx.OpIAdd(ctx.U32[1], ctx.Const(MESH_FALLBACK_HEADER_WORDS), base)};
     Loop(ctx, ctx.mesh_fallback_epilogue_word, LocalInvocation(ctx), taken, ctx.mesh_threads, [&](Id k) {
-        // (an index byte the program left unwritten is held to the vertex count)
-        const Id vertex{Clamped(ctx, ctx.OpLoad(ctx.U32[1], SharedWord(ctx, ctx.mesh_map, ctx.OpIAdd(ctx.U32[1], k, ctx.Const(4U)))),
-                                mesh.max_vertices)};
-        const Id primitive{corners == 1 ? k : ctx.OpUDiv(ctx.U32[1], k, ctx.Const(corners))};
         const Id at{ctx.OpIAdd(ctx.U32[1], first, k)};
-        Loop(ctx, ctx.mesh_fallback_epilogue_line, ctx.u32_zero_value, ctx.Const(words), 1, [&](Id word) {
-            // (word 0 the validity, 1 .. vertex_lines its vertex's lines, then its primitive's: one load, its index clamped into
-            // the region, as word 0 and the lines of the other kind ask for one past it)
-            const Id line{ctx.OpISub(ctx.U32[1], word, ctx.Const(1U))};
-            const Id of_vertex{ctx.OpULessThan(ctx.U1, line, ctx.Const(vertex_lines))};
-            const Id vertex_index{LineIndex(ctx, vertex, 0, vertex_lines, line)};
-            const Id primitive_index{LineIndex(ctx, primitive, ctx.mesh_primitive_base, primitive_lines,
-                                               ctx.OpISub(ctx.U32[1], line, ctx.Const(vertex_lines)))};
-            const Id index{Clamped(ctx, ctx.OpSelect(ctx.U32[1], of_vertex, vertex_index, primitive_index),
-                                   ctx.mesh_attribute_words)};
-            const Id line_value{LoadAttribute(ctx, index)};
-            const Id value{ctx.OpSelect(ctx.U32[1], ctx.OpIEqual(ctx.U1, word, ctx.u32_zero_value), ctx.Const(1U), line_value)};
-            StoreWord(ctx, BufferWordAt(ctx, records, ctx.OpIAdd(ctx.U32[1], at, ctx.OpIMul(ctx.U32[1], word, ctx.Const(fit)))),
-                      value);
-        });
+        StoreWord(ctx, BufferWordAt(ctx, records, at), ctx.Const(1U));
+
+        const auto write_lines = [&](Id element, u32 source_base, u32 count, u32 first_word) {
+            const Id source{LineIndex(ctx, element, source_base, count, ctx.u32_zero_value)};
+            const Id target{ctx.OpIAdd(ctx.U32[1], at, ctx.Const(first_word * fit))};
+            Loop(ctx, ctx.mesh_fallback_epilogue_line, ctx.u32_zero_value, ctx.Const(count), 1, [&](Id line) {
+                const Id index{ctx.OpIAdd(ctx.U32[1], source, ctx.OpShiftLeftLogical(ctx.U32[1], line, ctx.Const(5U)))};
+                // The vertex below is clamped and k is below taken, so both indices fit the region.
+                // Keep the old bounds check for a program that declares vertex lines but zero vertices.
+                const Id safe_index{mesh.max_vertices == 0 ? Clamped(ctx, index, ctx.mesh_attribute_words) : index};
+                const Id dest{ctx.OpIAdd(ctx.U32[1], target, ctx.OpIMul(ctx.U32[1], line, ctx.Const(fit)))};
+                StoreWord(ctx, BufferWordAt(ctx, records, dest), LoadAttribute(ctx, safe_index));
+            });
+        };
+        if (vertex_lines) {
+            const Id index{ctx.OpIAdd(ctx.U32[1], k, ctx.Const(4U))};
+            const Id vertex{Clamped(ctx, ctx.OpLoad(ctx.U32[1], SharedWord(ctx, ctx.mesh_map, index)), mesh.max_vertices)};
+            write_lines(vertex, 0, vertex_lines, 1);
+        }
+        if (primitive_lines) {
+            const Id primitive{corners == 1 ? k : ctx.OpUDiv(ctx.U32[1], k, ctx.Const(corners))};
+            write_lines(primitive, ctx.mesh_primitive_base, primitive_lines, 1 + vertex_lines);
+        }
     });
 }
 

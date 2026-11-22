@@ -125,11 +125,13 @@ def main():
     loop_head = epilogue[epilogue.index("ctx.OpLoopMerge(done, next"):]
     if "ctx.OpBranchConditional(more, body, done);" not in loop_head.split("\n")[1]:
         raise SystemExit("the epilogue loop's merge is not followed at once by its branch (spirv-val rejects anything between)")
-    # (the Soa layout's records, the default, the same: two loops, records then lines, not Strided's unrolled rounds)
+    # (the Soa layout writes validity directly, then uses rolled loops for the vertex and primitive lines)
     lines = block(mesh, "void WriteFallbackLines(")
     if "WriteFallbackLines(ctx, base, taken);" not in epilogue or "Strided(" in lines or \
             "Loop(ctx, ctx.mesh_fallback_epilogue_word, LocalInvocation(ctx), taken" not in lines or \
-            "Loop(ctx, ctx.mesh_fallback_epilogue_line, ctx.u32_zero_value, ctx.Const(words), 1" not in lines:
+            "Loop(ctx, ctx.mesh_fallback_epilogue_line, ctx.u32_zero_value, ctx.Const(count), 1" not in lines or \
+            "write_lines(vertex, 0, vertex_lines, 1);" not in lines or \
+            "write_lines(primitive, ctx.mesh_primitive_base, primitive_lines, 1 + vertex_lines);" not in lines:
         raise SystemExit("the fallback's Soa records are written unrolled, not in a loop over records and one over their lines")
     loop = block(mesh, "void Loop(")
     if "spv::LoopControlMask::DontUnroll" not in loop or "AddLocalVariable" in loop or "AddLocalVariable" in lines or \
