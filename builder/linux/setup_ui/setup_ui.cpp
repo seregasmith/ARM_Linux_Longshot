@@ -401,6 +401,7 @@ struct App {
 
     // the browser
     bool browse_files = true;     // (the .nup; else the game folder)
+    bool browse_dump_destination = false;
     std::string browse_dir, browse_err;
     std::vector<Entry> entries;
     std::vector<Place> place_list;
@@ -413,6 +414,9 @@ struct App {
     double started = 0, ended = 0;
     bool follow = true;           // (the log keeps its last line in view until scrolled up)
     bool builder_ended = false;   // (the build's process ended and its lines were read)
+    Build dump;
+    double dump_progress = 0;
+    std::string dump_result, dump_error;
 
     // ---- settings
     void load_settings() {
@@ -441,10 +445,12 @@ struct App {
     }
 
     // ---- the browser
-    void open_browser(bool files) {
+    void open_browser(bool files, bool dump_destination = false) {
         browse_files = files;
+        browse_dump_destination = dump_destination;
         place_list = places();
         std::string start = files ? (nup.empty() ? "" : setup::parent(nup)) : (out.empty() ? "" : setup::parent(out));
+        if (dump_destination) start = setup::parent(env("LONGSHOT_BUILDER_EXE"));
         if (start.empty() || !is_dir(start)) {
             const std::string dl = setup::join(home_dir(), "Downloads");
             start = files && is_dir(dl) ? dl : home_dir();
@@ -463,10 +469,56 @@ struct App {
         focus_pending = true;
     }
     void pick_folder(const std::string& folder) {
+        if (browse_dump_destination) {
+            go(Screen::Home);
+            start_dump(folder);
+            return;
+        }
         out = folder;
         save_settings();
         say("");
         go(Screen::Home);
+    }
+
+    void start_dump(const std::string& destination = {}) {
+        note("shader dump: starting for %s (destination: %s)", out.c_str(),
+             destination.empty() ? "beside the AppImage" : destination.c_str());
+        std::string err;
+        std::vector<std::string> argv{apprun, "--dump-shaders", out};
+        if (!destination.empty()) argv.push_back(destination);
+        dump_progress = 0;
+        dump_result.clear();
+        dump_error.clear();
+        if (apprun.empty() || !dump.start(argv, err)) {
+            const std::string failure = apprun.empty() ? "Open the Setup AppImage to dump shaders."
+                                                       : "Could not start the shader dump: " + err;
+            note("shader dump: %s", failure.c_str());
+            say(failure, true);
+            return;
+        }
+        say("");
+    }
+
+    void pump_dump() {
+        dump.tick();
+        const bool finished = dump.pid > 0 && dump.finished;
+        for (const auto& line : dump.take()) {
+            const auto event = setup::parse_line(line);
+            if (event.kind == Kind::Progress) {
+                dump_progress = event.a;
+                continue;
+            }
+            note("shader dump: %s", line.c_str());
+            if (event.kind == Kind::Done) dump_result = event.text;
+            else if (event.kind == Kind::Error || event.kind == Kind::Log) dump_error = event.text;
+        }
+        if (!finished) return;
+        dump.join();
+        note("shader dump: ended (status %d%s)", dump.status, dump.stopped ? ", cancelled" : "");
+        if (WIFEXITED(dump.status) && WEXITSTATUS(dump.status) == 0 && !dump_result.empty())
+            say("Shader dump saved to " + dump_result);
+        else if (dump.stopped) say("Shader dump cancelled.");
+        else say(dump_error.empty() ? "Could not save a shader dump." : dump_error, true);
     }
 
     // ---- the build
@@ -539,6 +591,7 @@ struct App {
     }
 
     void pump() {
+        pump_dump();
         for (auto& l : build.take()) feed(l);
         build.tick();
         if (build.pid > 0 && build.finished && !builder_ended) {
@@ -796,6 +849,9 @@ void draw_home(App& app) {
     dim_text("Builds The Legend of Zelda: Ocarina of Time (Nintendo Switch 2) for this device from your own copy of the game.");
     ImGui::Dummy(ImVec2(0, em(app, 0.4f)));
 
+    const bool dumping = app.dump.pid > 0;
+    ImGui::BeginDisabled(dumping);
+
     std::string nup_note;
     bool nup_bad = false;
     if (!app.nup.empty()) {
@@ -830,6 +886,18 @@ void draw_home(App& app) {
     ImGui::EndDisabled();
     ImGui::SameLine();
     if (big_button(app, "Quit", false, em(app, 5))) app.quit = true;
+    ImGui::EndDisabled();
+
+    if (dumping) {
+        ImGui::ProgressBar((float)std::clamp(app.dump_progress, 0.0, 1.0), ImVec2(-1, 0), "Dumping shaders");
+        ImGui::BeginDisabled(app.dump.stopped);
+        if (big_button(app, "Cancel dump", false, em(app, 8))) app.dump.stop();
+        ImGui::EndDisabled();
+    } else if (built) {
+        if (big_button(app, "Dump Shaders", false, em(app, 9))) app.start_dump();
+        ImGui::SameLine();
+        if (big_button(app, "Choose dump folder", false, em(app, 11))) app.open_browser(false, true);
+    }
 
     if (!app.message.empty()) {
         ImGui::Dummy(ImVec2(0, em(app, 0.2f)));
@@ -1114,6 +1182,13 @@ void draw_build(App& app) {
         if (big_button(app, "Add to Steam", false, em(app, 8))) app.add_to_steam();
         ImGui::SameLine();
         if (big_button(app, "Back", false, em(app, 6))) app.go(Screen::Home);
+        if (is_file(setup::join(app.out, "cache/longshot_shader_dump_source.json"))) {
+            ImGui::SameLine();
+            if (big_button(app, "Dump Shaders", false, em(app, 9))) {
+                app.go(Screen::Home);
+                app.start_dump();
+            }
+        }
         hints(app, "A  choose      B  back      D-pad  move");
         if (back_pressed()) app.go(Screen::Home);
     } else {
@@ -1535,18 +1610,19 @@ int main(int argc, char** argv) {
     bool exposed = false;
     long frames = 0;
     note("running");
-    while (!app.quit || app.build.running()) {
+    while (!app.quit || app.build.running() || app.dump.pid > 0) {
         if (app.quitting && app.build.running() && app.build.stop_at < 0) app.build.stop();
         SDL_Event ev;
         // (idle: a few frames a second, woken by input; the build's lines come at least every 100 ms; held buttons and
         // drags keep every frame, for ImGui's key repeat and scrolling)
         const bool wait = held <= 0 && busy_frames <= 0;
-        bool got = wait ? SDL_WaitEventTimeout(&ev, app.build.running() ? 100 : 250) != 0 : SDL_PollEvent(&ev) != 0;
+        bool got = wait ? SDL_WaitEventTimeout(&ev, app.build.running() || app.dump.running() ? 100 : 250) != 0 : SDL_PollEvent(&ev) != 0;
         while (got) {
             ImGui_ImplSDL2_ProcessEvent(&ev);
             switch (ev.type) {
             case SDL_QUIT:
                 note("quit asked (window closed, or Steam)");
+                if (!app.dump.stopped) app.dump.stop();
                 app.quit = true;
                 break;
             case SDL_CONTROLLERDEVICEADDED: {
@@ -1589,7 +1665,7 @@ int main(int argc, char** argv) {
         SDL_RenderPresent(app.renderer);
         if (++frames == 1) note("first frame drawn");
         if (busy_frames > 0) busy_frames--;
-        if (app.quit && !app.build.running()) break;
+        if (app.quit && !app.build.running() && app.dump.pid < 0) break;
     }
     app.build.join();
     note("closed after %ld frames", frames);

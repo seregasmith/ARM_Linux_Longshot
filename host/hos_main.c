@@ -2512,6 +2512,7 @@ static void driver_cache_room(void) {
     setenv("MESA_SHADER_CACHE_MAX_SIZE", "10G", 0);
 }
 #include <errno.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 /* (longshot, linux) NVIDIA's driver keeps no shader cache at all when __GL_SHADER_DISK_CACHE_PATH names a folder that does not exist:
    it neither creates it nor falls back to ~/.cache/nvidia, and every start compiles every pipeline again (a test of 300 pipelines:
@@ -2572,6 +2573,24 @@ static void driver_cache_shared(void) {
              "vk: Mesa's shader cache in %.300s, the same for every start of this game (%s%.400s; a folder named by hand is "
              "kept)", path, steam ? "in place of Steam's for this entry, " : "none was named", was);
     fprintf(stderr, "%s\n", driver_cache_said);
+}
+
+/* A dump reads a stable snapshot. Hold the shared install lock before Vulkan can change the cache. */
+static int shader_dump_launch_allowed(void) {
+    char path[4096];
+    const DWORD n = hos_game_path_a(path, sizeof path);
+    const char lock[] = "/cache/.shader-dump.lock";
+    if (!n || n >= sizeof path) return 1;
+    char *slash = strrchr(path, '/');
+    if (!slash || (size_t)(slash - path) + sizeof lock > sizeof path) return 1;
+    memcpy(slash, lock, sizeof lock);
+    const int fd = open(path, O_RDONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (fd < 0) return 1;   /* A read-only install can still play. */
+    if (flock(fd, LOCK_SH | LOCK_NB) == 0) return 1;   /* Keep the descriptor open for this process. */
+    const int busy = errno == EWOULDBLOCK || errno == EAGAIN;
+    close(fd);
+    if (busy) fprintf(stderr, "A shader dump is in progress. Launch Longshot after it finishes.\n");
+    return !busy;
 }
 /* (longshot, linux) The variables a Vulkan driver, its loader and the layers read, as this process has them once the
    functions above are done, said in the game's log by driver_env_log. Two Steam entries of one game can start it with other
@@ -2641,6 +2660,7 @@ int main(int argc, char **argv) {
     int hos_display_init(void);
     void hos_display_loop(void);
     hos_game_layout();   /* (the game folder's cache/ and logs/, before anything writes there, --prepare-shaders too: host/game_layout.c) */
+    if (!shader_dump_launch_allowed()) return 1;
     {
         void hos_relaunch_keep_env(void);   /* (host/hos_relaunch.c: whether the game was given a stderr, for a restart) */
         hos_relaunch_keep_env();

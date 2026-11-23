@@ -40,6 +40,7 @@ import json
 import locale
 import ntpath
 import os
+from pathlib import Path
 import queue
 import re
 import shutil
@@ -65,6 +66,7 @@ import object_store as _object_store
 import lift_store as _lift_store
 import build_jobs as _build_jobs
 import game_title
+import shader_dump
 import log_redact as _log_redact
 # (longshot) RX_TARGET=windows on Linux: the Windows game, with llvm-mingw's Linux release (LONGSHOT_MINGW, or llvm-mingw
 # beside the builder), to run under Proton or copy to a Windows PC
@@ -1694,10 +1696,21 @@ def prepare_shaders(cmd, folder=None, silence=PREPARE_SILENCE):
     some GPUs): longshot --prepare-shaders (host/hos_main.c, gpu/vk/vk_main.cpp), the same work as that first start, in
     the game's folder and environment, as the builders' Play starts it. A PC whose Vulkan can't (exit 3), a run silent for `silence` seconds (then stopped), or
     any other failure leaves the work to the first start: never a failed build. Returns its exit code (None: stopped)"""
+    report = None
+
+    def show(line):
+        nonlocal report
+        if line.startswith(shader_dump.PREPARED):
+            report = line[len(shader_dump.PREPARED):]
+            return None
+        return show_prepared(line)
+
     try:
+        if sys.platform == "linux" and folder:
+            (Path(folder) / "cache" / shader_dump.SOURCE).unlink(missing_ok=True)
         # (a count asked for: the game started on that many CPUs, which its preparation's pools follow; nx2/build_jobs.py)
         with _build_jobs.children_on_cpus(_build_jobs.asked()):
-            code = run(cmd, check=False, show=show_prepared, cwd=folder or os.path.dirname(cmd[0]) or None,
+            code = run(cmd, check=False, show=show, cwd=folder or os.path.dirname(cmd[0]) or None,
                        base=game_env(), silence=silence)
     except OSError as e:
         not_prepared(str(e))
@@ -1710,6 +1723,12 @@ def prepare_shaders(cmd, folder=None, silence=PREPARE_SILENCE):
         not_prepared("the GPU driver stopped responding")
     elif code:
         not_prepared("the game stopped with exit status %d" % code)
+    elif report and folder:
+        import version
+        try:
+            shader_dump.record_preparation(Path(folder), report, version.describe(ROOT))
+        except (OSError, ValueError) as e:
+            print("Shader dump metadata could not be saved: %s" % e, flush=True)
     return code
 
 
@@ -3601,6 +3620,13 @@ def cli():
                     pass
             a = parse_args()
             stack.enter_context(build_log(a.log))
+            if sys.platform == "linux" and not a.check and (a.update or a.out):
+                try:
+                    cache = Path(a.update or a.out) / "cache"
+                    cache.mkdir(parents=True, exist_ok=True)
+                    stack.enter_context(shader_dump.cache_lock(cache / ".shader-dump.lock", exclusive=False))
+                except shader_dump.DumpError as e:
+                    fail(str(e))
             main(a)
         except SystemExit as e:
             # (fail() exits with a number: it already said @@error. A library's SystemExit (toolchain.need) carries its message as

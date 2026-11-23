@@ -81,6 +81,7 @@
 #include "skip_code.h"
 #include "driver_faults.h"
 #include "driver_cache_env.h"   // (the drivers' own caches as the environment chooses them, Linux)
+#include "spirv_pack.h"
 #include "fallback_size_policy.h"
 #include "fallback_lanes.h"
 #include "translate_wait.h"
@@ -11495,6 +11496,28 @@ std::vector<NoteRef> start_note_refs(bool take) {
     return std::move(k.refs);
 }
 
+/// Give the Builder the identity of the Vulkan device that prepared the install-local Mesa cache.
+static void shader_dump_prepared() {
+#ifndef _WIN32
+    if (!env_on("LONGSHOT_PREPARE_ONLY") || dev.driver_id != VK_DRIVER_ID_MESA_TURNIP || driver_faults() ||
+        driver_cache_env::mesa_yes(getenv, "MESA_SHADER_CACHE_DISABLE") ||
+        driver_cache_env::mesa_layout_asked(getenv) != "mesa_shader_cache_sf") return;
+    std::error_code ec;
+    const auto base = std::filesystem::canonical(driver_cache_env::mesa_base(getenv).path, ec);
+    if (ec) return;
+    const auto install_cache = std::filesystem::canonical(cache_path("driver"), ec);
+    if (ec || base != install_cache) return;
+    const std::string store = spirv_pack::default_dir();
+    if (!store.empty() && (store.front() != '/' || store.find_first_of("\r\n\t") != std::string::npos)) return;
+    char uuid[2 * VK_UUID_SIZE + 1]{};
+    for (size_t i = 0; i < VK_UUID_SIZE; i++) snprintf(uuid + 2 * i, 3, "%02x", (unsigned)dev.props.pipelineCacheUUID[i]);
+    printf("@@shader_dump %u\t%u\t%u\t%u\t%s\t%016llx\t%s\t%s\t%s\t%s\n", dev.props.vendorID, dev.props.deviceID,
+           (unsigned)dev.driver_id, dev.props.driverVersion, uuid, (unsigned long long)program_cache_stamp(),
+           compile_all() ? "all" : "most", env_on("RX_VK_PROGRAM_CACHE_ZSTD") ? "HSP2" : "HSP1", store.c_str(), dev.driver.driverInfo);
+    fflush(stdout);
+#endif
+}
+
 /// (longshot, RX_VK_LOAD=create) The first start after a preparation: every noted pipeline built into the pipeline cache and let
 /// go, so that the loads at the programs' create calls find each one there and never meet a pipeline the prepare should have
 /// compiled. The precompile does the same by keeping them all ready, which is the memory RX_VK_LOAD=create is there to save
@@ -11628,6 +11651,7 @@ void precompile_warm(void (*progress)(size_t done, size_t total)) {
             precompile_built_whole();
         driver_env_note();
         crash_markers::end(warming);
+        if (total && !failed && !computes_failed && !no_program) shader_dump_prepared();
     }
     logf("vk: precompile: %zu noted pipelines of %zu programs and %zu compute pipelines of %zu compute programs built into the "
          "pipeline cache and let go (%zu and %zu not made, %zu whose program variant is not kept), on %u threads in %.1f s (the "
@@ -11799,6 +11823,7 @@ void precompile_at_create(void (*progress)(size_t done, size_t total)) {
              precompile_save::said(pcache_save_outcome).c_str(),
              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s0).count());
     }
+    if (!gone_on && !prepare_stopped() && kept_pipes && !kept_cold) shader_dump_prepared();
     if (const std::string memory = start_memory_words(); !memory.empty()) logf("vk: precompile: load at create done%s", memory.c_str());
     predicted_check();
 }

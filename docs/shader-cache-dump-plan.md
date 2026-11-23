@@ -1,5 +1,17 @@
 # Shader cache dump and restore
 
+## Export support
+
+The first implementation exports from a completed Turnip preparation that records compatibility
+metadata and uses the install-local Mesa single-file cache (`MESA_DISK_CACHE_SINGLE_FILE=1`). Open Setup
+with the game closed and choose **Dump Shaders**. The CLI equivalent is
+`Longshot.AppImage --dump-shaders <game folder> [destination]`. Export uses the SPIR-V store recorded
+at preparation time. For older installs, Setup can recover the driver identity from a completed game
+log when the driver, Mesa cache UUID, and shader seed match the existing preparation stamp. Export
+does this offline, without building or compiling shaders. Setup logs export diagnostics in
+`Longshot-logs/setup-window.log` next to the AppImage by default. Restore and cache-only launch are
+planned separately.
+
 ## Setup workflow
 
 1. Open the Linux Setup AppImage, select the `.nup`, and build. Setup prepares shaders normally and
