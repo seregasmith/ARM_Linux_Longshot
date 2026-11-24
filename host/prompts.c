@@ -7,8 +7,8 @@
 
    The face: longshot_options.ini's button_prompts (the menu's Button prompts row): 0 Auto, from the first controller's type and name
    (SDL; with none, and none through XInput, the keyboard's), else 1 Switch, 2 Xbox, 3 PlayStation 4, 4 PlayStation 5, 5 Steam
-   Deck, 6 Keyboard. The keyboard face (nx2/prompt_keys.py) points each Switch button at the icon of the first key bound to it,
-   the sticks at the keys that move (the Controls page's: stick_shows) and the mouse that turns the camera, and keeps the
+   Deck, 6 Keyboard. Without a saved choice, the game uses Xbox. The keyboard face (nx2/prompt_keys.py) points each Switch button
+   at the icon of its first bound key. It shows the keys that move (stick_shows) and the mouse that turns the camera, and keeps the
    Switch's textures and the Talk ring's places. The game reads the font once, at its start; a new face or new controls are
    written where it keeps it, and its texts drawn again (the live part, below).
 
@@ -79,7 +79,7 @@ static const char *const faces[HOS_PROMPT_N] = {"switch", "xbox", "ps4", "ps5", 
 /* the Switch buttons' code points in the font, in HOS_SW_* order (nx2/prompt_assets.py SWITCH) */
 static const uint16_t switch_code[HOS_SW_N] = {0xE040, 0xE041, 0xE042, 0xE043, 0xE056, 0xE057, 0xE044, 0xE045,
                                                0xE046, 0xE047, 0xE04B, 0xE04C, 0xE062, 0xE060, 0xE063, 0xE061};
-/* the pad input whose icon an unbound Switch button shows (nx2/prompt_assets.py DEFAULT: host/nn_hid.c's default controls) */
+/* the pad input whose icon an unbound Switch button shows (nx2/prompt_assets.py DEFAULT: Nintendo's layout) */
 static const unsigned char switch_pad[HOS_SW_N] = {
     HOS_PAD_EAST, HOS_PAD_SOUTH, HOS_PAD_NORTH, HOS_PAD_WEST, HOS_PAD_LSTICK, HOS_PAD_RSTICK, HOS_PAD_LSHOULDER,
     HOS_PAD_RSHOULDER, HOS_PAD_LTRIGGER, HOS_PAD_RTRIGGER, HOS_PAD_START, HOS_PAD_BACK, HOS_PAD_LEFT, HOS_PAD_UP,
@@ -200,7 +200,7 @@ static int auto_face(const char *name, int sdl, int type) {
 /* HOS_PROMPT_* (faces[]) */
 static int choose_face(const char *dir) {
     char path[MAX_PATH], line[80];
-    int choice = 0;
+    int choice = HOS_PROMPT_XBOX + 1;
     snprintf(path, sizeof path, "%sprompts/keyboard", dir);
     keyboard_built = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
     FILE *f = fopen(hos_options_file(), "r");   /* (host/options_path.c) */

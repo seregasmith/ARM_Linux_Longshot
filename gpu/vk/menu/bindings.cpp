@@ -19,7 +19,7 @@ namespace mkwvk {
 #ifndef MENU_LAYOUT_ONLY
 static_assert(HOS_PROMPT_N == 6, "the Button prompts row's top (its .hi below) is HOS_PROMPT_N, vk_api.h");
 bool can_bind() { return host && host->binding && host->bind && host->pad_raw; }
-// (the Switch's buttons on a Switch pad's own: host/nn_hid.c pad_default, in HOS_SW_*'s order)
+// The Switch buttons at their positions on a Switch controller, in HOS_SW_* order.
 constexpr int kPadOwn[HOS_SW_N] = {HOS_PAD_EAST, HOS_PAD_SOUTH, HOS_PAD_NORTH, HOS_PAD_WEST, HOS_PAD_LSTICK, HOS_PAD_RSTICK,
                                    HOS_PAD_LSHOULDER, HOS_PAD_RSHOULDER, HOS_PAD_LTRIGGER, HOS_PAD_RTRIGGER, HOS_PAD_START,
                                    HOS_PAD_BACK, HOS_PAD_LEFT, HOS_PAD_UP, HOS_PAD_RIGHT, HOS_PAD_DOWN};
@@ -41,7 +41,7 @@ void apply_pad_layout(int layout) {
     }
     static const int face[4] = {HOS_SW_A, HOS_SW_B, HOS_SW_X, HOS_SW_Y};
     static const int want[3][4] = {
-        {HOS_PAD_EAST, HOS_PAD_SOUTH, HOS_PAD_NORTH, HOS_PAD_WEST},   // Nintendo (Default: Bottom=B, Right=A, Top=X, Left=Y)
+        {HOS_PAD_EAST, HOS_PAD_SOUTH, HOS_PAD_NORTH, HOS_PAD_WEST},   // Nintendo (Bottom=B, Right=A, Top=X, Left=Y)
         {HOS_PAD_SOUTH, HOS_PAD_EAST, HOS_PAD_WEST, HOS_PAD_NORTH},   // Xbox / PC Standard (Bottom=A, Right=B, Left=X, Top=Y)
         {HOS_PAD_SOUTH, HOS_PAD_EAST, HOS_PAD_NORTH, HOS_PAD_WEST},   // Swap Face Buttons (Bottom=A, Right=B, Top=X, Left=Y)
     };
@@ -78,7 +78,7 @@ int detect_pad_layout() {
 
 namespace {
 const char* tx_pad_layout(int v) {
-    static const char* t[] = {"Nintendo (Def)", "Xbox / PC", "Swap Face", "Switch 2 Pro", "Custom"};
+    static const char* t[] = {"Nintendo", "Xbox / PC", "Swap Face", "Switch 2 Pro", "Custom"};
     return t[std::min(std::max(v, 0), 4)];
 }
 #ifndef MENU_LAYOUT_ONLY

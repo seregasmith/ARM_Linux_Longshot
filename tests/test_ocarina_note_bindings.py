@@ -134,7 +134,7 @@ int main(int argc, char **argv) {
     hos_bind(HOS_BIND_PAD, HOS_KEY_OC_NOTE_R, 0, HOS_PAD_RSHOULDER);
     hos_bind(HOS_BIND_PAD, HOS_SW_B, 0, HOS_PAD_RSHOULDER);
     CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_B, 0) == HOS_PAD_RSHOULDER
-          && hos_binding(HOS_BIND_PAD, HOS_SW_R, 0) == HOS_PAD_SOUTH   /* r gives up RSHOULDER for B's old SOUTH */
+          && hos_binding(HOS_BIND_PAD, HOS_SW_R, 0) == HOS_PAD_EAST   /* R takes B's old input */
           && hos_binding(HOS_BIND_PAD, HOS_KEY_OC_NOTE_R, 0) == HOS_PAD_RSHOULDER);   /* the note row is untouched */
     /* ...and a note row can hold the same pad input as a Switch row, with no swap */
     hos_bind(HOS_BIND_PAD, HOS_KEY_OC_NOTE_R, 0, HOS_PAD_EAST);
@@ -163,7 +163,7 @@ class OcarinaNoteBindingsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="longshot-note-bindings-") as tmp:
             tmp = Path(tmp)
             (tmp / "longshot_options.ini").write_text(
-                "key_move_up=90,0\npad_a=5\nkey_note_y=78,0\n", encoding="utf-8")
+                "options_version=8\nkey_move_up=90,0\npad_a=5\nkey_note_y=78,0\n", encoding="utf-8")
             (tmp / "t.c").write_text(PRELUDE + code + MAIN, encoding="utf-8")
             binary = tmp / ("t.exe" if sys.platform == "win32" else "t")
             build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-Wno-unused-function", "-I", str(ROOT / "gpu" / "vk"), "-I", str(ROOT / "host"),

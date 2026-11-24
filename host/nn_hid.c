@@ -1,5 +1,5 @@
 /* nn::hid: one Pro Controller (FullKey style) on Npad No.1, from every XInput gamepad and the keyboard and mouse at
-   once. Buttons map by position (the Xbox bottom face button is the Switch's bottom one, B).
+   once. The Xbox / PC layout puts A at the bottom, B on the right, X on the left, and Y at the top.
 
    (longshot) What presses each button, on a gamepad and on the keyboard, is the player's: the Insert menu's Controls
    page (gpu/vk/vk_menu.cpp) changes it, kept in longshot_options.ini (binds_load). The defaults:
@@ -558,7 +558,7 @@ static const char *const bind_names[HOS_KEY_N] = {"a", "b", "x", "y", "ls", "rs"
                                                   "cam_right", "note_l", "note_r", "note_a", "note_y", "note_x", "walk", "toggle_hud",
                                                   "sprint"};
 static const signed char pad_default[HOS_SW_N] = {
-    HOS_PAD_EAST, HOS_PAD_SOUTH, HOS_PAD_NORTH, HOS_PAD_WEST, HOS_PAD_LSTICK, HOS_PAD_RSTICK, HOS_PAD_LSHOULDER,
+    HOS_PAD_SOUTH, HOS_PAD_EAST, HOS_PAD_WEST, HOS_PAD_NORTH, HOS_PAD_LSTICK, HOS_PAD_RSTICK, HOS_PAD_LSHOULDER,
     HOS_PAD_RSHOULDER, HOS_PAD_LTRIGGER, HOS_PAD_RTRIGGER, HOS_PAD_START, HOS_PAD_BACK, HOS_PAD_LEFT, HOS_PAD_UP,
     HOS_PAD_RIGHT, HOS_PAD_DOWN};
 static int is_note_row(int i) { return i >= HOS_KEY_OC_NOTE_L && i <= HOS_KEY_OC_NOTE_X; }
@@ -638,6 +638,7 @@ static void binds_load(void) {
     if (f) {
         char line[80];
         int version = 0, had_keys = 0, walk_named = 0;   /* (options_version: 3 since the mouse's buttons are bindings) */
+        unsigned saved_face = 0;
         while (fgets(line, sizeof line, f)) {
             char *eq = strchr(line, '=');
             if (!eq) continue;
@@ -657,6 +658,7 @@ static void binds_load(void) {
                 const char *comma = strchr(eq + 1, ',');
                 walk_named |= keys && i == HOS_KEY_WALK;
                 if (pad) {
+                    if (i <= HOS_SW_Y) saved_face |= 1u << i;
                     pad_bind[i][0] = pad_code(eq + 1);
                     pad_bind[i][1] = comma ? pad_code(comma + 1) : -1;
                 } else {
@@ -667,6 +669,12 @@ static void binds_load(void) {
             }
         }
         fclose(f);
+        /* Older files with some saved face buttons used the Nintendo layout for the omitted buttons. */
+        if (version < 8 && saved_face) {
+            static const int nintendo[] = {HOS_PAD_EAST, HOS_PAD_SOUTH, HOS_PAD_NORTH, HOS_PAD_WEST};
+            for (int i = HOS_SW_A; i <= HOS_SW_Y; ++i)
+                if (!(saved_face & (1u << i))) pad_bind[i][0] = nintendo[i];
+        }
         /* An options file from before version 3 wrote key_y and key_zl without the mouse's buttons, which pressed Y and ZL
            by themselves then: they go into the second slot when it is empty and no other control has them */
         if (version < 3 && had_keys) {

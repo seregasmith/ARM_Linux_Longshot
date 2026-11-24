@@ -82,9 +82,7 @@ static int pad_bind[HOS_KEY_N][2] = {[HOS_KEY_TOGGLE_HUD] = {-1, -1}};
 static int sampled_pad(int i, int k) { return pad_bind[i][k]; }
 static LONG hud_bind_generation;
 static uint64_t oc_consumed_pads;
-static volatile LONG pad_count_now;
 static int sprint_now;   /* (Sprint's gamepad input, read with the pads: tests/test_sprint.py) */
-enum { SPRINT_PAD = 2 };
 static int sprint_read(void) { return sprint_now; }
 """
 
@@ -105,7 +103,7 @@ int main(void) {
     for (int i = 0; i < HOS_SW_N; i++) pad_bind[i][0] = pad_default[i], pad_bind[i][1] = -1;
     int32_t s[4];
     CHECK(game(s) == 0);
-    pads_down = PAD(SOUTH); CHECK(game(s) == SW(B));   /* (by position: the bottom face button is the Switch's B) */
+    pads_down = PAD(SOUTH); CHECK(game(s) == SW(A));
     pads_down = 0; CHECK(game(s) == 0);
 
     /* Sprint held through closing the menu waits for release, even while moving. */
@@ -116,10 +114,10 @@ int main(void) {
     menu_open = 0; CHECK(game(s) == 0 && sprint_now == 0 && s[0] == 30000);
     CHECK(game(s) == 0 && sprint_now == 0);
     pads_down = 0; CHECK(game(s) == 0 && sprint_now == 0);
-    pads_down = PAD(LSTICK); CHECK(game(s) == 0 && sprint_now == SPRINT_PAD);
+    pads_down = PAD(LSTICK); CHECK(game(s) == 0 && sprint_now == (SPRINT_PAD | SPRINT_L3));
     pads_down = 0; pads_stick[0] = 0; CHECK(game(s) == 0);
 
-    /* A trigger that stays down through the menu (worn, or past its rest), the menu closed with East (A) */
+    /* A trigger that stays down through the menu, which the player closes with East (B). */
     menu_open = 1;
     pads_down = PAD(LTRIGGER); CHECK(game(s) == 0);
     pads_stick[0] = 30000; pads_down |= PAD(EAST); CHECK(game(s) == 0 && s[0] == 0);   /* (the menu's own, sticks too) */
@@ -128,8 +126,8 @@ int main(void) {
     CHECK(s[0] == 30000);                   /* the sticks count at once, */
     pads_down = PAD(LTRIGGER); pads_stick[0] = 0;
     CHECK(game(s) == 0);
-    pads_down |= PAD(SOUTH); CHECK(game(s) == SW(B));   /* and another button counts with the trigger still down, */
-    pads_down = PAD(LTRIGGER) | PAD(EAST); CHECK(game(s) == SW(A));   /* also the one that closed it, pressed again */
+    pads_down |= PAD(SOUTH); CHECK(game(s) == SW(A));   /* and another button counts with the trigger still down, */
+    pads_down = PAD(LTRIGGER) | PAD(EAST); CHECK(game(s) == SW(B));   /* also the one that closed it, pressed again */
     pads_down = 0; CHECK(game(s) == 0);
     pads_down = PAD(LTRIGGER); CHECK(game(s) == SW(ZL));   /* the trigger once it was let go */
     pads_down = 0; CHECK(game(s) == 0);
@@ -139,13 +137,13 @@ int main(void) {
     menu_open = 0; pads_down = PAD(EAST); CHECK(game(s) == 0);
     CHECK(game(s) == 0);
     pads_down = 0; CHECK(game(s) == 0);
-    pads_down = PAD(EAST); CHECK(game(s) == SW(A));
+    pads_down = PAD(EAST); CHECK(game(s) == SW(B));
     pads_down = 0; CHECK(game(s) == 0);
 
     /* Something resting on a second pad: its button waits, the first pad's count */
     menu_open = 1; pads_down = PAD(NORTH); CHECK(game(s) == 0);
     menu_open = 0; CHECK(game(s) == 0);
-    pads_down |= PAD(WEST) | PAD(DOWN); CHECK(game(s) == (SW(Y) | SW(DOWN)));
+    pads_down |= PAD(WEST) | PAD(DOWN); CHECK(game(s) == (SW(X) | SW(DOWN)));
     pads_down = 0; CHECK(game(s) == 0);
     puts("PASS: after the Insert menu each pad input waits until let go; the others and the sticks count at once");
     return 0;
@@ -170,6 +168,7 @@ def main():
         block(hid, "static const signed char pad_default[HOS_SW_N] =") + ";",
         block(hid, "static void stick_max("), block(hid, "static uint64_t hud_pad_mask("),
         block(hid, "static uint64_t bound_pad_buttons("), state,
+        block(hid, "enum { SPRINT_KEY") + ";",
         block(hid, "static int pad_sprint_down("),
         block(hid, "void hos_filter_stick("),
         # (the XInput code before pads_read: its thread and its reading; never started here, SDL has the pads)

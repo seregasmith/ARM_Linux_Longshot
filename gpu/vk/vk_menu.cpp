@@ -1102,7 +1102,7 @@ void save() {
         // Menu shortcut "Insert, F1 or Esc" by default, see menu_init; 6: the Aspect ratio's 16:9 from before moves on a
         // screen narrower than 16:9, see menu_init and host/hos_wide_size.h; 7: Sprint's Toggle on by default, see
         // menu_init)
-        fprintf(f, "options_version=7\n");
+        fprintf(f, "options_version=8\n");
         fputs(others.c_str(), f);
         if (!can_bind()) fputs(kept.c_str(), f);
         else if (const int sprint_auto = host->binding(HOS_BIND_SPRINT_AUTO, 0, 0))
@@ -5337,7 +5337,7 @@ void menu_tick() {
                         rebind_control(ask.row, ask.set, ask.slot, ask.code, ask.conflicts);
                     else if (ask.action == ControlAction::ResetAll) {
                         host->bind(HOS_BIND_PAD, -1, 0, 0);
-                        opts.pad_layout = 0;
+                        opts.pad_layout = detect_pad_layout();
                         opts.hold_toggle = 0;
                         toggle_set(HOS_KEY_SPRINT, toggle_default(HOS_KEY_SPRINT));
                         if (opts.sprint) apply_sprint_layout(true);

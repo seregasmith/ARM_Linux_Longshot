@@ -113,7 +113,7 @@ struct Options {
     int ds_hd_haptics = 1;   // (longshot) DualSense HD Haptics: its speaker and triggers too, 1 on (HOS_OPT_DS_HD_HAPTICS)
     int stick_dead_zone = 0;  // circular stick cutoff: 0 XInput's 7849 (~24%), 1..5 5% to 30% (host/nn_hid.c)
     int hold_toggle = 0;  // enabled Switch buttons (1 << HOS_SW_*); persisted as toggle_<button>, not one mask entry
-    int pad_layout = 0;   // 0 Nintendo (default), 1 Xbox / PC, 2 Swap Face Buttons, 3 Switch 2 Pro (every button the pad's own), 4 Custom
+    int pad_layout = 1;   // 0 Nintendo, 1 Xbox / PC, 2 Swap Face Buttons, 3 Switch 2 Pro (every button the pad's own), 4 Custom
     int pad_menu = 1;     // the controller's button that opens and closes the Insert menu: 0 none, 1 Home, 2 GL, 3 GR (the back buttons)
     int gyro = 1;         // motion controls from a pad's gyroscope (host/pad_sdl.c, host/hos_motion.h); on by default
     int gyro_sens_x = 100;   // the motion aim's horizontal sensitivity in percent
@@ -129,7 +129,7 @@ struct Options {
     // where each kind of sound plays, host/audio_source.h's classes in order from Navi's voice: 0 Off (the game's
     // sound alone), 1 the controller only, 2 the controller and the TV
     int pad_speaker[12] = {1, 2, 1, 2, 1, 2, 2, 1, 1, 1, 1, 1};
-    int prompts = 0;      // the button icons: 0 Auto (the controller), 1 Switch, 2 Xbox, 3 PS4, 4 PS5, 5 Steam Deck (host/prompts.c)
+    int prompts = 2;      // the button icons: 0 Auto (the controller), 1 Switch, 2 Xbox, 3 PS4, 4 PS5, 5 Steam Deck, 6 Keyboard (host/prompts.c)
     int robust = 0;       // bounds-checked buffer access: 0 Auto (on), 1 Off, 2 On (gpu/vk/vk_main.cpp; RX_VK_ROBUST)
     int present_queue = 0;   // (longshot) Present queue (Debug tab): 0 Off, 1 On, the presents on a compute family's queue of
                              // their own (gpu/vk/vk_main.cpp create_device; RX_VK_PRESENT_QUEUE over it). Read once, at the start

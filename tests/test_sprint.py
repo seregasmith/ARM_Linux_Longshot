@@ -58,7 +58,7 @@ int main(int argc, char **argv) {
         CHECK(hos_binding(HOS_BIND_SPRINT_ON, 0, 0) == 0);   /* (no sprint= line: off) */
         sprint_layout(1);
         CHECK(KEY(S) == VK_SHIFT && PAD(S) == HOS_PAD_LSTICK);
-        CHECK(KEY(HOS_SW_B) == 'V' && PAD(HOS_SW_B) == HOS_PAD_SOUTH);
+        CHECK(KEY(HOS_SW_B) == 'V' && PAD(HOS_SW_B) == HOS_PAD_EAST);
         CHECK(PAD(HOS_SW_LS) == -1 && PAD2(HOS_SW_LS) == -1 && KEY(HOS_SW_LS) == VK_CONTROL);
         CHECK(hos_binding(HOS_BIND_SPRINT_ON, 0, 0) == 1);   /* (on, the layout whole) */
         sprint_layout(1);   /* (on again: nothing moves) */
@@ -71,11 +71,11 @@ int main(int argc, char **argv) {
         /* a gamepad input bound to Sprint trades places with the Switch button that had it */
         sprint_layout(1);
         hos_bind(HOS_BIND_PAD, S, 0, HOS_PAD_SOUTH);
-        CHECK(PAD(S) == HOS_PAD_SOUTH && PAD(HOS_SW_B) == HOS_PAD_LSTICK);
+        CHECK(PAD(S) == HOS_PAD_SOUTH && PAD(HOS_SW_A) == HOS_PAD_LSTICK);
         hos_bind(HOS_BIND_KEY, S, 1, 'E');   /* a key bound to Sprint is taken from the button that had it */
         CHECK(KEY2(S) == 'E' && KEY(HOS_SW_A) == 0);
         hos_bind(HOS_BIND_PAD, HOS_KEY_MOVE_UP, 0, HOS_PAD_NORTH);   /* no gamepad input for a keys-only control */
-        CHECK(PAD(HOS_KEY_MOVE_UP) == -1 && PAD(HOS_SW_X) == HOS_PAD_NORTH);
+        CHECK(PAD(HOS_KEY_MOVE_UP) == -1 && PAD(HOS_SW_X) == HOS_PAD_WEST);
         hos_bind(HOS_BIND_KEY, -1, 0, 0);   /* Reset to defaults: Sprint's go (the menu then lays them out again) */
         CHECK(KEY(S) == 0 && PAD(S) == -1 && KEY(HOS_SW_B) == VK_SHIFT && PAD(HOS_SW_LS) == HOS_PAD_LSTICK);
     } else if (!strcmp(which, "ls-two")) {   /* LS has a second gamepad input: it keeps it */

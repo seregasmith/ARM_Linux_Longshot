@@ -159,8 +159,8 @@ after a restart, only on some GPUs or builds, only while HDR is on, or set for y
 | | Vibration strength | 25% to 200%, in steps of 25 | 100% |
 | | Test vibration | an action: Confirm buzzes the controller used last; the value says what plays it | Motors |
 | | DualSense HD Haptics | On, Off | On |
-| | Layout preset | Nintendo (Def), Xbox / PC, Swap Face, Switch 2 Pro; Custom once you bind a button yourself (on the Controls page) | Nintendo (Def) |
-| | Button prompts | Auto, Switch, Xbox, PlayStation 4, PlayStation 5, Steam Deck, Keyboard (on the Controls page; changes at once where the game allows it, else after a restart) | Auto |
+| | Layout preset | Nintendo, Xbox / PC, Swap Face, Switch 2 Pro. Custom shows when you change the face buttons to a different layout. | Xbox / PC |
+| | Button prompts | Auto, Switch, Xbox, PlayStation 4, PlayStation 5, Steam Deck, Keyboard. Some changes require a restart. | Xbox |
 | | Motion | Opens the Motion page: Motion controls (Off, On; On), Motion sensitivity X (10% to 600%) and Y (10% to 300%, in steps of 10; 100%), Invert motion X and Y (Off, On; Off), Motion deadzone (Low, Standard, High; Standard) | |
 | | Walk mode | Hold, Toggle | Hold |
 | | Walk speed | 15% to 90%, in steps of 5 | 45% |

@@ -86,15 +86,28 @@ def main():
     check("face_of_type(sdl, type)" in block(src, "static int face_of_pad("), "face_of_pad does not ask face_of_type")
 
     harness = "\n".join([
-        "#include <ctype.h>", "#include <stdio.h>", "#include <string.h>", '#include "gpu/vk/vk_api.h"', '#include "host/hd_rumble.h"',
+        "#include <ctype.h>", "#include <stdio.h>", "#include <stdlib.h>", "#include <string.h>",
+        '#include "gpu/vk/vk_api.h"', '#include "host/hd_rumble.h"',
         "static int pads_xinput;",
         "static int hos_xinput_pads(void) { return pads_xinput; }",
         "static int keyboard_built;",
+        "enum { MAX_PATH = 260, INVALID_FILE_ATTRIBUTES = -1 };",
+        "static const char *options;",
+        "static const char *hos_options_file(void) { return options; }",
+        "static int GetFileAttributesA(const char *path) { (void)path; return 0; }",
+        "static void hos_sdl_pads(uint64_t *b, int32_t *s, int *d) { (void)b; (void)s; (void)d; }",
+        'static void hos_sdl_pad_first(char *n, size_t cap, int *type, int *sdl) { snprintf(n, cap, "DualSense"); *type = 6; *sdl = 3; }',
+        "static void Sleep(int ms) { (void)ms; }",
+        "static void hos_log(const char *fmt, ...) { (void)fmt; }",
+        block(src, "static const char *const faces[") + ";",
         block(src, "static int contains("),
         block(src, "static int face_of_type("),
         block(src, "static int face_of_pad("),
         block(src, "static int auto_face("),
-        "int main(void) {",
+        block(src, "static int choose_face("),
+        "int main(int argc, char **argv) {",
+        "    if (argc != 2) return 1;",
+        "    options = argv[1];",
         *('    printf("%%d %%d\\n", face_of_pad("%s", %d, %d), %s);' % n for n in NAMES),
         # (Auto with no controller: the keyboard's face when the build made it and XInput has none either, else the Switch's;
         # a controller's name: its face, whatever the keyboard)
@@ -109,13 +122,23 @@ def main():
         '    printf("%d %d\\n", auto_face("Wireless Controller", 2, 7), HOS_PROMPT_PS5);',
         '    printf("%d %d\\n", auto_face("Wireless Controller", 2, 6), HOS_PROMPT_XBOX);',
         '    printf("%d %d\\n", auto_face("Wireless Controller", 0, 6), HOS_PROMPT_XBOX);',
+        '    printf("%d %d\\n", choose_face(""), HOS_PROMPT_XBOX);',
+        '    const char *settings[] = {"compile_shaders=0\\n", "button_prompts=0\\n", "button_prompts=1\\n"};',
+        "    const int expected[] = {HOS_PROMPT_XBOX, HOS_PROMPT_PS5, HOS_PROMPT_SWITCH};",
+        "    for (size_t i = 0; i < sizeof settings / sizeof *settings; i++) {",
+        '        FILE *f = fopen(options, "w");',
+        "        if (!f) return 1;",
+        "        fputs(settings[i], f);",
+        "        fclose(f);",
+        '        printf("%d %d\\n", choose_face(""), expected[i]);',
+        "    }",
         "    return 0;",
         "}", ""])
     with tempfile.TemporaryDirectory() as tmp:
         c, exe = Path(tmp) / "face.c", Path(tmp) / "face"
         c.write_text(harness, encoding="utf-8")
         subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT), str(c), "-o", str(exe)], check=True)
-        out = subprocess.run([str(exe)], check=True, capture_output=True, text=True).stdout.split("\n")
+        out = subprocess.run([str(exe), str(Path(tmp) / "options.ini")], check=True, capture_output=True, text=True).stdout.splitlines()
     for (name, sdl, kind, face), line in zip(NAMES, out):
         got, want = line.split()
         check(got == want, '"%s", SDL%d type %d: face %s, not %s (%s)' % (name, sdl, kind, got, want, face))
@@ -128,6 +151,12 @@ def main():
     for what, line in zip(autos, out[len(NAMES):]):
         got, want = line.split()
         check(got == want, "auto_face, %s: face %s, not %s" % (what, got, want))
+    settings = ["no options file", "no saved choice", "saved Auto", "saved Switch"]
+    choices = out[len(NAMES) + len(autos):]
+    check(len(choices) == len(settings), "missing initial prompt choices")
+    for what, line in zip(settings, choices):
+        got, want = line.split()
+        check(got == want, "choose_face, %s: face %s, expected %s" % (what, got, want))
     print("ok: %d controller names and types, each with its face; Auto's keyboard face in %d cases" % (len(NAMES), len(autos)))
 
 

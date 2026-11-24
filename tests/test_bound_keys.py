@@ -156,11 +156,13 @@ int main(int argc, char **argv) {
     /* Enter with Alt is fullscreen, not Plus */
     release(), held[VK_RETURN] = held[VK_MENU] = 1;
     CHECK(!bound_down(HOS_SW_PLUS, 0));
-    const uint64_t face = 1ULL << HOS_PAD_EAST, paddle = 1ULL << HOS_PAD_RPADDLE1, a = 1ULL << HOS_SW_A;
+    uint64_t face = 1ULL << HOS_PAD_EAST;
+    const uint64_t paddle = 1ULL << HOS_PAD_RPADDLE1, a = 1ULL << HOS_SW_A;
     CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_A, 0) == HOS_PAD_EAST);
     CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_A, 1) == HOS_PAD_RPADDLE1);
     CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_B, 1) == -1);   /* old one-value entry */
     CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_X, 1) == -1);   /* invalid second value */
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_Y, 0) == HOS_PAD_WEST);   /* omitted from the older Nintendo profile */
     CHECK(bound_pad_buttons(face) == a && bound_pad_buttons(paddle) == a && bound_pad_buttons(face | paddle) == a);
     /* Both gamepad slots and a keyboard key share the same logical button latch. */
     HoldToggle toggle = {0};
@@ -194,6 +196,7 @@ int main(int argc, char **argv) {
     CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_B, 1) == HOS_PAD_EAST);
     CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_A, 0) == HOS_PAD_RPADDLE1 && hos_binding(HOS_BIND_PAD, HOS_SW_A, 1) == -1);
     hos_bind(HOS_BIND_KEY, -1, 0, 0);
+    face = 1ULL << HOS_PAD_SOUTH;
     CHECK(hos_binding(HOS_BIND_KEY, HOS_KEY_MOVE_UP, 0) == 'W' && hos_binding(HOS_BIND_KEY, HOS_SW_A, 0) == 'E');
     CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_A, 1) == -1 && bound_pad_buttons(face) == a);
     CHECK(toggle_reset);
@@ -212,12 +215,12 @@ int main(int argc, char **argv) {
     hud_shortcut(1, 0), hud_shortcut(1, 0);
     CHECK(hud_toggles == 1);
     release();
-    hos_bind(HOS_BIND_PAD, HOS_KEY_TOGGLE_HUD, 1, HOS_PAD_EAST);
+    hos_bind(HOS_BIND_PAD, HOS_KEY_TOGGLE_HUD, 1, HOS_PAD_SOUTH);
     hud_shortcut(1, 0);
     pad_raw_game = face;
     hud_shortcut(1, 0), hud_shortcut(1, 0);
     CHECK(hud_toggles == 2 && bound_pad_buttons(face) == 0);
-    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_A, 0) == HOS_PAD_EAST);
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_A, 0) == HOS_PAD_SOUTH);
     hos_bind(HOS_BIND_PAD, HOS_KEY_TOGGLE_HUD, 1, -1);
     CHECK(bound_pad_buttons(face) == a);
     hos_bind(HOS_BIND_KEY, HOS_KEY_TOGGLE_HUD, 0, 0);
@@ -240,7 +243,7 @@ int main(int argc, char **argv) {
     CHECK(!hos_binding_is_default(HOS_SW_A));
     CHECK(hos_reset_binding(HOS_SW_A) && hos_binding_is_default(HOS_SW_A));
     CHECK(hos_binding(HOS_BIND_KEY, HOS_SW_A, 0) == 'E');
-    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_A, 0) == HOS_PAD_EAST && hos_binding(HOS_BIND_PAD, HOS_SW_A, 1) == -1);
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_A, 0) == HOS_PAD_SOUTH && hos_binding(HOS_BIND_PAD, HOS_SW_A, 1) == -1);
     CHECK(hos_binding(HOS_BIND_KEY, HOS_KEY_OC_NOTE_L, 0) == 'E' && hos_binding(HOS_BIND_PAD, HOS_KEY_OC_NOTE_L, 0) == HOS_PAD_EAST);
     hos_bind(HOS_BIND_KEY, HOS_SW_ZL, 0, 'H');
     hos_bind(HOS_BIND_KEY, HOS_SW_ZL, 1, 0);
@@ -257,9 +260,9 @@ int main(int argc, char **argv) {
     CHECK(hos_binding(HOS_BIND_KEY, HOS_SW_A, 0) == 'T' && hos_binding(HOS_BIND_KEY, HOS_SW_X, 1) == 'E');
     CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_A, 1) == HOS_PAD_RPADDLE1);
     hos_bind(HOS_BIND_KEY, HOS_SW_X, 1, 0);
-    hos_bind(HOS_BIND_PAD, HOS_SW_X, 0, HOS_PAD_EAST);
+    hos_bind(HOS_BIND_PAD, HOS_SW_X, 0, HOS_PAD_SOUTH);
     CHECK(!hos_reset_binding(HOS_SW_A));
-    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_X, 0) == HOS_PAD_EAST && hos_binding(HOS_BIND_KEY, HOS_SW_A, 0) == 'T');
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_X, 0) == HOS_PAD_SOUTH && hos_binding(HOS_BIND_KEY, HOS_SW_A, 0) == 'T');
     hos_bind(HOS_BIND_KEY, HOS_KEY_WALK, 0, 'G');
     CHECK(hos_reset_binding(HOS_KEY_WALK));
     CHECK(hos_binding(HOS_BIND_KEY, HOS_KEY_WALK, 0) == VK_CAPITAL);
@@ -294,16 +297,16 @@ int main(int argc, char **argv) {
     CHECK(hos_rebind_control(HOS_BIND_KEY, HOS_SW_X, 0, 'E', conflicts, &conflicts));
     CHECK(hos_binding(HOS_BIND_KEY, HOS_SW_X, 0) == 'E' && hos_binding(HOS_BIND_KEY, HOS_SW_Y, 0) == 0);
     hos_bind(HOS_BIND_PAD, HOS_SW_A, 1, HOS_PAD_RPADDLE1);
-    CHECK(!hos_rebind_control(HOS_BIND_PAD, HOS_SW_X, 0, HOS_PAD_EAST, 0, &conflicts) && conflicts == a_row);
-    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_X, 0) == HOS_PAD_NORTH && hos_binding(HOS_BIND_PAD, HOS_SW_A, 0) == HOS_PAD_EAST);
-    CHECK(hos_rebind_control(HOS_BIND_PAD, HOS_SW_X, 0, HOS_PAD_EAST, conflicts, &conflicts));
-    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_X, 0) == HOS_PAD_EAST && hos_binding(HOS_BIND_PAD, HOS_SW_A, 0) == HOS_PAD_RPADDLE1);
+    CHECK(!hos_rebind_control(HOS_BIND_PAD, HOS_SW_X, 0, HOS_PAD_SOUTH, 0, &conflicts) && conflicts == a_row);
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_X, 0) == HOS_PAD_WEST && hos_binding(HOS_BIND_PAD, HOS_SW_A, 0) == HOS_PAD_SOUTH);
+    CHECK(hos_rebind_control(HOS_BIND_PAD, HOS_SW_X, 0, HOS_PAD_SOUTH, conflicts, &conflicts));
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_X, 0) == HOS_PAD_SOUTH && hos_binding(HOS_BIND_PAD, HOS_SW_A, 0) == HOS_PAD_RPADDLE1);
     CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_A, 1) == -1);
-    CHECK(!hos_rebind_control(HOS_BIND_PAD, HOS_SW_Y, 1, HOS_PAD_EAST, 0, &conflicts));
-    CHECK(hos_rebind_control(HOS_BIND_PAD, HOS_SW_Y, 1, HOS_PAD_EAST, conflicts, &conflicts));
-    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_Y, 1) == HOS_PAD_EAST && hos_binding(HOS_BIND_PAD, HOS_SW_X, 0) == -1);
-    CHECK(hos_rebind_control(HOS_BIND_PAD, HOS_KEY_OC_NOTE_L, 0, HOS_PAD_EAST, 0, &conflicts) && conflicts == 0);
-    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_Y, 1) == HOS_PAD_EAST);
+    CHECK(!hos_rebind_control(HOS_BIND_PAD, HOS_SW_Y, 1, HOS_PAD_SOUTH, 0, &conflicts));
+    CHECK(hos_rebind_control(HOS_BIND_PAD, HOS_SW_Y, 1, HOS_PAD_SOUTH, conflicts, &conflicts));
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_Y, 1) == HOS_PAD_SOUTH && hos_binding(HOS_BIND_PAD, HOS_SW_X, 0) == -1);
+    CHECK(hos_rebind_control(HOS_BIND_PAD, HOS_KEY_OC_NOTE_L, 0, HOS_PAD_SOUTH, 0, &conflicts) && conflicts == 0);
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_Y, 1) == HOS_PAD_SOUTH);
     if (!fails) printf("PASS\n");
     return fails != 0;
 }

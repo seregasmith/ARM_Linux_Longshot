@@ -52,6 +52,7 @@ class MenuI18nTests(unittest.TestCase):
     def setUp(self):
         self.tables, self.langs = tables()
         self.menu = set(c_strings(menu_sources()))   # (vk_menu.cpp's texts and its modules', gpu/vk/menu/: #1633)
+        self.menu.update(c_strings((VK / "vk_ui.h").read_text(encoding="utf-8")))  # Button hints from the shared UI.
         runtime = set()
         for name in ("fx_runtime.cpp", "fx_preset.cpp"):
             runtime.update(c_strings((VK / "reshade" / name).read_text(encoding="utf-8")))

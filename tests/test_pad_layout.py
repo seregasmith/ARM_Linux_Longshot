@@ -101,6 +101,10 @@ static const int want[3][4] = {{HOS_PAD_EAST, HOS_PAD_SOUTH, HOS_PAD_NORTH, HOS_
 static void defaults() { hos_bind(HOS_BIND_PAD, -1, 0, 0); }
 
 int main() {
+    defaults();
+    for (int i = 0; i < 4; i++) CHECK(hos_binding(HOS_BIND_PAD, face[i], 0) == want[1][i]);
+    CHECK(detect_pad_layout() == 1);
+
     // From each preset, each face button's Input 1 cleared, then each preset chosen: the four are the preset's
     for (int from = 0; from < 3; from++)
         for (int cleared = 0; cleared < 4; cleared++)

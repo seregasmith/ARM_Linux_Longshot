@@ -2,7 +2,7 @@
 so A opens a page and B goes back as in the game. A Pro Controller's A (the right face button, the Nintendo layout's default)
 went back instead of opening the debug tools, Motion or Controls.
 
-The mapping is compiled and run for each layout preset's A and B (host/nn_hid.c's defaults: Nintendo, Xbox / PC, Swap Face)
+The mapping is compiled and run for each layout preset's A and B (Nintendo, Xbox / PC, Swap Face)
 and for bindings the menu cannot use. Then gpu/vk/vk_menu.cpp is checked for how menu_tick uses it: the pad's confirm and back
 are those positions (press[7], press[5]), RX_VK_MENU_SCRIPT's PADS/PADE/PADW/PADN go through the same mapping, and every page
 link answers to confirm (Enter, A, a click) and back (Esc, B): Motion, Controls, and the debug tools' rows on the Debug tab,
@@ -107,6 +107,7 @@ static void test_confirmations() {
     host = &queue_host;
     host->version = 44;
     opts = Options{};
+    CHECK(opts.pad_layout == 1 && opts.prompts == 2);
     controls[2].button = HOS_KEY_SPRINT;
     CHECK(!real_control_column_enabled(2, kCtlReset));
     toggle_set(HOS_KEY_SPRINT, false);
@@ -142,12 +143,14 @@ static void test_confirmations() {
 
     toggle_set(HOS_KEY_SPRINT, true);
     control_confirmation = {ControlAction::ResetAll};
+    opts.pad_layout = 0;
     CHECK(answer_controls(false, false, false, 0));   // Click Cancel.
     CHECK(binding_a == 'T' && binding_b == 'E' && toggle_on(HOS_SW_A) && toggle_on(HOS_KEY_SPRINT));
     control_confirmation = {ControlAction::ResetAll};
     CHECK(answer_controls(false, false, false, 1));
     // (Sprint's Toggle back on, its default; the buttons' off)
     CHECK(binding_a == 'E' && binding_b == 'V' && !opts.hold_toggle && host_sprint_toggle == 1 && opts.sprint_toggle == 1);
+    CHECK(opts.pad_layout == 1);
 
     rebind_control(0, HOS_BIND_KEY, 0, 'V');
     CHECK(control_confirmation.action == ControlAction::Rebind);
@@ -177,7 +180,7 @@ int main(int argc, char** argv) {
     CHECK(next_control_selection(7, kCtlKeyboard, 1) == 8); // Reset to defaults still reachable
     CHECK(next_control_selection(8, kCtlKeyboard, 1) == 0); // Layout preset still reachable
     test_confirmations();
-    expect(kEast, kSouth, kEast, kSouth, __LINE__);    // (Nintendo, the default: A right, B bottom)
+    expect(kEast, kSouth, kEast, kSouth, __LINE__);    // (Nintendo: A right, B bottom)
     expect(kSouth, kEast, kSouth, kEast, __LINE__);    // (Xbox / PC)
     expect(kWest, kNorth, kWest, kNorth, __LINE__);    // (bound by hand elsewhere on the face)
     expect(-1, -1, kSouth, kEast, __LINE__);           // (none: the bottom confirms, the right goes back)
@@ -326,7 +329,7 @@ struct { unsigned w; } output_preview_target{};
 int output_preview_countdown;
 void answer_native_preview(bool) { CHECK(false); }   // This fixture opens and closes the normal menu.
 static bool restart_ask() { return false; }
-static int detect_pad_layout() { return 0; }
+static int detect_pad_layout() { return 1; }   // test bindings after a reset to Xbox / PC
 static void dlss_probe() {}
 static void dlss_fg_probe() {}
 static void fsr4_probe() {}
@@ -428,7 +431,7 @@ static bool gpu_card_missing;
 static bool can_bind() { return host && host->binding; }
 static void logf(const char*, ...) {}
 static void apply_sprint_layout(bool) {}
-static std::mutex options_save_mu;   // (save()'s one writer at a time)
+static bool env_on(const char*) { return false; }
 // SAVE
 static void reset_controls() {
     // RESET_CONTROLS
