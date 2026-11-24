@@ -40,8 +40,8 @@ class ShaderDumpTest(unittest.TestCase):
         (self.cache / "longshot_programs.bin.lock").touch()
         (self.store / "spirv.pack").write_bytes(struct.pack("<4sIII", b"LSPK", 1, 42, 0))
         (self.store / "spirv.idx").write_bytes(struct.pack("<4sIII", b"LSPI", 1, 42, 0))
-        report = f"1\t2\t18\t3\t{'a' * 32}\t{23:016x}\tmost\tHSP1\t{self.store}\tMesa 27.0.0-devel (fixture)"
-        shader_dump.record_preparation(self.game, report, "fixture")
+        self.report = f"1\t2\t18\t3\t{'a' * 32}\t{23:016x}\tmost\tHSP1\t{self.store}\tMesa 27.0.0-devel (fixture)"
+        shader_dump.record_preparation(self.game, self.report, "fixture")
         self.now = datetime(2026, 11, 23, 13, 15, 44)
         self.stem = "mesa-27.0.0-devel-231126_131544"
 
@@ -126,6 +126,7 @@ class ShaderDumpTest(unittest.TestCase):
             manifest = json.loads(archive.read("manifest.json"))
             self.assertEqual(manifest["driver"]["pipeline_cache_uuid"], "09" * 16)
             self.assertEqual(manifest["shader_seed_sha256"], hashlib.sha256(bytes(range(97))).hexdigest())
+            self.assertIs(manifest["shader_settings"]["robust_buffers"], False)
         self.assertFalse((self.cache / shader_dump.SOURCE).exists())
         (self.game / "longshot_shaders.bin").write_bytes(bytes(reversed(range(97))))
         with self.assertRaisesRegex(shader_dump.DumpError, "seed changed"):
@@ -180,16 +181,19 @@ class ShaderDumpTest(unittest.TestCase):
                 archive.writestr(name, data)
 
     def test_restore_round_trip_preserves_settings_and_previous_cache(self):
+        shader_dump.record_preparation(self.game, self.report.replace("\tMesa ", "\t0\tMesa "), "fixture")
         dump = self.export()
         target = self.restore_target()
         (target / "longshot_version.txt").write_text("version=different-setup-build\n", encoding="utf-8")
         manifest = shader_dump.inspect_dump(dump)
         self.assertEqual(manifest["driver"]["mesa_version"], "27.0.0-devel")
         self.assertEqual(manifest["longshot_version"], "fixture")
+        self.assertIs(manifest["shader_settings"]["robust_buffers"], False)
         self.assertEqual(shader_dump.restore(target, dump), "27.0.0-devel")
         restored = shader_dump.active_cache(target / "cache")
         self.assertEqual((target / "longshot_options.ini").read_bytes(), b"player settings")
         self.assertEqual((target / "cache/longshot_pipelines.bin").read_bytes(), b"previous cache")
+        self.assertEqual((restored / shader_dump.RUNTIME).read_text().splitlines()[-1], "off")
         with zipfile.ZipFile(dump) as archive:
             for name in archive.namelist():
                 if name != "manifest.json":
@@ -197,6 +201,25 @@ class ShaderDumpTest(unittest.TestCase):
         output = shader_dump.export(target, self.root, self.now)
         with zipfile.ZipFile(output) as archive:
             self.assertEqual(archive.read("longshot/longshot_pipelines.bin"), b"fixture")
+
+    def test_restore_accepts_archives_without_robust_buffers_metadata(self):
+        dump = self.export()
+        target = self.restore_target()
+        shader_dump.restore(target, dump)
+        restored = shader_dump.active_cache(target / "cache")
+        self.assertEqual(len((restored / shader_dump.RUNTIME).read_text().splitlines()), 3)
+
+    def test_restore_retains_robust_buffers_on_and_rejects_invalid_metadata(self):
+        dump = self.export()
+        self.rewrite_dump(dump, lambda manifest, _: manifest["shader_settings"].update(robust_buffers=True))
+        target = self.restore_target()
+        shader_dump.restore(target, dump)
+        restored = shader_dump.active_cache(target / "cache")
+        self.assertEqual((restored / shader_dump.RUNTIME).read_text().splitlines()[-1], "on")
+        self.rewrite_dump(dump, lambda manifest, _: manifest["shader_settings"].update(robust_buffers=1))
+        with self.assertRaisesRegex(shader_dump.DumpError, "Robust buffers"):
+            shader_dump.restore(target, dump)
+        self.assertEqual(shader_dump.active_cache(target / "cache"), restored)
 
     def test_apprun_restores_without_build_tools(self):
         dump = self.export()

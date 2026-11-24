@@ -11511,9 +11511,10 @@ static void shader_dump_prepared() {
     if (!store.empty() && (store.front() != '/' || store.find_first_of("\r\n\t") != std::string::npos)) return;
     char uuid[2 * VK_UUID_SIZE + 1]{};
     for (size_t i = 0; i < VK_UUID_SIZE; i++) snprintf(uuid + 2 * i, 3, "%02x", (unsigned)dev.props.pipelineCacheUUID[i]);
-    printf("@@shader_dump %u\t%u\t%u\t%u\t%s\t%016llx\t%s\t%s\t%s\t%s\n", dev.props.vendorID, dev.props.deviceID,
+    printf("@@shader_dump %u\t%u\t%u\t%u\t%s\t%016llx\t%s\t%s\t%s\t%u\t%s\n", dev.props.vendorID, dev.props.deviceID,
            (unsigned)dev.driver_id, dev.props.driverVersion, uuid, (unsigned long long)program_cache_stamp(),
-           compile_all() ? "all" : "most", env_on("RX_VK_PROGRAM_CACHE_ZSTD") ? "HSP2" : "HSP1", store.c_str(), dev.driver.driverInfo);
+           compile_all() ? "all" : "most", env_on("RX_VK_PROGRAM_CACHE_ZSTD") ? "HSP2" : "HSP1", store.c_str(),
+           (unsigned)(dev.features.robustBufferAccess != VK_FALSE), dev.driver.driverInfo);
     fflush(stdout);
 #endif
 }

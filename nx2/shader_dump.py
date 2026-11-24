@@ -113,6 +113,8 @@ def turnip_log(path):
                     details["store"] = Path(match[1]).expanduser()
                 elif match := re.search(r"vk: Compile shaders: (Most|All)\b", line):
                     details["mode"] = match[1].lower()
+                elif "vk: robust buffer access on" in line:
+                    details["robust_buffers"] = True
                 elif "vk: driver shader cache:" in line and f"layout {LAYOUT};" in line and "/cache/driver (" in line:
                     details["layout"] = True
                 elif "vk: start-up: the shaders took " in line:
@@ -167,7 +169,9 @@ def recover_preparation(game, stack):
                 "gpu": {"vendor_id": vendor, "device_id": device},
                 "driver": {"id": 18, "version_id": version, "name": "Turnip", "info": f"Mesa {mesa}{info}",
                            "mesa_version": mesa, "pipeline_cache_uuid": matches.pop(), "cache_layout": LAYOUT},
-                "shader_settings": {"compile_shaders": run.get("mode", "unknown")},
+                # Older runtimes report effective robust buffer access only when it is on.
+                "shader_settings": {"compile_shaders": run.get("mode", "unknown"),
+                                    "robust_buffers": run.get("robust_buffers", False)},
                 "program_cache_format": magic.decode("ascii"), "spirv_store_path": str(run.get("store", "")),
             }
     raise DumpError("Setup could not match the existing shader preparation stamp to a Turnip launch in the game logs. "
@@ -178,6 +182,11 @@ def record_preparation(game, report, version):
     """Record the renderer's data only after its preparation process exits successfully."""
     cache = game / "cache"
     vendor, device, driver, version_id, uuid, stamp, mode, program_format, store, info = report.split("\t", 9)
+    shader_settings = {"compile_shaders": mode}
+    robust, sep, driver_info = info.partition("\t")
+    if sep and robust in ("0", "1"):
+        shader_settings["robust_buffers"] = robust == "1"
+        info = driver_info
     mesa = re.match(rf"Mesa ({MESA_VERSION})(?=\s|$)", info)
     if not mesa or not re.fullmatch(r"[0-9a-f]{32}", uuid) or not re.fullmatch(r"[0-9a-f]{16}", stamp):
         raise DumpError("Shader preparation did not report a valid Turnip driver identity.")
@@ -188,7 +197,7 @@ def record_preparation(game, report, version):
         "gpu": {"vendor_id": int(vendor), "device_id": int(device)},
         "driver": {"id": int(driver), "version_id": int(version_id), "name": "Turnip", "info": info,
                    "mesa_version": mesa[1], "pipeline_cache_uuid": uuid, "cache_layout": LAYOUT},
-        "shader_settings": {"compile_shaders": mode},
+        "shader_settings": shader_settings,
         "program_cache_format": program_format,
         "spirv_store_path": store,
     }
@@ -399,6 +408,9 @@ def read_dump(archive):
     manifest = json.loads(archive.read("manifest.json"))
     if manifest["format"] != "longshot-shader-dump" or manifest["schema_version"] != 1:
         raise DumpError("Unsupported shader dump format.")
+    settings = manifest["shader_settings"]
+    if not isinstance(settings, dict) or ("robust_buffers" in settings and type(settings["robust_buffers"]) is not bool):
+        raise DumpError("The shader dump has invalid Robust buffers metadata.")
     driver, gpu, program = (manifest[key] for key in ("driver", "gpu", "program_cache"))
     if (driver["id"] != 18 or driver["cache_layout"] != LAYOUT
             or not re.fullmatch(r"[0-9a-f]{32}", driver["pipeline_cache_uuid"])
@@ -506,10 +518,12 @@ def restore(game, dump, *, on_progress=None, already_locked=False, built_by_setu
                 raise DumpError("The shader dump manifest names a different SPIR-V store.")
             (generation / SOURCE).write_text(json.dumps(record), encoding="utf-8")
             driver, gpu = manifest["driver"], manifest["gpu"]
+            robust = manifest["shader_settings"].get("robust_buffers")
+            robust_line = "" if robust is None else "on\n" if robust else "off\n"
             (generation / RUNTIME).write_text(
                 f"{RUNTIME_MAGIC}\n{gpu['vendor_id']:08x} {gpu['device_id']:08x} {driver['id']:08x} {driver['version_id']:08x}\n"
                 f"{driver['pipeline_cache_uuid']} {manifest['renderer_shader_cache_stamp']} {program['format']} "
-                f"{program['store_id']:08x} {driver['mesa_version']}\n", encoding="ascii")
+                f"{program['store_id']:08x} {driver['mesa_version']}\n{robust_line}", encoding="ascii")
             with tempfile.NamedTemporaryFile(mode="w", encoding="ascii", dir=cache, prefix=".shader-active-", delete=False) as f:
                 pointer = Path(f.name)
                 try:

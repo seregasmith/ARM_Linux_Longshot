@@ -22,6 +22,11 @@ GPU, exact driver and cache UUID, and the active shader translator stamp. It ski
 preparation. Compilation on a missing shader or pipeline during play is still possible. Strict
 cache-only launch remains a separate step.
 
+The updated game executable reads **Robust buffers** from dumps that carry it and applies it at
+launch while the restored cache is active. Longshot leaves the saved player setting in place.
+Older executables and ZIPs use the installation's setting. Match the source installation if the
+shader stamp check fails after restoring an older ZIP.
+
 ## Setup workflow
 
 1. Open the Linux Setup AppImage, select the `.nup`, and build. Setup prepares shaders normally and

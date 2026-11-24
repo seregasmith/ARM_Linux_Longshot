@@ -646,6 +646,12 @@ bool create_device() {
     // over it. Off is null descriptors only: some NVIDIA cards run slower with it on)
     static const bool robust = []() -> bool {
         if (const char* e = getenv("RX_VK_ROBUST")) return atoi(e) != 0;
+#ifndef _WIN32
+        if (const auto& dump = restored_shader_dump(); dump.dir[0] && dump.robust_buffers >= 0) {
+            logf("vk: Robust buffers from the restored shader dump: %s", dump.robust_buffers ? "on" : "off");
+            return dump.robust_buffers != 0;
+        }
+#endif
         int v = 0;   // (Auto)
         if (FILE* f = fopen(options_path().c_str(), "r")) {   // (vk_paths.h)
             char line[80];
@@ -1672,8 +1678,11 @@ bool started_up() {
     driver_cache_log("at the start");
 #ifndef _WIN32
     if (const auto& dump = restored_shader_dump(); dump.dir[0]) {
-        if (program_cache_stamp() != std::strtoull(dump.stamp, nullptr, 16)) {
-            logf("vk: restored shader dump does not match this shader translator or its settings. Choose a compatible dump in Setup.");
+        const uint64_t stamp = program_cache_stamp();
+        if (stamp != std::strtoull(dump.stamp, nullptr, 16)) {
+            logf("vk: restored shader dump stamp %s differs from this run's %016llx (Robust buffers %s). "
+                 "Match the original shader settings or choose a compatible dump in Setup.", dump.stamp,
+                 (unsigned long long)stamp, dev.features.robustBufferAccess ? "on" : "off");
             return false;
         }
         logf("vk: using restored Mesa %s shader cache; skipping startup shader preparation", dump.mesa);

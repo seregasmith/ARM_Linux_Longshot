@@ -8,6 +8,7 @@ typedef struct {
     char dir[4096];
     char uuid[33], stamp[17], format[5], mesa[64];
     unsigned vendor, device, driver, version, store;
+    int robust_buffers;   // -1 for dumps recorded before this setting was carried.
 } LongshotShaderDump;
 
 // Missing selection is normal. An unreadable or malformed selection is an error.
@@ -28,8 +29,16 @@ static inline int longshot_shader_dump_read(const char* game, LongshotShaderDump
     const int fields = fscanf(f, "%31s %8x %8x %8x %8x %32[0-9a-f] %16[0-9a-f] %4s %8x %63s", magic, &dump->vendor,
                               &dump->device, &dump->driver, &dump->version, dump->uuid, dump->stamp, dump->format,
                               &dump->store, dump->mesa);
+    char robust[5];
+    const int mode = fscanf(f, " %4s", robust);
+    const int failed = ferror(f);
     fclose(f);
-    if (fields != 10 || strcmp(magic, "longshot-shader-dump-v1") || strlen(dump->uuid) != 32 || strlen(dump->stamp) != 16 ||
+    if (failed || fields != 10 || strcmp(magic, "longshot-shader-dump-v1") || strlen(dump->uuid) != 32 || strlen(dump->stamp) != 16 ||
         (strcmp(dump->format, "HSP1") && strcmp(dump->format, "HSP2"))) return -1;
+    dump->robust_buffers = -1;
+    if (mode == 1) {
+        if (strcmp(robust, "on") && strcmp(robust, "off")) return -1;
+        dump->robust_buffers = !strcmp(robust, "on");
+    }
     return 1;
 }
