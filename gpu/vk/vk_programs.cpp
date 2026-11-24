@@ -19,6 +19,7 @@
 
 #ifndef _WIN32
 #include <sys/resource.h>
+#include <unistd.h>
 #endif
 
 #include "vk_internal.h"
@@ -361,10 +362,32 @@ PipelineSource& pipeline_source() {
 /// mesh shaders or through the compute fallback), start otherwise. Decided once the device is up (vk_main.cpp); start until then
 std::atomic<int> load_mode{-1};
 std::atomic<bool> struck_last_session{false};   // (load_default.h: the session before this one left a strike)
+namespace {
+/// The PC's RAM in MB, 0 when it is not known (load_default::marker_counts)
+uint32_t ram_total_mb() {
+#ifdef _WIN32
+    MEMORYSTATUSEX m{};
+    m.dwLength = sizeof m;
+    return GlobalMemoryStatusEx(&m) ? (uint32_t)std::min<uint64_t>(m.ullTotalPhys >> 20, UINT32_MAX) : 0;
+#else
+    const long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGE_SIZE);
+    return pages > 0 && page > 0 ? (uint32_t)std::min<uint64_t>(((uint64_t)pages * (uint64_t)page) >> 20, UINT32_MAX) : 0;
+#endif
+}
+}   // namespace
+
 void programs_load_decide(bool native_mesh) {
     struck_last_session = load_default::strike_take(load_fallback_path());
-    const load_default::Choice c = load_default::choose(getenv("RX_VK_LOAD"), native_mesh, load_default::marker_there(load_fallback_path()),
-                                                        env_on("RX_VK_PROGRAM_CACHE_ZSTD"));
+    // (a marker left by loads that found listed pipelines in no cache is not followed where RAM cannot hold start: load_default.h)
+    const load_default::Marker kind = load_default::marker_kind(load_fallback_path());
+    const uint32_t ram_mb = ram_total_mb();
+    const bool marker = load_default::marker_counts(kind, ram_mb);
+    if (kind != load_default::Marker::kNone && !marker && !getenv("RX_VK_LOAD"))
+        logf("vk: longshot_load_start.txt (listed pipelines in no cache) not followed: %u MB of RAM, %u MB or less: every "
+             "listed program before the title would not fit (RX_VK_LOAD=start: before the title all the same)", ram_mb,
+             load_default::kStartRamMb);
+    const load_default::Choice c = load_default::choose(getenv("RX_VK_LOAD"), native_mesh, marker,
+                                                        env_on("RX_VK_PROGRAM_CACHE_ZSTD"), precompile_wanted());
     const bool host_v14 = (!getenv("RX_VK_LOAD") && host && host->version <= 14);
     const bool load_create = host_v14 ? false : c.create;
     load_mode.store(load_create ? 1 : 0, std::memory_order_release);
@@ -379,8 +402,12 @@ namespace {
 /// install loads before the title again (longshot_load_start.txt; a preparation removes it). Over kStrikeMs for the first
 /// time only leaves a strike for the next session to find. Loads at create are for PCs where a first use hardly ever meets one
 std::atomic<int64_t> wait_worst_ns{0}, wait_long_ns{0};
-std::atomic<bool> wait_marked{false}, wait_struck{false};
+std::atomic<bool> wait_struck{false};
+// (the two writers share a file: a waits verdict must win even if they arrive together)
+std::mutex marker_mu;
+bool wait_marked = false, lacked_marked = false;
 void load_wait_note(int64_t ns) {
+    if (!precompile_wanted()) return;
     int64_t worst = wait_worst_ns.load(std::memory_order_relaxed);
     while (ns > worst && !wait_worst_ns.compare_exchange_weak(worst, ns)) {}
     if (!load_default::counts(ns / 1e6)) return;
@@ -396,7 +423,9 @@ void load_wait_note(int64_t ns) {
              wrote ? "" : "; the strike did not write");
         return;
     }
-    if (wait_marked.exchange(true)) return;
+    std::lock_guard lk(marker_mu);
+    if (wait_marked) return;
+    wait_marked = true;
     const bool wrote = load_default::marker_write(load_fallback_path(), worst_ms, long_ms);
     logf("vk: first uses waited for loads for %.0f ms in this session (the longest %.0f ms; waits over %.0f ms counted): over "
          "%.0f ms%s, so the next start loads every listed program before the title again%s", long_ms, worst_ms,
@@ -406,6 +435,7 @@ void load_wait_note(int64_t ns) {
 }
 
 void programs_index(std::vector<NoteRef> notes, const std::unordered_set<uint64_t>& compute_keys) {
+    if (index_ready.load(std::memory_order_acquire)) return;
     const auto t0 = Clock::now();
     std::unordered_set<uint64_t> seen;
     for (const NoteRef& n : notes) {
@@ -460,14 +490,21 @@ void module_ids_on() {
 }
 
 void programs_frames_note() {
-    if (!programs_load_at_create()) return;
+    if (!programs_load_at_create() || !precompile_wanted()) return;
     // (what the loads at create calls asked of the caches and no cache had: load_work counts them)
     const long long lacked = census.load_pipes_cold.load(std::memory_order_relaxed) + census.load_computes_cold.load(std::memory_order_relaxed);
-    if (!load_default::caches_lacked(lacked) || wait_marked.exchange(true)) return;
+    if (!load_default::caches_lacked(lacked)) return;
+    std::lock_guard lk(marker_mu);
+    if (lacked_marked || wait_marked) return;
+    lacked_marked = true;
     const bool wrote = load_default::marker_write_lacked(load_fallback_path(), lacked);
+    // (what the marker does next: not followed on this PC's RAM, programs_load_decide)
+    const bool followed = load_default::marker_counts(load_default::Marker::kLacked, ram_total_mb());
     logf("vk: %lld listed pipelines were in no cache when their programs were loaded in this session (over %lld): they are "
-         "compiled in play, so the next start loads every listed program before the title again%s", lacked,
-         load_default::kNotInCacheMost, wrote ? " (longshot_load_start.txt)" : "; the marker did not write");
+         "compiled in play, %s%s", lacked, load_default::kNotInCacheMost,
+         followed ? "so the next start loads every listed program before the title again"
+                  : "and the next start still loads them when the game makes them: this PC has 20 GB of RAM or less",
+         wrote ? " (longshot_load_start.txt)" : "; the marker did not write");
 }
 
 void programs_load_wait(uint64_t key) {

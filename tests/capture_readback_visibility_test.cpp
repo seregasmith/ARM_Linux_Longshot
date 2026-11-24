@@ -42,6 +42,9 @@ void invalidate_mapped(VmaAllocation allocation, uint64_t size) {
 VKAPI_ATTR VkResult VKAPI_CALL vkWaitForFences(VkDevice, uint32_t n, const VkFence*, VkBool32, uint64_t) {
     require(n == 1, "wrong fence count"); complete(); ++waits; return VK_SUCCESS;
 }
+VKAPI_ATTR void VKAPI_CALL vkDestroySemaphore(VkDevice, VkSemaphore, const VkAllocationCallbacks*) {
+    require(gpu_done, "retired acquire destroyed before the copy fence");
+}
 VKAPI_ATTR void VKAPI_CALL vkCmdCopyImageToBuffer(VkCommandBuffer, VkImage, VkImageLayout, VkBuffer buffer,
                                                  uint32_t count, const VkBufferImageCopy* copy) {
     auto a = reinterpret_cast<Allocation*>(buffer);
@@ -85,7 +88,7 @@ void write_png(const char*, const uint8_t* bytes, uint32_t w, uint32_t h) {
 /* COLLECT */
 void read_log_after_fence() {
     struct { VkDevice device{}; } dev;
-    struct { VkFence done{}; } f;
+    struct { VkFence done{}; VkSemaphore retired_acquire{}; } f;
     const int log_slot = 1;
     /* FENCE */
 }

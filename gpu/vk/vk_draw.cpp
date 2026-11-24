@@ -82,6 +82,7 @@
 #include "driver_faults.h"
 #include "driver_cache_env.h"   // (the drivers' own caches as the environment chooses them, Linux)
 #include "spirv_pack.h"
+#include "prepare_journal.h"   // (the --prepare-shaders run's journal of its driver calls)
 #include "fallback_size_policy.h"
 #include "fallback_lanes.h"
 #include "translate_wait.h"
@@ -477,7 +478,7 @@ constexpr size_t kSimTurfPrivateMax = 8, kSimTurfSamplesPerRecording = 256;
 std::mutex sim_turf_mu;
 std::vector<SimTurfPrivate> sim_turf_private[2];   // [0] the blade lists, [1] the pools
 std::vector<SimTurfRetired> sim_turf_retired;
-thread_local std::vector<SimTurfBound> sim_turf_bound;   // private creators bound for the dispatch being recorded
+TLS_OBJECT(sim_turf_bound, std::vector<SimTurfBound>)   // private creators bound for the dispatch being recorded
 thread_local bool sim_turf_monitor_ready = false;   // this recording can observe demand; otherwise private lists fail closed
 bool sim_turf_adaptive() {
     static const bool on = env_on_or("RX_VK_SIM_TURF_ADAPTIVE", 1);
@@ -494,7 +495,11 @@ uint32_t sim_turf_max_records(bool pool, uint64_t salign) {
     const uint64_t stride = pool ? 48 : 8, group = pool ? 32 : 64;
     const uint64_t room = dev.props.limits.maxStorageBufferRange > salign + Shader::Optimization::kSimTurfListHeader
                               ? dev.props.limits.maxStorageBufferRange - salign - Shader::Optimization::kSimTurfListHeader : 0;
-    return (uint32_t)std::min<uint64_t>(UINT32_MAX, room / stride / group * group);
+    // (a list's reader runs a workgroup for every `group` records, in one indirect command the game's program writes from the
+    // list's length: a pool's mesh draw (its compute fallback's dispatch), a blade list's dispatch. Past what the device takes in
+    // one the command is invalid: AMD's 65535 groups are 2,097,120 pool records, and a longer pool's turf flickered all over)
+    const uint64_t groups = pool && !dev.uses_mesh_fallback(false) ? dev.max_mesh_groups : dev.props.limits.maxComputeWorkGroupCount[0];
+    return (uint32_t)std::min<uint64_t>({UINT32_MAX, room / stride / group * group, groups * group});
 }
 void sim_turf_reap() {
     const uint64_t completed = vk_timeline_completed();
@@ -554,7 +559,7 @@ void sim_turf_tally_log(uint64_t frame) {
 }
 VkDescriptorBufferInfo sim_turf_bound_result(SimTurfPrivate& g, uint64_t addr, uint32_t enc, bool pool, bool creator) {
     if (creator && g.buf)
-        sim_turf_bound.push_back({addr, enc & 0xffffu, g.policy.capacity(), pool, g.buf});
+        sim_turf_bound().push_back({addr, enc & 0xffffu, g.policy.capacity(), pool, g.buf});
     return {g.buf, 0, g.size};
 }
 VkDescriptorBufferInfo sim_turf_private_binding(uint64_t addr, uint32_t enc, uint64_t salign) {
@@ -1545,6 +1550,7 @@ bool depth_aspect(VkFormat f) {
 // where a build behind a faulted one hangs; other drivers keep building a program's variants in parallel.
 // RX_VK_DRIVER_FAULTS=0: off; =1: the default; =2: one at a time on every driver
 constexpr VkResult kDriverFault = (VkResult)-77;   // (what the guards below answer for a fault in the driver)
+constexpr VkResult kPrepareSkip = (VkResult)-78;   // (the supervisor left this program out for this preparation)
 int driver_faults_mode() {
     static const int mode = getenv("RX_VK_DRIVER_FAULTS") ? std::clamp(atoi(getenv("RX_VK_DRIVER_FAULTS")), 0, 2) : 1;
     return mode;
@@ -1935,13 +1941,153 @@ VkResult note_out_of_memory(VkResult r) {
         st_driver_out_of_memory.fetch_add(1, std::memory_order_relaxed);
     return r;
 }
+// ---- (longshot) The preparation's journal (prepare_journal.h; docs/dev/reference/shader-preparation.md) ----
+// A --prepare-shaders run that was given a file (--prepare-journal) writes a line before and after each driver compile call
+// it makes, so that the Builder's supervisor (nx2/prepare_supervisor.py) can tell which shader a run died or hung in, leave
+// that one out and start again. Here and not in the guards above: they are compiled alone by the checks, and a begin must
+// be written outside the armed window. The calls covered are the three the preparation makes: a program's shader modules
+// (vk_shader.cpp make_module, through extern_guarded_shader_module) and the pipelines built with a cache
+// (guarded_graphics_held, guarded_compute_held). A game run pays one read of a bool in each.
+/// Whether this run journals: only the preparation's own process, and only when asked
+bool journal_wanted() {
+    static const bool on = [] {
+        const char* path = getenv("LONGSHOT_PREPARE_JOURNAL");
+        const char* asked = getenv("LONGSHOT_PREPARE_SKIP");
+        return env_on("LONGSHOT_PREPARE_ONLY") && ((path && *path) || (asked && *asked));
+    }();
+    return on;
+}
+int64_t journal_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+struct PrepareJournal {
+    prepare_journal::Writer writer;
+    prepare_journal::Asked asked;       // (--prepare-skip: the programs left out, and the suspects built one at a time)
+    prepare_journal::TestFault test;    // (RX_VK_TEST_PREPARE_FAULT)
+    uint64_t from = 0;                  // (--prepare-from: the last entry of the runs before)
+    int64_t limit_ms = 0;               // (--prepare-entry-limit: what one entry gets; 0: no limit)
+    std::mutex alone_mu;                // (one driver call at a time during diagnosis)
+    // (which program a shader module is of: a pipeline's create info names its modules, not its program. Written where a
+    // program's module is made, read where a pipeline is built. A handle the driver gives again is written again there)
+    std::mutex modules_mu;
+    std::unordered_map<uint64_t, uint64_t> module_program;
+};
+/// (never freed: the run ends through _Exit or TerminateProcess with threads still inside the driver)
+PrepareJournal& journal() {
+    static PrepareJournal* const j = new PrepareJournal;
+    static std::once_flag once;
+    std::call_once(once, [] {
+        if (const char* e = getenv("LONGSHOT_PREPARE_FROM")) j->from = strtoull(e, nullptr, 10);
+        if (const char* e = getenv("LONGSHOT_PREPARE_ENTRY_S")) j->limit_ms = (int64_t)std::max(0, atoi(e)) * 1000;
+        if (const char* e = getenv("LONGSHOT_PREPARE_SKIP"); e && *e) {
+            std::string text;
+            if (FILE* f = fopen(e, "rb")) {
+                char b[4096];
+                size_t n;
+                while ((n = fread(b, 1, sizeof b, f)) > 0) text.append(b, n);
+                fclose(f);
+            } else {
+                logf("vk: preparation: %s (--prepare-skip) could not be read: nothing is left out", e);
+            }
+            j->asked = prepare_journal::asked_parse(text);
+        }
+        bool bad = false;
+        j->test = prepare_journal::test_fault_parse(getenv("RX_VK_TEST_PREPARE_FAULT"), &bad);
+        if (bad)
+            logf("vk: RX_VK_TEST_PREPARE_FAULT=%s is none of crash:<n>, hang:<n>, crash:=<key>, hang:=<key>: ignored",
+                 getenv("RX_VK_TEST_PREPARE_FAULT"));
+        const char* path = getenv("LONGSHOT_PREPARE_JOURNAL");
+        if (path && *path && !j->writer.open(path, dev.props.vendorID, dev.props.driverVersion, j->from))
+            logf("vk: preparation: the journal %s could not be opened: this run keeps none", path);
+        logf("vk: preparation: journal %s, entries from %llu; %zu programs left out and %zu built one at a time (--prepare-skip); "
+             "an entry gets %lld s%s", j->writer.on() ? path : "(none)", (unsigned long long)j->from + 1, j->asked.skip.size(),
+             j->asked.alone.size(), (long long)(j->limit_ms / 1000), j->limit_ms ? "" : " (no limit)");
+        if (j->test.mode && j->test.key)
+            logf("vk: preparation: program %016llx %s on purpose (RX_VK_TEST_PREPARE_FAULT, a test of the supervisor)",
+                 (unsigned long long)j->test.key, j->test.mode == 1 ? "crashes" : "never returns");
+        else if (j->test.mode)
+            logf("vk: preparation: every program whose key is a multiple of %llu %s on purpose (RX_VK_TEST_PREPARE_FAULT, a "
+                 "test of the supervisor)", (unsigned long long)j->test.every, j->test.mode == 1 ? "crashes" : "never returns");
+    });
+    return *j;
+}
+/// (RX_VK_TEST_PREPARE_FAULT) The entry just begun ends the process as a fault outside the guards does, or never returns
+void journal_test_fault(const PrepareJournal& j, uint64_t seq, uint64_t program) {
+    logf("vk: preparation: RX_VK_TEST_PREPARE_FAULT: entry %llu (program %016llx) %s now", (unsigned long long)seq,
+         (unsigned long long)program, j.test.mode == 1 ? "crashes" : "hangs");
+    if (host && host->log_flush) host->log_flush();
+    if (j.test.mode == 2)
+        for (;;) std::this_thread::sleep_for(std::chrono::hours(1));
+    volatile int* const nowhere = nullptr;
+    *nowhere = 1;   // (an access violation outside the guards' armed window: the process dies of it, as of a driver's)
+}
+thread_local uint64_t journal_module_program = 0;   // (driver_faulted_program's: the program whose module comes next)
+void journal_module_note(VkShaderModule m, uint64_t program) {
+    PrepareJournal& j = journal();
+    std::lock_guard lk(j.modules_mu);
+    if (program) j.module_program[(uint64_t)m] = program;
+    else j.module_program.erase((uint64_t)m);
+}
+uint64_t journal_module_of(VkShaderModule m) {
+    if (!m) return 0;
+    PrepareJournal& j = journal();
+    std::lock_guard lk(j.modules_mu);
+    const auto it = j.module_program.find((uint64_t)m);
+    return it == j.module_program.end() ? 0 : it->second;
+}
+uint64_t journal_program(const VkGraphicsPipelineCreateInfo* ci) {
+    if (!journal_wanted()) return 0;
+    for (uint32_t i = 0; i < ci->stageCount; i++)
+        if (const uint64_t program = journal_module_of(ci->pStages[i].module)) return program;
+    return 0;
+}
+uint64_t journal_program(const VkComputePipelineCreateInfo* ci) { return journal_wanted() ? journal_module_of(ci->stage.module) : 0; }
+/// One driver call of the preparation, from before it to after it. skip: the supervisor named its program (--prepare-skip):
+/// the caller answers kPrepareSkip without entering the driver
+struct JournalEntry {
+    uint64_t seq = 0;
+    bool alone = false, skip = false;
+    JournalEntry(prepare_journal::Kind kind, uint64_t program, uint64_t detail) {
+        if (!journal_wanted()) return;
+        PrepareJournal& j = journal();
+        if (program && j.asked.skip.count(program)) {
+            skip = true;
+            static std::atomic<int> told{0};
+            if (told++ < 10)
+                logf("vk: preparation: a %s of %016llx is not handed to the driver: an earlier run died or hung in that program "
+                     "(--prepare-skip)", prepare_journal::kind_name(kind), (unsigned long long)program);
+            return;
+        }
+        if (!j.asked.alone.empty()) j.alone_mu.lock(), alone = true;
+        seq = j.writer.begin(kind, program, detail, journal_ms());
+        if (seq && prepare_journal::test_fault_here(j.test, program)) journal_test_fault(j, seq, program);
+    }
+    VkResult end(VkResult r) {
+        close((int)r);
+        return r;
+    }
+    ~JournalEntry() { close((int)VK_ERROR_UNKNOWN); }
+    JournalEntry(const JournalEntry&) = delete;
+    JournalEntry& operator=(const JournalEntry&) = delete;
+
+private:
+    void close(int result) {
+        if (seq) journal().writer.end(seq, result, journal_ms());
+        if (alone) journal().alone_mu.unlock();
+        seq = 0, alone = false;
+    }
+};
 VkResult guarded_graphics_held(VkPipelineCache cache, const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl) {
-    PcacheUse use(cache);
-    return note_out_of_memory(guarded_graphics(cache, ci, pl));
+    PcacheUse use(cache);   // (before the entry: a wait for a save's fetch is not time inside the driver's compiler)
+    JournalEntry entry(prepare_journal::kGraphics, journal_program(ci), ci->flags);
+    if (entry.skip) return *pl = VK_NULL_HANDLE, kPrepareSkip;
+    return entry.end(note_out_of_memory(guarded_graphics(cache, ci, pl)));
 }
 VkResult guarded_compute_held(VkPipelineCache cache, const VkComputePipelineCreateInfo* ci, VkPipeline* pl) {
     PcacheUse use(cache);
-    return note_out_of_memory(guarded_compute(cache, ci, pl));
+    JournalEntry entry(prepare_journal::kCompute, journal_program(ci), ci->flags);
+    if (entry.skip) return *pl = VK_NULL_HANDLE, kPrepareSkip;
+    return entry.end(note_out_of_memory(guarded_compute(cache, ci, pl)));
 }
 bool compiles_nothing(VkPipelineCreateFlags flags) { return (flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT) != 0; }
 /// (longshot) Windows Intel: an ask, or a dispatch's module, left to a worker because another thread held Intel's compiler gate
@@ -4223,6 +4369,7 @@ struct HandleHit {
     uint32_t version; // (the slot's, when resolved)
     uint32_t tex_epoch;   // (the texture epoch it was last touched in)
     bool sampling;    // (its use reads the texture's contents)
+    uint32_t tex_id;  // (the texture's creation number, 0 for none: texture_still_resolved)
 };
 TLS_OBJECT(handle_hits, FlatMap<uint64_t, HandleHit>)
 // (longshot) RX_VK_TRACE_TEX=<w>x<h>,...: each draw sampling a texture of that size is logged with its state, every 30th frame, 600 lines: a
@@ -4278,6 +4425,11 @@ VkImageView texture_view_of(uint32_t handle, VkImageViewType want, ViewUse use, 
         else if (it->second.destroy_gen != dgen) st_gen++;
         else st_hit++;
     }
+    // (RX_VK_EXACT_STALE=0: as before) a texture went since, but not this handle's: what it resolved to stands
+    static const bool exact = [] { const char* e = getenv("RX_VK_EXACT_STALE"); return !(e && env_value_off(e)); }();
+    if (exact && it != handle_hits().end() && it->second.version == version && it->second.destroy_gen != dgen &&
+        texture_still_resolved(it->second.tex_id, it->second.destroy_gen, dgen))
+        it->second.destroy_gen = dgen;
     if (it != handle_hits().end() && it->second.version == version && it->second.destroy_gen == dgen) {
         if (it->second.tex && it->second.tex_epoch != texture_epoch()) {   // (once a submission: its age and contents)
             if (!texture_touch_quick(it->second.tex, it->second.sampling)) texture_touch(it->second.tex, it->second.sampling);
@@ -4312,7 +4464,8 @@ VkImageView texture_view_of(uint32_t handle, VkImageViewType want, ViewUse use, 
                      has_view && v.set_format ? v.format : 0, has_view && v.set_target ? v.target : -1, (int)want, (int)use);
         }
     }
-    handle_hits()[key] = {view, tex, dgen, level, version, texture_epoch(), use == ViewUse::Sample || use == ViewUse::Storage};
+    handle_hits()[key] = {view, tex, dgen, level, version, texture_epoch(), use == ViewUse::Sample || use == ViewUse::Storage,
+                          tex && view ? tex->id : 0};
     if (tex_out) *tex_out = tex;
     if (level_out) *level_out = level;
     return view;
@@ -5212,7 +5365,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
             // are read once
             static thread_local std::vector<uint32_t> table;
             const bool is_table = d.handle_program != ~0U && d.count > 1;
-            if (is_table) table.resize(d.count), stage_handles(s, st, d.handle_program, d.count, table.data());
+            if (is_table) table.resize(d.count), stage_handles(s, st, d.handle_program, d.count, table.data(), p.key);
             uint32_t prev_handle = 0;
             VkImageView prev_view = VK_NULL_HANDLE;
             Texture* prev_tex = nullptr;
@@ -5445,11 +5598,39 @@ VkResult extern_guarded_compute(VkPipelineCache cache, const VkComputePipelineCr
     return made ? VK_SUCCESS : p == VK_SUCCESS ? r : p;
 }
 VkResult extern_guarded_shader_module(const VkShaderModuleCreateInfo* ci, VkShaderModule* m) {
-    return guarded_shader_module(ci, m);
+    if (!journal_wanted()) return guarded_shader_module(ci, m);
+    // (a --prepare-shaders run with a journal: the module's program is the one make_module has just asked
+    // driver_faulted_program about on this thread; 0 for a shader of the renderer's own)
+    const uint64_t program = std::exchange(journal_module_program, 0);
+    JournalEntry entry(prepare_journal::kModule, program, ci->codeSize);
+    if (entry.skip) return *m = VK_NULL_HANDLE, kPrepareSkip;
+    const VkResult r = entry.end(guarded_shader_module(ci, m));
+    if (r == VK_SUCCESS && *m) journal_module_note(*m, program);
+    return r;
+}
+/// (longshot) The preparation's journal, for its watch in vk_main.cpp (prepare_entry_watch): true when an entry has been
+/// inside the driver for longer than one gets (--prepare-entry-limit). Its "t" line is written and the log says which: the
+/// caller ends the run with prepare_journal::kExitEntryLimit, and the supervisor starts it again without that program
+bool prepare_journal_overdue() {
+    if (!journal_wanted()) return false;
+    PrepareJournal& j = journal();
+    uint64_t program = 0;
+    int64_t open_ms = 0;
+    const uint64_t seq = j.writer.overdue(j.limit_ms, journal_ms(), &program, &open_ms);
+    if (!seq) return false;
+    logf("vk: preparation: STOPPED: entry %llu (program %016llx) has been inside the GPU driver for %lld s, longer than the "
+         "%lld s one gets: the run ends with exit status %d, to be started again without that program",
+         (unsigned long long)seq, (unsigned long long)program, (long long)(open_ms / 1000), (long long)(j.limit_ms / 1000),
+         prepare_journal::kExitEntryLimit);
+    return true;
 }
 /// (longshot) A program whose shader module the driver faulted on (vk_shader.cpp make_module) is kept out as one whose pipeline
 /// it faulted on: not asked of it again in this run, nor in later runs on the same driver (driver_faults.h)
-bool driver_faulted_program(uint64_t key) { return key && driver_faults_on() && fault_quarantine().contains(key); }
+bool driver_faulted_program(uint64_t key) {
+    const bool faulted = key && driver_faults_on() && fault_quarantine().contains(key);
+    if (journal_wanted()) journal_module_program = faulted ? 0 : key;   // (the journal's: whose module is made next)
+    return faulted;
+}
 void driver_faulted_module(uint64_t key) {
     if (!key || !driver_faults_on() || fault_quarantine().contains(key)) return;
     fault_quarantine().load({key});
@@ -6241,7 +6422,7 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
         // 701ae221d88b2908) where the depth is exactly its own, and LESS_OR_EQUAL drew the whole sheet over the mountain behind:
         // a flat khaki veil on Intel (Arc 155H). The prepass's colour passes the margin was made for do not blend: some have blending
         // on with ONE, ZERO (the same as off), and those keep the margin (without it, Death Mountain Trail's ground had holes).
-        static const float eq_bias = dev.policy.equal_depth_bias;   // (device_policy.h: 64 on Intel's Windows driver but on Battlemage, then the switch)
+        static const float eq_bias = dev.policy.equal_depth_bias;   // (device_policy.h: 64 on Intel's Windows driver but on Battlemage and Lunar Lake, then the switch)
         bool blends = false;
         for (int i = 0; i < at.n && !blends; i++) {
             const nvn_blend_st& b = s.blend[i];
@@ -7257,10 +7438,11 @@ void sim_turf_sample_demand(VkCommandBuffer cmd, const NvnState& s, const Progra
                 const BufferRef source = gpu_buffer_bind(base, prefix + 16, false);
                 if (source) demand.push_back({source, addr, pool});
             }
-            const auto bound = std::find_if(sim_turf_bound.begin(), sim_turf_bound.end(), [&](const SimTurfBound& b) {
+            const std::vector<SimTurfBound>& bound_now = sim_turf_bound();
+            const auto bound = std::find_if(bound_now.begin(), bound_now.end(), [&](const SimTurfBound& b) {
                 return b.addr == addr && b.orig == off && b.pool == pool;
             });
-            if (bound == sim_turf_bound.end()) continue;
+            if (bound == bound_now.end()) continue;
             const uint32_t stock = pool ? Shader::Optimization::kSimTurfPoolCap : Shader::Optimization::kSimTurfBladeCap;
             const uint32_t stride = pool ? 48u : 8u;
             const bool reverse = !pool || off == 0x70;
@@ -12327,6 +12509,39 @@ bool compile_all() {
     }();
     return all;
 }
+/// (longshot) A --prepare-shaders run started again by the supervisor (--prepare-from): the run before died or hung inside
+/// the driver, the journal says in which program, and this run leaves that one out. That death is accounted for, so it is
+/// taken off the steps' crash markers (crash_markers.h): counted, the second death in a step would let the whole step go
+/// (the warm skipped, the notes dropped) for the sake of shaders that are already left out. Each marker goes back one start,
+/// which is what the run before found: a step it died in holds its count plus one
+void prepare_restart_forgive() {
+    if (!getenv("LONGSHOT_PREPARE_FROM")) return;
+    int forgiven = 0;
+    const std::string once = prepared_path() + ".warming";   // (no count: there or not)
+    if (FILE* f = fopen(once.c_str(), "rb")) fclose(f), remove(once.c_str()), forgiven++;
+    // (the prediction's file stays at 0, "began and not finished", as a close leaves it: predict_pending. The other two
+    // go at 1, as crash_markers::begin's `closed` has them)
+    const std::string counted[3] = {predict_pending_path(), precompile_built_path() + ".warming", pipe_notes_path() + ".running"};
+    for (int k = 0; k < 3; k++) {
+        const std::string& path = counted[k];
+        int count = 0;
+        FILE* f = fopen(path.c_str(), "rb");
+        if (!f) continue;
+        if (fscanf(f, "%d", &count) != 1) count = 1;
+        fclose(f);
+        if (count <= 0) continue;
+        forgiven++;
+        if (count == 1 && k != 0) {
+            remove(path.c_str());
+        } else if (FILE* out = fopen(path.c_str(), "wb")) {
+            fprintf(out, "%d\n", count - 1);
+            fclose(out);
+        }
+    }
+    if (forgiven)
+        logf("vk: preparation: started again past entry %s: the run before is not counted against the %d step%s it left open",
+             getenv("LONGSHOT_PREPARE_FROM"), forgiven, forgiven == 1 ? "" : "s");
+}
 void predict_run(void (*progress)(size_t done, size_t total)) {
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<std::unique_ptr<PipeNote>> notes = pipe_notes_read();
@@ -13045,7 +13260,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     dclock.t_pipe = slow_dispatch_timing() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     end_pass(cmd, "compute dispatch");
     grid_patch_want = indirect, grid_patch_at = UINT64_MAX;
-    sim_turf_bound.clear();
+    sim_turf_bound().clear();
     ub_prog_key = p.key;   // (the Grass distance row: uniform_range)
     build_descriptors(s, p);
     ub_prog_key = 0;
@@ -13317,11 +13532,33 @@ int64_t draw_slotgen_saves() {   // (Descriptor reuse: of those, what the global
 }
 
 void pipeline_cache_play() {
-#ifndef _WIN32
-    // The restore path skips bulk precompile and still opens the restored Vulkan cache before play.
-    if (restored_shader_dump().dir[0]) pcache_init();
-#endif
+    pcache_init();
     play_cache_begin();
+    bool skipped_precompile = !precompile_wanted();
+#ifndef _WIN32
+    skipped_precompile |= restored_shader_dump().dir[0] != '\0';
+#endif
+    // (longshot) When precompile_run() did not run (RX_VK_PRECOMPILE=0 or dev build), still index kept programs and notes
+    // for RX_VK_LOAD=create (zero compilation) so create calls load kept programs and noted pipelines from caches ahead of
+    // first use instead of discarding them before the index is ready.
+    if (skipped_precompile && !env_on("LONGSHOT_PREPARE_ONLY") && !env_on("RX_VK_NO_PROGRAM_CACHE") &&
+        programs_load_at_create() && !program_cache_kept_keys().empty()) {
+        std::vector<NoteRef> refs = start_note_refs(true);
+        {
+            std::lock_guard lk(note_mu);
+            if (!note_file) {
+                for (const NoteRef& r : refs) noted.insert(r.key);
+                const std::vector<std::unique_ptr<PipeNote>> none;
+                notes_open_locked(&none);
+            }
+        }
+        if (!env_on("RX_VK_NO_STATE_LIST")) {
+            std::lock_guard lk(state_mu);
+            if (!state_file) state_open_locked();
+        }
+        const ComputePlan plan = computes_plan(precompile_computes_which(), !env_on("RX_VK_NO_STATE_LIST"));
+        programs_index(std::move(refs), plan.none ? std::unordered_set<uint64_t>{} : plan.keys);
+    }
     programs_play_begin();   // (the census: what is made from here on is made in play)
 #ifdef __linux__
     // (longshot) On Linux with <= 20 GB of RAM (the Steam Deck's 16 GB shared memory and 16 GB PCs) or when memory pressure is

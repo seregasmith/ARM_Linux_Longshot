@@ -21,6 +21,7 @@ def main():
 typedef struct { int unused; } Ctx;
 static int clears;
 void hos_input_clear_toggles(void) { clears++; }
+static void sprint_menu_tick(uint64_t screen) { (void)screen; }   /* (oot_menu.c's, above its #if: it reads guest memory) */
 // LINUX_MENU
 int main(void) {
     hos_oot_menu_focus(0, 0, 0, 0);

@@ -75,9 +75,10 @@ int main(int argc, char** argv) {
     driver = atoi(argv[1]);
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     VkPipeline out = (VkPipeline)(uintptr_t)0x99;
-    if (!strcmp(argv[2], "texture")) return check("texture_compute_pipeline", texture_compute_pipeline(ci, out), out);
-    const VkResult r = extern_guarded_compute(VK_NULL_HANDLE, &ci, &out);
-    return check("extern_guarded_compute", r, out);
+    // (asked before the check's arguments: out and the counts are read after it, whatever order a compiler takes them in)
+    const bool texture = !strcmp(argv[2], "texture");
+    const VkResult r = texture ? texture_compute_pipeline(ci, out) : extern_guarded_compute(VK_NULL_HANDLE, &ci, &out);
+    return check(texture ? "texture_compute_pipeline" : "extern_guarded_compute", r, out);
 }
 """
 

@@ -100,7 +100,7 @@ def main():
     check("if (!hos_guest_range(buf, size)) return 0;" in read_at, "read_at writes into a buffer it did not check")
     # (the HLE hands its work to fs_write_file through save_handle_call, which takes the save lock for a staged save)
     hle = block(fs, "HLE(_ZN2nn2fs9WriteFileENS0_10FileHandleElPKvmRKNS0_11WriteOptionE)")
-    check("save_handle_call(c, fs_write_file)" in hle, "WriteFile does not run fs_write_file")
+    check("save_handle_call(c, fs_write_file, " in hle, "WriteFile does not run fs_write_file")
     write = block(fs, "static void fs_write_file(Ctx *c, Handle *fh)")
     check("hos_guest_range(ARG(2), ARG(3))" in write, "WriteFile reads a buffer it did not check")
     size = block(fs, "HLE(_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE)")

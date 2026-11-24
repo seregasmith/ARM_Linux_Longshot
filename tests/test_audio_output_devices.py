@@ -59,7 +59,6 @@ def check_host_callbacks(api, backend):
     fields = [re.search(r'\(\*(\w+)\)', d).group(1) if '(*' in d else d.split()[-1]
               for d in body.split(';') if d.strip()]
     body = code(backend.split('static const MkwVkHost vk_host = {', 1)[1].split('};', 1)[0])
-    table = [value.strip() for value in body.split(',') if value.strip()]
     expected = {'take_text': 'host_take_text', 'options_path': 'hos_options_file',
                 'audio_output_count': 'hos_audio_output_count', 'audio_output_info': 'hos_audio_output_info',
                 'audio_output_select': 'hos_audio_output_select', 'audio_output_state': 'hos_audio_output_state',
@@ -68,11 +67,17 @@ def check_host_callbacks(api, backend):
                 'monitor_count': 'hos_monitor_count',
                 'monitor_info': 'hos_monitor_info', 'monitor_select': 'hos_monitor_select',
                 'perf_tracking': 'hos_perf_tracking'}
-    assert len(fields) == len(table), 'Host interface/initializer lengths differ'
     start = fields.index('take_text')   # (later versions append their own after these)
     assert fields[start:start + len(expected)] == list(expected), 'Append monitor callbacks after out-of-memory without shifting earlier callbacks'
-    for field, value in expected.items():
-        assert table[fields.index(field)] == value, 'Wrong host callback slot: ' + field
+    for windows in (True, False):
+        initializer = re.sub(r'#ifdef _WIN32\s*([^#]*)#else\s*([^#]*)#endif',
+                             lambda match: match.group(1 if windows else 2), body)
+        table = [value.strip() for value in initializer.split(',') if value.strip()]
+        assert len(fields) == len(table), 'Host interface/initializer lengths differ'
+        for field, value in expected.items():
+            assert table[fields.index(field)] == value, 'Wrong host callback slot: ' + field
+        if 'vulkan_loader_proc' in fields:
+            assert table[fields.index('vulkan_loader_proc')] == ('host_vulkan_loader_proc' if windows else 'NULL')
 
 PARSER = r'''
 #include <assert.h>
@@ -180,7 +185,7 @@ def main():
     parser.add_argument('--cc', default='clang')
     parser.add_argument('--cxx', default='clang++')
     args = parser.parse_args()
-    menu = source_contracts()
+    source_contracts()
     if args.source_only:
         print('PASS: playback/menu source contracts only; native fixtures and runtime remain unverified')
         return
@@ -191,7 +196,8 @@ def main():
         header = ROOT / 'host'
         src, exe = work/'parser.c', work/'parser.exe'
         src.write_text(PARSER, encoding='utf-8')
-        run([args.cc,'-std=c11','-Wall','-Wextra','-Werror','-I',ROOT,'-I',header,src,'-o',exe]);run([exe])
+        run([args.cc,'-std=c11','-Wall','-Wextra','-Werror','-I',ROOT,'-I',header,src,'-o',exe])
+        run([exe])
         # (the playback row's code: the Audio module's, gpu/vk/menu/audio.cpp, #1633)
         module = (ROOT / 'gpu/vk/menu/audio.cpp').read_text(encoding='utf-8')
         pick = re.search(r'^int output_pick = 0;.*\n', module, re.M)
@@ -200,10 +206,12 @@ def main():
         helpers=module[module.index('void refresh_outputs()'):module.index('void mic_tell_host()')]
         src,exe=work/'menu.cpp',work/'menu.exe'
         src.write_text(MENU.replace('@GLOBALS@',globals_text).replace('@HELPERS@',helpers),encoding='utf-8')
-        run([args.cxx,'-std=c++17','-Wall','-Wextra','-Werror','-I',header,src,'-o',exe]);run([exe])
+        run([args.cxx,'-std=c++17','-Wall','-Wextra','-Werror','-I',header,src,'-o',exe])
+        run([exe])
         if os.name=='nt':
             exe=work/'metadata.exe'
-            run([args.cc,'-std=c11','-Wall','-Wextra','-Werror',ROOT/'tests/audio_output_devices_test.c','-lole32','-o',exe]);run([exe])
+            run([args.cc,'-std=c11','-Wall','-Wextra','-Werror',ROOT/'tests/audio_output_devices_test.c','-lole32','-o',exe])
+            run([exe])
     print('PASS: playback settings parser, menu selection and applicable metadata fixtures')
 
 if __name__=='__main__':

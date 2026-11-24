@@ -489,6 +489,16 @@ static void host_input_status(MkwVkInputStatus *out) {
     snprintf(out->path, sizeof out->path, "%s", s.path);
     snprintf(out->why, sizeof out->why, "%s", s.why);
 }
+#ifdef _WIN32
+static uintptr_t host_vulkan_loader_proc(void) {
+    HMODULE loader = LoadLibraryExA("vulkan-1.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!loader) return 0;
+    FARPROC resolver = GetProcAddress(loader, "vkGetInstanceProcAddr");
+    if (!resolver) FreeLibrary(loader);
+    return (uintptr_t)resolver;
+}
+#endif
+
 static const MkwVkHost vk_host = {
     MKWVK_API_VERSION, host_log, hos_guest_base, hos_guest_size, hos_gpu_ptr, nvn_gpu_guest, nvn_gpu_read,
     nvn_gpu_write, host_collect, host_free_pages, host_mark_written, hos_ticks, hos_now_ns, nvn_tex_layout,
@@ -512,6 +522,11 @@ static const MkwVkHost vk_host = {
     hos_reset_binding,
     hos_rebind_control,
     hos_binding_is_default,
+#ifdef _WIN32
+    host_vulkan_loader_proc,
+#else
+    NULL,
+#endif
 };
 
 static const MkwVkRenderer *vk;   /* the Vulkan back end, when it was chosen and started */

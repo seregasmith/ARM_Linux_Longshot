@@ -12,11 +12,13 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-RUN = """work=1
+RUN = """bash -c '
+work=1
 for a in "$@"; do case "$a" in --work|--work=*) work= ;; esac; done
-# (not the player's builder folder, ~/.cache/longshot-builder or %LOCALAPPDATA%\\LongshotBuilder: `dev.py paths work`)
+# (not the player builder folder, ~/.cache/longshot-builder or %LOCALAPPDATA%\\LongshotBuilder: `dev.py paths work`)
 [ -z "$work" ] || set -- --work "$(python3 -I scripts/dev.py paths work)" "$@"
 python3 -I nx2/make_game.py "$@"
+' build "$@"
 """
 
 

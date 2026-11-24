@@ -15,7 +15,7 @@ everyone. This page is what an agent does on top.
    them the two commands to type (`/plugin marketplace add https://git.magicbean.dev/MagicBeanDev/Tooling.git`, then
    `/plugin install magicbean@magicbean`); plugin commands are theirs to run, not yours. Other agents read
    `../Tooling/skills/<name>/SKILL.md`. Longshot's own skills are in `.claude/skills/` (prior-work, fix-with-test,
-   measure).
+   measure, release-benchmark).
 
 ## Always
 
@@ -56,6 +56,7 @@ everyone. This page is what an agent does on top.
 | What a change must meet (switches, code rules, PRs) | [standards](docs/dev/standards.md) |
 | Fixing a bug | the [fix-with-test skill](.claude/skills/fix-with-test/SKILL.md) |
 | Measuring a change or a switch against `main` | the [measure skill](.claude/skills/measure/SKILL.md) |
+| Benchmarking a stable release against `main` | the [release-benchmark skill](.claude/skills/release-benchmark/SKILL.md) |
 | The same input on every run (a bug again, a fix checked along a route) | [replay a recording](docs/dev/developing.md#replay-a-recording): record once, replay through the queue, read the log's `input: playback over` line |
 | Changing the GPU replay | [architecture](docs/dev/reference/architecture.md) and its rules |
 | How a part works | the [reference pages](docs/dev/README.md#reference) |

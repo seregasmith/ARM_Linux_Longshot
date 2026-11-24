@@ -106,11 +106,23 @@ The FSR 4 model row (`fsr4_model=`; `RX_VK_FSR4_MODEL=auto|lite` over it for one
 AMD's own `IsSupported` choose (FP8 on RDNA 4, full INT8 on RDNA 3 and Strix Halo, the Navi 2 INT8 model on RX 6000, Lite
 on Strix Point and Van Gogh); Lite forces the INT8 Lite provider.
 
-`fsr4_models::install` (`fsr4_models.cpp`) patches only each provider's `IsSupported` entry (`vtable[2]`), after the
-4.1.2 vtable shape check, and only in this process's copy: a module whose layout is not understood, or whose vtable
-changed under the scan, is left alone (Auto). The log's `vk: AMD FSR 4: models:` lines say what each loaded module held.
-Linux has no Lite provider: the row is hidden and the switch does nothing. Checked against
-`amd_fidelityfx_upscaler_vk.dll` 4.1.2.4555 (FSR SDK 2.4).
+The hook is for one file: FSR SDK 2.4's `amd_fidelityfx_upscaler_vk.dll` (4.1.2.4555), named by the SHA-256
+`scripts/fetch.py` pins for it (`fsr4_models.cpp`, `kKnown`). `fsr4_models::load_known` hashes the file beside AMD's
+loader; only when it is that file does it load it from that path (before the loader asks for the name, so the loader's
+own load finds this module), pin it, check that the module's file is the one hashed, and scan it. Any other file is not
+loaded here and not scanned. `fsr4_models::install` then patches only each provider's `IsSupported` entry (`vtable[2]`),
+after the 4.1.2 vtable shape check, and only in this process's copy; without the known library, with a shape that is not
+understood, or with a vtable that changed under the scan, nothing is written (Auto). Once the loader has listed its
+upscalers, `known_module_is_loaders` checks that the module under that name is still the one that was checked, and
+otherwise the hook answers as AMD does (`release`). A newer AMD file is Auto only until its layout is read and its
+SHA-256 added. The log's `vk: AMD FSR 4: models:` lines say what was found. Linux has no Lite provider: the row is hidden
+and the switch does nothing.
+
+Where AMD's library lists no FSR 4 for the GPU (its own `IsSupported` says no for every model: an NVIDIA or Intel GPU, a
+Radeon AMD names for none) and the Lite provider is hooked, `load` asks the list again with Lite answering and, when
+FSR 4 is listed then, runs every context on it (`g_standin`): FSR 4 is offered, the model row is not shown, AMD's own
+shaders run (the tuned passes are measured on AMD's pick), and the log says `INT8 Lite stands in`.
+`RX_VK_FSR4_STANDIN=0` leaves FSR 4 off there, as it was.
 
 ### DLSS's log and memory
 
@@ -204,7 +216,7 @@ again. `RX_VK_UPSCALE_LOD_BIAS=0` adds none; `RX_VK_DLSS_LOD_OFFSET=<steps>` set
 | FSR 3.1 and FSR 3.1 interpolation take their constants from a slice of the recording's upload stream (`uniform_upload`), never a ring sized by CPU frames. No room means the evaluation is rejected before it touches history | `vk_fsr3.cpp`, `vk_fsr3fi.cpp` |
 | Images from an old size are retired on the GPU timeline (`vk_retirement_value()`), freed once `vk_timeline_completed()` passes it. A zero ticket (no timeline) is never freed early | `drop_image`, `free_dead` |
 | Engine resources released while work may be in flight go through `temporal_later` | `vk_temporal.h` |
-| A failed DLSS feature creation is not retried until a DLSS setting changes (`dlss_retry`) | `vk_dlss.cpp` `prepare` |
+| A failed DLSS feature creation is not retried until a DLSS setting changes (`dlss_retry`), except one refused for want of video memory: it is tried again after 600 frames, at most three creations, then the refusal stays; any other result is final at once | `vk_dlss.cpp` `prepare`, `dlss_checks.h` `retry` |
 | `prepare` returning -1, or a failed `evaluate` without `retry`, disables the engine for the run; the game's network draws from then on | `draw_engine` |
 | DLSS and FSR 3.1 set `retry`: a failed evaluation drops that frame to the network and resets history. DLSS remakes its feature after 30 failures in a row | `kEngine`, `kChainEngine` |
 

@@ -231,6 +231,80 @@ inline void step_render(int upscaler, int v, int dir, int* up, int* res) {
 /// DLAA and FSR 4's native AA are their engines' Native)
 inline bool render_fixed(int upscaler) { return full_scale(upscaler) && native_of(engine(upscaler)) < 0; }
 
+// ---- Option C: Dynamic resolution toggle + monotonic ascending fixed Render resolution slider ----
+/// Sentinel stop ID representing an engine's Native full-scale mode (DLAA / FSR 4 Native AA / XeSS Native AA) on the
+/// Render resolution slider. Distinct from 1 (100% numeric) so saved 100% under DLSS still snaps to 92% as before.
+constexpr int kNativeStop = -1;
+constexpr int kGameFixedSteps[] = {4, 3, 2, 1};                            // (50, 67, 75, 100 %)
+constexpr int kOffFixedSteps[] = {6, 4, 3, 2, 1};                          // (33, 50, 67, 75, 100 %)
+constexpr int kFsr3FixedSteps[] = {6, 4, 5, 3, 2, 8, 9, 1};                // (33, 50, 58, 67, 75, 83, 92, 100 %)
+constexpr int kNativeFixedSteps[] = {6, 4, 5, 3, 2, 8, 9, kNativeStop};    // (33, 50, 58, 67, 75, 83, 92 %, Native)
+
+/// Ascending fixed stops for the Render resolution slider (lowest % -> highest %, never containing 0 Auto).
+inline const int* fixed_steps(int upscaler, int& n) {
+    const int e = engine(upscaler);
+    if (native_of(e) >= 0) return n = (int)(sizeof kNativeFixedSteps / sizeof kNativeFixedSteps[0]), kNativeFixedSteps;
+    if (e == FSR3) return n = (int)(sizeof kFsr3FixedSteps / sizeof kFsr3FixedSteps[0]), kFsr3FixedSteps;
+    if (e == OFF) return n = (int)(sizeof kOffFixedSteps / sizeof kOffFixedSteps[0]), kOffFixedSteps;
+    return n = (int)(sizeof kGameFixedSteps / sizeof kGameFixedSteps[0]), kGameFixedSteps;
+}
+/// Whether Dynamic resolution (Auto scaling) is currently active: opts.resolution == 0 and not in a full-scale Native mode.
+inline bool dynamic_resolution_on(int upscaler, int res) { return !full_scale(upscaler) && percent(res) == 0; }
+/// Toggle Dynamic resolution on/off while preserving 100% longshot_options.ini compatibility (resolution=0 <-> On).
+/// Remembers last_fixed (defaulting to Quality 67% = 3) across On/Off toggles, and leaves Native mode when enabling dynamic.
+inline int toggle_dynamic_resolution(int upscaler, int res, bool enable, int* last_fixed, int* out_up) {
+    const int e = engine(upscaler);
+    if (out_up) *out_up = e;
+    if (enable) {
+        if (last_fixed) {
+            if (full_scale(upscaler) && native_of(e) >= 0) *last_fixed = kNativeStop;
+            else if (percent(res)) *last_fixed = res;
+        }
+        return 0;
+    }
+    if (last_fixed && *last_fixed == kNativeStop && native_of(e) >= 0) {
+        if (out_up) *out_up = native_of(e);
+        return res;
+    }
+    const int pick = (last_fixed && percent(*last_fixed)) ? *last_fixed : 3;
+    const int snapped = snap_render(e, pick);
+    return percent(snapped) ? snapped : 3;
+}
+/// Current fixed slider stop ID for (upscaler, res): kNativeStop when full-scale Native, else snapped numeric stop (fallback 3).
+inline int active_fixed_stop(int upscaler, int res) {
+    if (full_scale(upscaler) && native_of(engine(upscaler)) >= 0) return kNativeStop;
+    const int sv = snap_render(upscaler, res);
+    return percent(sv) ? sv : 3;
+}
+/// Index of stop_v inside fixed_steps(upscaler), or 0 if not found.
+inline int fixed_stop_index(int upscaler, int stop_v) {
+    int n = 0;
+    const int* s = fixed_steps(upscaler, n);
+    for (int i = 0; i < n; i++)
+        if (s[i] == stop_v) return i;
+    return 0;
+}
+/// Apply a target fixed stop ID from fixed_steps(upscaler) to (out_up, out_res).
+/// Entering Native preserves current_res (the player's saved numeric scale) just like step_render.
+inline void apply_fixed_stop(int upscaler, int current_res, int target_stop, int* out_up, int* out_res) {
+    const int e = engine(upscaler), nat = native_of(e);
+    if (nat >= 0 && target_stop == kNativeStop) {
+        *out_up = nat;
+        *out_res = current_res;
+        return;
+    }
+    *out_up = e;
+    *out_res = target_stop;
+}
+/// Monotonic Left (-1) / Right (+1) step along fixed_steps(upscaler), clamped at ends (never wraps to Auto).
+inline void step_fixed_render(int upscaler, int current_res, int dir, int* out_up, int* out_res) {
+    int n = 0;
+    const int* s = fixed_steps(upscaler, n);
+    const int cur = fixed_stop_index(upscaler, active_fixed_stop(upscaler, current_res));
+    const int next = std::clamp(cur + (dir > 0 ? 1 : dir < 0 ? -1 : 0), 0, n - 1);
+    apply_fixed_stop(upscaler, current_res, s[next], out_up, out_res);
+}
+
 /// The texture LOD bias the upscalers add to the game's world materials (the samplers it biases below 0: -0.5 everywhere, for
 /// its network's 3/4 share, about log2(0.75)). share: the Render resolution's in 1/10000 of the output, 0 at Auto (the
 /// game's dynamic size, 3/4 of the output in play). offset: DLSS's extra step, below.

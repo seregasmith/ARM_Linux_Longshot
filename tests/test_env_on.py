@@ -49,6 +49,13 @@ int main(int argc, char** argv) {
             fprintf(stderr, "FAIL: env_on with [%s] is %d\n", v ? v : "(unset)", env_on("LONGSHOT_T_SWITCH"));
             return 1;
         }
+        /* The stand-in is on when unset, otherwise follows the same values. Windows treats empty as unset. */
+        if (env_on_or("LONGSHOT_T_SWITCH", 1) !=
+            ((!v
+#ifdef _WIN32
+              || !*v
+#endif
+             ) ? 1 : atoi(argv[i + 1]))) return 9;
     }
     /* env_on_or: the default only when unset; set, as env_on reads it (empty: off) */
     put("LONGSHOT_T_SWITCH", NULL);
@@ -77,6 +84,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cxx", default="g++")
     args = parser.parse_args()
+
+    fsr4 = (ROOT / "gpu" / "vk" / "vk_fsr4.cpp").read_text(encoding="utf-8")
+    if 'env_on_or("RX_VK_FSR4_STANDIN", 1)' not in fsr4:
+        raise SystemExit("FAIL: the FSR 4 stand-in must use the default-on boolean parser")
 
     for value, want in CASES:   # (Python's twin)
         env = os.environ.copy()

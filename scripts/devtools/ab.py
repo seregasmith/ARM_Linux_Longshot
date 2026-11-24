@@ -42,7 +42,7 @@ import statistics
 import sys
 import time
 
-from . import build, common, packs, routes, vcs
+from . import build, common, jobqueue, packs, routes, vcs
 
 WHO = "dev.py ab"
 # (the scenes: a repository save (assets/saves) to start from, then the Debug tab's teleport to a destination of
@@ -463,7 +463,10 @@ def version_hash(results):
 def measurements(plan, results):
     """The pull request's Measurements section (docs/dev/standards.md#measurements); scripts/check_pr_description.py
     measurement_problems passes it"""
-    out = ["**Verdict:** %s." % results["verdict"][1], "", setup_line(plan, results), ""]
+    out = ["**Verdict:** %s." % results["verdict"][1], ""]
+    if noisy_line(results["runs"]):
+        out += [noisy_line(results["runs"]), ""]
+    out += [setup_line(plan, results), ""]
     if plan["what"] == "switch":
         out += ["**Baseline:** both columns are one build, %s (not main): the switch set against unset on it." %
                 ((results.get("ran") or {}).get("version") or "?"), ""]
@@ -477,6 +480,25 @@ def measurements(plan, results):
     return "\n".join(out) + "\n"
 
 
+def measured_noise(path, t0, t1):
+    """The queue's noise record (jobqueue.noise_summary) of the samples taken from t0 to t1 (wall clock), the stretch a run
+    measured; {} when the queue wrote none (an older queue, or Windows)"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            samples = [json.loads(l) for l in f if l.strip()]
+    except (OSError, ValueError):
+        return {}
+    inside = [x for x in samples if t0 <= x.get("t", 0) <= t1 + 2]
+    return jobqueue.noise_summary(inside) if inside else {}
+
+
+def noisy_line(runs):
+    """The write-up's line naming the runs measured while the PC was busy, or None"""
+    bad = ["%s%d (%s)" % (r["side"], r["k"], "; ".join(r["noisy"])) for r in runs if r.get("noisy")]
+    return "**Noisy:** the PC was busy while %s measured: run %s again before trusting the numbers." % (
+        ", ".join(bad), "it" if len(bad) == 1 else "them") if bad else None
+
+
 def run_line(r):
     if r.get("error"):
         return "%s%d: FAILED: %s" % (r["side"], r["k"], r["error"])
@@ -485,11 +507,15 @@ def run_line(r):
         return "%s%d: %d frames, side 0 %.1f fps, side 1 %.1f fps, %+.2f%%%s" % (
             r["side"], r["k"], sum(s.get("frames", 0) for s in r["ab"]["sides"].values()),
             r["ab"]["sides"]["0"].get("fps", 0), r["ab"]["sides"]["1"].get("fps", 0), d.get("fps_pct", 0),
-            "" if r["warm"] else " (the warm-up never settled)")
+            "" if r["warm"] else " (the warm-up never settled)") + noisy_suffix(r)
     s = r["stats"]
     return "%s%d: %d frames in %d s, %.1f fps, median %.2f ms, p99 %.2f ms, 1%% low %.1f fps, %d cold frames%s" % (
         r["side"], r["k"], s["frames"], r["seconds"], s["fps"], s["median_ms"], s["p99_ms"], s["low1_fps"], r["cold"],
-        "" if r["warm"] else " (the warm-up never settled)")
+        "" if r["warm"] else " (the warm-up never settled)") + noisy_suffix(r)
+
+
+def noisy_suffix(r):
+    return " (NOISY: %s)" % "; ".join(r["noisy"]) if r.get("noisy") else ""
 
 
 # ---- runtimes and commits ----
@@ -628,8 +654,9 @@ def run_one(plan, side, k, pinned):
         open(live, "w").close()
         env.update(HOS_INPUT_LIVE=live, HOS_OOT_CHEATS="1")
     desc = "%s: %s · %s" % (side, s["label"], scene["name"])
+    noise_file = os.path.join(d, "noise.jsonl")   # (the queue's samples of how busy the PC was: judged on the measured stretch)
     wrapper = [sys.executable, "-I", os.path.join(common.SCRIPTS, "dev.py"), "queue", "run", "ab-%s%d" % (side, k),
-               "--mode", "timing", "--desc", desc, "--"]
+               "--mode", "timing", "--desc", desc, "--noise", noise_file, "--"]
     r = {"side": side, "k": k, "folder": d, "seconds": plan["seconds"], "warm": False,
          "headless": env.get("HOS_HEADLESS", "").strip(" \t\r\n").lower() not in ("", "0", "false", "off", "no")}
     session = None
@@ -676,6 +703,7 @@ def run_one(plan, side, k, pinned):
         if not rows:
             raise drive.Failed("no frame trace at %s (RX_VK_FRAME_TRACE)" % trace)
         start = num(rows[-1], "at_ns")
+        measured_from = time.time()
         if scene.get("route"):   # (the route played from where the save loaded Link: measured while it plays)
             g.must("play", timeout=30, path=scene["route"]["path"], sync=scene["route"]["sync"])
             rows = read_trace(trace)
@@ -687,6 +715,7 @@ def run_one(plan, side, k, pinned):
                 time.sleep(0.5)
         else:
             time.sleep(plan["seconds"])
+        measured_to = time.time()
         time.sleep(3)   # (the trace is flushed every 60 frames)
         lap(clock, "measured")
         phase = "stop"
@@ -712,6 +741,8 @@ def run_one(plan, side, k, pinned):
             if met and met.group(1) != met.group(2):
                 raise drive.Failed("the route's replay met %s of its %s loads" % met.groups())
         skip = set(plan["compared"]) | set(plan["allow"]) | {"HOS_AB"}
+        r["noise"] = measured_noise(noise_file, measured_from, measured_to)
+        r["noisy"] = jobqueue.noise_reasons(r["noise"]) if r["noise"] else []
         r.update(ran=dict(what_ran(status, options, facts, skip), version=facts["version"]), gpu=facts["gpu"],
                  cold=sum(1 for x in rows if cold(x)), log_lines=[l for l in [facts["switches_line"]] + facts["ab_lines"] if l])
         if side == "AB":
@@ -873,6 +904,8 @@ def cmd_ab(a):
         f.write(text)
     print("\n" + text, flush=True)
     say("written to %s" % os.path.join(folder, "measurements.md"))
+    if noisy_line(runs):
+        say(noisy_line(runs).replace("**", ""))
     return 0
 
 

@@ -701,10 +701,10 @@ void coopmat_init() {
         Shader::Backend::SPIRV::graphics_table_loads = v;
     }
     if (Shader::Backend::SPIRV::graphics_table_loads == 1)
-        logf("vk: vertex, fragment and compute stages' global loads read the guest page table alone (RX_VK_GP_TABLE=0: they search the "
-             "storage buffers)");
+        logf("vk: vertex, fragment, compute, task and mesh stages' global loads read the guest page table alone (RX_VK_GP_TABLE=0: "
+             "they search the storage buffers)");
     else if (Shader::Backend::SPIRV::graphics_table_loads == 2)
-        logf("vk: vertex, fragment and compute stages' global loads checked against the guest page table (RX_VK_GP_TABLE=2)");
+        logf("vk: vertex, fragment, compute, task and mesh stages' global loads checked against the guest page table (RX_VK_GP_TABLE=2)");
     Shader::Backend::SPIRV::mesh_fallback_pages = mesh_pages_wanted(dev.driver_id, std::getenv("RX_VK_MESH_PAGES"));
     if (Shader::Backend::SPIRV::mesh_fallback_pages)
         logf("vk: the mesh fallback's global loads read the guest page table (RX_VK_MESH_PAGES=0: they search the storage buffers)");

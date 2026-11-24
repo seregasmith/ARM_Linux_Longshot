@@ -2,13 +2,24 @@
   "$schema": "https://recomplauncher.com/schema/recomplauncher.json",
   "format": 1,
   "name": "Longshot",
-  "game": {
-    "kind": "iso_or_folder",
-    "label": "Your copy of The Legend of Zelda: Ocarina of Time for Nintendo Switch 2, version 131072 (build e0f3ccfa): the .nup file, or the folder that holds its romfs and exefs.",
-    "check": {
-      "nup_build_id": "e0f3ccfa"
+  "inputs": [
+    {
+      "id": "game",
+      "label": "Your copy of The Legend of Zelda: Ocarina of Time for Nintendo Switch 2, version 131072 (build e0f3ccfa): the .nup file, or the folder that holds its romfs and exefs.",
+      "role": "game",
+      "formats": [
+        {
+          "type": "file"
+        },
+        {
+          "type": "folder"
+        }
+      ],
+      "check": {
+        "nup_build_id": "e0f3ccfa"
+      }
     }
-  },
+  ],
   "start": {
     "program": [
       "Longshot.AppImage",
@@ -27,7 +38,7 @@
     "args": [
       "--cli",
       "--prepare",
-      "--game={game}",
+      "--game={input:game}",
       "--out",
       "{install}/Longshot",
       "--work",
@@ -37,9 +48,7 @@
       "{install}/Longshot/image.bin"
     ],
     "keeps_copy": true,
-    "version": "2",
     "label": "Building the game (15 to 30 minutes the first time)",
-    "timeout": 7200,
     "options": [
       {
         "id": "dlss",
@@ -89,17 +98,23 @@
     }
   ],
   "saves": [
-    "{local}/longshot",
-    "{install}/Longshot/user"
+    "{install}/Longshot/user/save",
+    "{install}/Longshot/user/mouse_sens.txt",
+    "{local}/longshot/save",
+    "{local}/longshot/mouse_sens.txt"
   ],
   "folders": {
     "saves": [
       {
-        "path": "{install}/Longshot/user",
-        "if": "{install}/Longshot/user"
+        "path": "{install}/Longshot/user/save",
+        "if": "{install}/Longshot/user/save"
       },
       {
-        "path": "{local}/longshot"
+        "path": "{local}/longshot/save",
+        "if": "{local}/longshot/save"
+      },
+      {
+        "path": "{install}/Longshot"
       }
     ],
     "game": [

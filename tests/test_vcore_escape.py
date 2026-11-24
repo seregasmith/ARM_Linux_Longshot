@@ -88,6 +88,7 @@ static volatile int core_tls_slot = -1;
 static SRWLOCK tls_slot_lock = SRWLOCK_INIT;
 static int core_tls_alias_now(void) { return 1; }
 static int hos_thread_wrapper_mask(HosThread *t, uint32_t *out) { (void)t; (void)out; return 0; }
+static void pin_by_core(HosThread *t) { (void)t; }
 @VCORES@
 static int bad;
 static void check(int ok, const char *what) { if (!ok) { printf("FAIL: %s\n", what); bad = 1; } }

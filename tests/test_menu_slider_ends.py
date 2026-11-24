@@ -5,7 +5,8 @@ and a scale stops there: a Slider (the model's rule, menu_model.cpp step) or a r
 slider that has always gone round, 100% to 0%: it says so with wraps. The rows that stop are the ones that stopped
 before the menu was a model (vk_menu.cpp's stops_at_ends list then: Microphone gain, Aspect ratio, Mouse sensitivity,
 Vibration strength, Motion sensitivity X and Y, Volume, Camera speed, Field of view), and the ImGui menu and the model
-both follow the rows' own flags. The Custom HUD position and size sliders stop at their limits too.
+both follow the rows' own flags. The Custom HUD position and size sliders stop at their limits too, as do the
+Simulated turf page's sliders (#2093): an area's four values and their four multipliers.
 
     python -I -B tests/test_menu_slider_ends.py
 """
@@ -20,8 +21,12 @@ ROOT = Path(__file__).resolve().parents[1]
 STOPS = {"microphone_gain", "pad_speaker_volume", "pad_speaker_sync", "pad_speaker_headphone_volume",
          "ultrawide", "mouse_sensitivity", "rumble_strength", "motion_sensitivity_x",
          "motion_sensitivity_y", "volume", "camera_speed", "field_of_view",
+         "resolution", "frame_generation_multiplier",
          "hud_health_x", "hud_health_y", "hud_health_scale", "hud_buttons_x", "hud_buttons_y", "hud_buttons_scale",
-         "hud_minimap_x", "hud_minimap_y", "hud_minimap_scale"}
+         "hud_minimap_x", "hud_minimap_y", "hud_minimap_scale",
+         "sim_turf_fade_start", "sim_turf_density", "sim_turf_minimum_blades", "sim_turf_far_power",
+         "sim_turf_fade_start_multiplier", "sim_turf_density_multiplier", "sim_turf_minimum_blades_multiplier",
+         "sim_turf_far_power_multiplier"}
 WRAPS = {"sharpness"}
 
 

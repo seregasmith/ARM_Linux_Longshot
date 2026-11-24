@@ -60,6 +60,7 @@ A64 = r'''
 #define A64_H
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>   /* (as the real a64.h: hos.h's inline fill and copy use memset and memcpy) */
 typedef struct { uint64_t x[32]; } Ctx;
 extern unsigned char test_guest[2 * 1024 * 1024];
 #define A64_PTR(a) (test_guest + (uint64_t)(a))
@@ -126,6 +127,7 @@ int hos_mods_dir_extras(const char *r, const char *b, void (*f)(void *, const ch
 }
 int hos_blank_cached_icon(const char *g, const char *h) { (void)g; (void)h; return 0; }
 int hos_ultrawide_redirect(const char *g, char *o, size_t n) { (void)g; (void)o; (void)n; return 0; }
+int hos_stand_in_damaged(const char *g, char *p, size_t n) { (void)g; (void)p; (void)n; return 0; }
 #ifndef _WIN32
 BOOL __real_MoveFileExA(LPCSTR a, LPCSTR b, DWORD flags);
 /* (failure injection at the boundary; successful calls always use the real POSIX implementation) */

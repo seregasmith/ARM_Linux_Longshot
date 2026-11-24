@@ -19,6 +19,7 @@
 #include "vk_temporal.h"
 
 #include "fsr4_models.h"
+#include "compat/longshot_env.h"
 
 #ifdef LONGSHOT_FSR
 #include <chrono>
@@ -74,6 +75,9 @@ std::atomic<int> g_why{-1};
 std::atomic<int> g_model{FSR4_MODEL_AUTO};
 std::atomic<bool> g_lite_available{false};
 std::atomic<bool> g_lite_failed{false};
+// (AMD's library lists no FSR 4 for this GPU and the hooked Lite provider stands in: every context is Lite's, whatever
+// the row says, and there is nothing to choose. RX_VK_FSR4_STANDIN=0: FSR 4 is not offered there, as before)
+std::atomic<bool> g_standin{false};
 }  // namespace
 
 FsrWhy fsr4_why() {
@@ -212,48 +216,31 @@ void* symbol(const char* name) {
 }
 
 #ifdef _WIN32
-std::vector<fsr4_models::ModuleScan> probe_models(const VkDeviceContext& device) {
+/// The upscaler library beside the loader in `dir`, when its file is one whose layout is known (fsr4_models::load_known:
+/// its SHA-256), with what the scan found in it. Before the loader is asked anything, so the loader's own load of that
+/// name finds this module.
+fsr4_models::KnownModule probe_models(const std::string& dir) {
     const auto t0 = std::chrono::steady_clock::now();
-    auto modules = fsr4_models::scan_loaded_modules();
+    fsr4_models::KnownModule known = fsr4_models::load_known(dir);
     const double scan_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    size_t with_models = 0;
     logf("vk: AMD FSR 4: models: GPU %s (vendor 0x%04x, device 0x%04x)",
          dev.props.deviceName, dev.props.vendorID, dev.props.deviceID);
-    logf("vk: AMD FSR 4: models: scanned %zu loaded modules in %.1f ms", modules.size(), scan_ms);
-    for (const auto& m : modules) {
-        if (m.result.providers.empty()) {
-            if (m.result.reason && std::strcmp(m.result.reason, "no FSR 4 provider vtables") == 0)
-                logf("vk: AMD FSR 4: models: %s: %s", m.name.c_str(), m.result.reason);
-            continue;
-        }
-        with_models++;
-        logf("vk: AMD FSR 4: models: %s at %p (%zu bytes): %zu provider(s), shape %s, Lite %s, registry %s",
-             m.name.c_str(), (void*)m.base, m.size, m.result.providers.size(),
-             m.result.shape_ok ? "ok" : "not understood", m.result.lite_present ? "yes" : "no",
-             m.result.registry_found ? "found" : "not found");
-        for (const auto& p : m.result.providers)
-            logf("vk: AMD FSR 4: models: %s (%s) vtable %p IsSupported %p instance %p",
-                 fsr4_models::model_name(p.model), p.class_name ? p.class_name : "?",
-                 (void*)p.vtable, (void*)p.is_supported, p.instance);
-        if (m.result.shape_ok && m.result.registry_found) {
-            bool supported[fsr4_models::MODEL_COUNT] = {};
-            const auto native = fsr4_models::native_model(m.result, (void*)&device, supported);
-            fsr4_models::record_native_model(native);
-            for (int i = 0; i < fsr4_models::MODEL_COUNT; i++)
-                if (supported[i])
-                    logf("vk: AMD FSR 4: models: %s says yes for this device",
-                         fsr4_models::model_name((fsr4_models::Model)i));
-            logf("vk: AMD FSR 4: models: native model %s (device context %p)",
-                 fsr4_models::model_name(native), (const void*)&device);
-        } else {
-            logf("vk: AMD FSR 4: models: native model unknown (%s; device context %p)",
-                 !m.result.shape_ok ? "provider vtable shape not understood" : "provider registry not found",
-                 (const void*)&device);
-        }
+    logf("vk: AMD FSR 4: models: %s (%.1f ms)", known.note.c_str(), scan_ms);
+    if (!known.library) return known;
+    const auto& m = known.scan;
+    if (m.result.providers.empty()) {
+        logf("vk: AMD FSR 4: models: %s: %s", m.name.c_str(), m.result.reason && *m.result.reason ? m.result.reason : "no providers");
+        return known;
     }
-    if (!with_models)
-        logf("vk: AMD FSR 4: models: none of the %zu loaded modules carries the FSR 4 provider classes", modules.size());
-    return modules;
+    logf("vk: AMD FSR 4: models: %s at %p (%zu bytes): %zu provider(s), shape %s, Lite %s, registry %s",
+         m.name.c_str(), (void*)m.base, m.size, m.result.providers.size(),
+         m.result.shape_ok ? "ok" : "not understood", m.result.lite_present ? "yes" : "no",
+         m.result.registry_found ? "found" : "not found");
+    for (const auto& p : m.result.providers)
+        logf("vk: AMD FSR 4: models: %s (%s) vtable %p IsSupported %p instance %p",
+             fsr4_models::model_name(p.model), p.class_name ? p.class_name : "?",
+             (void*)p.vtable, (void*)p.is_supported, p.instance);
+    return known;
 }
 #endif
 
@@ -1070,7 +1057,7 @@ bool load() {
         g_why = why;
         return false;
     };
-    std::string where;
+    std::string where, found_dir;
     for (const std::string& dir : library_dirs()) {
         where += (where.empty() ? "" : ", ") + dir;
 #ifdef _WIN32
@@ -1089,6 +1076,7 @@ bool load() {
 #endif
         if (l.lib) {
             logf("vk: AMD FSR 4: %s", path.c_str());
+            found_dir = dir;
             break;
         }
     }
@@ -1109,6 +1097,15 @@ bool load() {
         tune::prepare_device();
         l.device_context.vkDeviceProcAddr = &tune::device_proc;
     }
+#ifdef _WIN32
+    // (the model hook, for the one upscaler library whose layout is known, before the loader loads that name itself)
+    const fsr4_models::KnownModule known = probe_models(found_dir);
+    const bool hooked = known.library && !known.scan.result.providers.empty() &&
+                        fsr4_models::install(known.scan.base, known.scan.result, known.library);
+    if (known.library && !hooked) logf("vk: AMD FSR 4: models: its providers were not hooked; AMD's own choice of model");
+#else
+    (void)found_dir;
+#endif
     // (the library lists every upscaler this device can run: the newest 4.x is taken explicitly, so an FSR 3.1 provider never
     // stands in silently)
     ffxQueryDescGetVersions versions{};
@@ -1130,21 +1127,49 @@ bool load() {
         return no(FSR_NO_MODEL);
     }
 #ifdef _WIN32
-    const auto modules = probe_models(l.device_context);
-    for (const auto& m : modules)
-        if (!m.result.providers.empty()) fsr4_models::install(m.base, m.result);
+    // (the loader has loaded its upscaler by now: the hook answers only while that is the module that was checked)
+    if (hooked && !fsr4_models::known_module_is_loaders(known))
+        logf("vk: AMD FSR 4: models: the loader uses another copy of %s: the hook answers as AMD does", known.scan.name.c_str());
 #endif
     std::string listed;
     unsigned best[3] = {0, 0, 0};
-    for (uint64_t i = 0; i < count; i++) {
-        const char* name = names[i] ? names[i] : "";
-        listed += (listed.empty() ? "" : ", ") + std::string(name);
-        unsigned v[3] = {0, 0, 0};
-        sscanf(name, "%u.%u.%u", &v[0], &v[1], &v[2]);
-        // (the first of equal versions: a Vulkan FSR 4 build lists its Auto, which picks the GPU's model, before INT8 and FP8)
-        if (v[0] == 4 && (!l.version_id || v[1] > best[1] || (v[1] == best[1] && v[2] > best[2]))) {
-            std::memcpy(best, v, sizeof best);
-            l.version_id = ids[i];
+    const auto pick_newest = [&] {
+        listed.clear();
+        std::memset(best, 0, sizeof best);
+        l.version_id = 0;
+        for (uint64_t i = 0; i < count; i++) {
+            const char* name = names[i] ? names[i] : "";
+            listed += (listed.empty() ? "" : ", ") + std::string(name);
+            unsigned v[3] = {0, 0, 0};
+            sscanf(name, "%u.%u.%u", &v[0], &v[1], &v[2]);
+            // (the first of equal versions: a Vulkan FSR 4 build lists its Auto, which picks the GPU's model, before INT8 and FP8)
+            if (v[0] == 4 && (!l.version_id || v[1] > best[1] || (v[1] == best[1] && v[2] > best[2]))) {
+                std::memcpy(best, v, sizeof best);
+                l.version_id = ids[i];
+            }
+        }
+    };
+    pick_newest();
+    // (no FSR 4 for this GPU in AMD's own list: a GPU of another maker, or a Radeon AMD names for no model. Where the Lite
+    // provider is hooked it stands in, and the list is asked again with it answering. RX_VK_FSR4_STANDIN=0 leaves this out)
+    static const bool standin_allowed = env_on_or("RX_VK_FSR4_STANDIN", 1);
+    if (!l.version_id && standin_allowed && fsr4_models::hook_installed() && fsr4_models::has_model(fsr4_models::MODEL_LITE)) {
+        const std::string amds = listed;
+        fsr4_models::set_model(fsr4_models::SELECT_LITE);
+        count = 0;
+        versions.versionIds = nullptr, versions.versionNames = nullptr;
+        if (l.query(nullptr, &versions.header) == FFX_API_RETURN_OK && count) {
+            ids.assign(count, 0), names.assign(count, nullptr);
+            versions.versionIds = ids.data(), versions.versionNames = names.data();
+            if (l.query(nullptr, &versions.header) == FFX_API_RETURN_OK) pick_newest();
+        }
+        if (l.version_id) {
+            g_standin = true;
+            logf("vk: AMD FSR 4: AMD lists no FSR 4 model for this GPU (it has: %s): INT8 Lite stands in "
+                 "(RX_VK_FSR4_STANDIN=0 leaves FSR 4 off here)", amds.c_str());
+        } else {
+            fsr4_models::set_model(fsr4_models::SELECT_AUTO);
+            listed = amds;
         }
     }
     if (!l.version_id) {
@@ -1152,12 +1177,15 @@ bool load() {
         return no(FSR_NO_MODEL);
     }
     logf("vk: AMD FSR 4: upscalers %s; using %u.%u.%u", listed.c_str(), best[0], best[1], best[2]);
-    g_lite_available = dev.props.vendorID == 0x1002 && fsr4_models::hook_installed() &&
+    // (a model to choose only where AMD's own pick runs too: an AMD GPU that is not on the stand-in)
+    g_lite_available = dev.props.vendorID == 0x1002 && !g_standin && fsr4_models::hook_installed() &&
                        fsr4_models::has_model(fsr4_models::MODEL_LITE);
     if (g_lite_available)
         logf("vk: AMD FSR 4: model: Lite is available (RX_VK_FSR4_MODEL=lite selects it)");
+    else if (g_standin)
+        logf("vk: AMD FSR 4: model: INT8 Lite is the only one here; the FSR 4 model row is not shown");
     else if (fsr4_models::has_model(fsr4_models::MODEL_LITE))
-        logf("vk: AMD FSR 4: model: Lite is present but its provider vtables were not hooked; Auto only");
+        logf("vk: AMD FSR 4: model: Lite is hooked, and offered on AMD GPUs only; Auto");
     l.ok = true;
     g_why = FSR_OK;
     return true;
@@ -1182,10 +1210,13 @@ std::shared_ptr<Context> make_context(uint32_t w, uint32_t h, bool hdr, Fsr4Mode
             logf("vk: AMD FSR 4: Lite failed earlier in this run; using Auto");
         effective = FSR4_MODEL_AUTO;
     }
+    const bool standin = g_standin.load(std::memory_order_relaxed);
+    if (standin) effective = FSR4_MODEL_AUTO;   // (nothing to choose: the row's value changes nothing, and no retry as Auto)
     c->effective = effective;
-    const bool suppress = effective == FSR4_MODEL_LITE && fsr4_models::native_model() != fsr4_models::MODEL_LITE;
+    const bool lite = effective == FSR4_MODEL_LITE || standin;
+    const bool suppress = lite && fsr4_models::native_model() != fsr4_models::MODEL_LITE;
     tune::suppress(suppress);
-    fsr4_models::set_model(effective == FSR4_MODEL_LITE ? fsr4_models::SELECT_LITE : fsr4_models::SELECT_AUTO);
+    fsr4_models::set_model(lite ? fsr4_models::SELECT_LITE : fsr4_models::SELECT_AUTO);
     c->tuned = tune::on() && !suppress;
     c->backend.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK;
     c->backend.deviceContext = l.device_context;
@@ -1242,7 +1273,8 @@ std::shared_ptr<Context> make_context(uint32_t w, uint32_t h, bool hdr, Fsr4Mode
     const bool known = l.query(&c->context, &provider.header) == FFX_API_RETURN_OK && provider.versionName;
     const bool forced = effective == FSR4_MODEL_LITE && fsr4_models::native_model() != fsr4_models::MODEL_LITE;
     logf("vk: AMD FSR 4: model: %s%s",
-         effective == FSR4_MODEL_LITE ? (forced ? "Lite (INT8, forced)" : "Lite (INT8, native)") : "Auto (AMD's)",
+         standin ? "Lite (INT8, standing in: AMD lists no FSR 4 model for this GPU)"
+                 : effective == FSR4_MODEL_LITE ? (forced ? "Lite (INT8, forced)" : "Lite (INT8, native)") : "Auto (AMD's)",
          c->tuned ? ", tuned" : ", AMD's shaders");
     const std::string memory = c->memory_known ? std::to_string(c->memory >> 20) + " MB" : "unavailable";
     logf("vk: AMD FSR 4: FSR %s made for outputs of %ux%u (frame %llu, %.1f ms of CPU; its own %s)%s",

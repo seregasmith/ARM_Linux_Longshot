@@ -58,12 +58,15 @@ run = "python3 -m pip install --disable-pip-version-check -r requirements.txt"
 description = "Build a game folder from your own dump (same arguments as nx2/make_game.py; work folder: the development folder's work/)"
 shell = "bash -c"
 depends = ["build-deps"]
+# (one command, the arguments its last words: mise 2026.11 puts them at the end of the text, and the script's own "$@" is empty)
 run = """
+bash -c '
 work=1
 for a in "$@"; do case "$a" in --work|--work=*) work= ;; esac; done
-# (not the player's builder folder, ~/.cache/longshot-builder or %LOCALAPPDATA%\\LongshotBuilder: `dev.py paths work`)
+# (not the player builder folder, ~/.cache/longshot-builder or %LOCALAPPDATA%\\LongshotBuilder: `dev.py paths work`)
 [ -z "$work" ] || set -- --work "$(python3 -I scripts/dev.py paths work)" "$@"
 python3 -I nx2/make_game.py "$@"
+' build "$@"
 """
 
 [tasks.build-dev]

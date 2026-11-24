@@ -116,7 +116,9 @@ static inline uint16_t audio_source_u16(const uint8_t *p) { return (uint16_t)(p[
 enum {
     BWAV_HEADER = 0x10, BWAV_CRC = 8, BWAV_CHANNELS = 0x0e, BWAV_CHANNEL = 0x4c, BWAV_CHANNEL_DATA = 0x30, BWAV_MAX_CHANNELS = 8,
     BWAV_ALIGN = 0x40,
-    BWAV_MAX_BEFORE = 0x10000   /* how far before its samples a wave's header is looked for (6 channels' prefetch: 0xa200) */
+    BWAV_MAX_BEFORE = 0x10000,  /* how far before its samples a wave's header can be (6 channels' prefetch: 0xa200) */
+    /* where a wave's first channel starts at the latest: right behind the header and its 8 channels' table, aligned */
+    BWAV_FIRST_MAX = (BWAV_HEADER + BWAV_MAX_CHANNELS * BWAV_CHANNEL + BWAV_ALIGN - 1) / BWAV_ALIGN * BWAV_ALIGN
 };
 
 /* Whether the n bytes at b start a little-endian BWAV with 1 to 8 channels and room for their tables */
@@ -130,7 +132,7 @@ static inline int audio_source_is_bwav(const uint8_t *b, size_t n) {
    Yes (1, the header's checksum in *crc) when a BWAV header lies before it, on the archive's alignment, and one of its
    channels names exactly this distance as the offset of its samples: the wave buffer is that channel's start. A
    buffer that continues a streamed sound, or belongs to no archive, has none (0). */
-static inline int audio_source_find(const uint8_t *samples, size_t before, uint32_t *crc) {
+static inline size_t audio_source_find_back(const uint8_t *samples, size_t before, uint32_t *crc) {   /* (its distance; 0: none) */
     const size_t reach = before < BWAV_MAX_BEFORE ? before : BWAV_MAX_BEFORE;
     for (size_t back = BWAV_ALIGN * 2; back <= reach; back += BWAV_ALIGN) {
         const uint8_t *b = samples - back;
@@ -139,11 +141,14 @@ static inline int audio_source_find(const uint8_t *samples, size_t before, uint3
         for (unsigned ch = 0; ch < channels; ch++)
             if (audio_source_u32(b + BWAV_HEADER + ch * BWAV_CHANNEL + BWAV_CHANNEL_DATA) == back) {
                 *crc = audio_source_u32(b + BWAV_CRC);
-                return 1;
+                return back;
             }
         return 0;   /* (the nearest header before the samples is another wave's: these are not a channel's start) */
     }
     return 0;
+}
+static inline int audio_source_find(const uint8_t *samples, size_t before, uint32_t *crc) {
+    return audio_source_find_back(samples, before, crc) != 0;
 }
 
 /* An asset's name in its AMTA block (n bytes from its magic): the last run of 4 or more name characters. "" if none. */

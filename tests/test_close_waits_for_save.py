@@ -1,7 +1,8 @@
 """Closing the game waits for a file the game is writing, so a save in progress is not cut short (host/nn_fs.c,
 host/hos_relaunch.c).
 
-nn::fs::Commit is nothing here: a save goes straight into its files. Every close (the window, the control bridge's
+A save mount's files are written in its work folder and reach the save folder at nn::fs::Commit; other writable mounts
+are written in place. Every close (the window, the control bridge's
 quit, the Windows stop worker) runs hos_close_finish, which waits up to 3 s while a file open for writing was written in
 the last second. The wait in host/nn_fs.c is compiled with a made-up clock and checked:
 
@@ -92,21 +93,30 @@ def main():
     opened = block(fs, "HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {")
     if "if (want_write) __atomic_add_fetch(&writes_open, 1, __ATOMIC_RELAXED);" not in opened:
         raise SystemExit("OpenFile does not count a file opened for writing")
-    closed = block(fs, "HLE(_ZN2nn2fs9CloseFileENS0_10FileHandleE) {")
+    # (CloseFile, WriteFile and SetFileSize run their fs_* function, under the save lock for a save's file:
+    # save_handle_call)
+    for hle, fn in (("_ZN2nn2fs9CloseFileENS0_10FileHandleE", "fs_close_file"),
+                    ("_ZN2nn2fs9WriteFileENS0_10FileHandleElPKvmRKNS0_11WriteOptionE", "fs_write_file"),
+                    ("_ZN2nn2fs11SetFileSizeENS0_10FileHandleEl", "fs_set_file_size")):
+        if "save_handle_call(c, %s, " % fn not in block(fs, "HLE(%s) {" % hle):
+            raise SystemExit("%s does not run %s" % (hle, fn))
+    closed = block(fs, "static void fs_close_file(Ctx *c, Handle *fh) {")
     if "if (fh->writable) __atomic_sub_fetch(&writes_open, 1, __ATOMIC_RELAXED);" not in closed:
         raise SystemExit("CloseFile does not uncount a file opened for writing")
-    write = block(fs, "HLE(_ZN2nn2fs9WriteFileENS0_10FileHandleElPKvmRKNS0_11WriteOptionE) {")
+    write = block(fs, "static void fs_write_file(Ctx *c, Handle *fh) {")
     at = write.index("WriteFile(fh->h,")
     if "wrote_now();" not in write[:at] or "wrote_now();" not in write[at:]:
         raise SystemExit("WriteFile does not mark a write before and after it")
-    size = block(fs, "HLE(_ZN2nn2fs11SetFileSizeENS0_10FileHandleEl) {")
+    size = block(fs, "static void fs_set_file_size(Ctx *c, Handle *fh) {")
     if "wrote_now();" not in size or size.index("wrote_now();") > size.index("SetEndOfFile("):
         raise SystemExit("SetFileSize does not mark a write")
 
     with tempfile.TemporaryDirectory(prefix="longshot-close-waits-") as temp:
         src, exe = Path(temp) / "close_waits.c", Path(temp) / "close_waits.exe"
-        src.write_text(HARNESS.replace("/* NN_FS_WRITES */", between(fs, "static int writes_open;", "/* ---- mounts")),
-                       encoding="utf-8")
+        # (the counter, the clock check and the wait: from writes_open to the end of hos_fs_wait_writes)
+        writes = (between(fs, "static int writes_open;", "void hos_fs_wait_writes(void) {") +
+                  block(fs, "void hos_fs_wait_writes(void) {"))
+        src.write_text(HARNESS.replace("/* NN_FS_WRITES */", writes), encoding="utf-8")
         subprocess.run([args.cc, "-std=gnu11", "-O1", "-Wall", "-Wextra", "-Werror", str(src), "-o", str(exe)],
                        check=True, timeout=120)
         out = subprocess.run([str(exe)], capture_output=True, text=True, timeout=60)

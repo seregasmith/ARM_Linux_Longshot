@@ -76,11 +76,12 @@ inline bool global_table_loop = false;
 // 12.3 ms a frame, 5.7 ms with its loads through the table, its 243 million loads the same words both ways. A storage buffer in a
 // virtual pool (from 1 TB) is not in the table and reads 0. On for Intel's Mesa driver (vk_coopmat.cpp); RX_VK_MESH_PAGES=0 or 1
 inline bool mesh_fallback_pages = false;
-// (longshot) Vertex, fragment and compute stages' global loads (and the mesh fallback's task and mesh stages') through the guest page
-// table alone, as mesh_fallback_pages does. The search
+// (longshot) Vertex, fragment, compute, task and mesh stages' global loads (native task and mesh stages and the mesh fallback's)
+// through the guest page table alone, as mesh_fallback_pages does. The search
 // over every bound storage buffer, inlined at each load, made a vertex stage with 61 loads 585 ms of RADV's compile (44 ms through
-// the table). 1: the table alone; 2: the search kept, a load where the two disagree recorded in the miss log's buffer
-// (vk_draw.cpp gp_table_check_log). On by default where the table holds the pools (vk_coopmat.cpp); RX_VK_GP_TABLE=0, 1 or 2
+// the table); a native task or mesh stage inlines it at every load (#994). 1: the table alone; 2: the search kept, a load where the
+// two disagree recorded in the miss log's buffer (vk_draw.cpp gp_table_check_log; not the fallback's task and mesh stages). On by
+// default where the table holds the pools (vk_coopmat.cpp); RX_VK_GP_TABLE=0, 1 or 2
 inline int graphics_table_loads = 0;
 // (longshot) The mesh fallback's mesh workgroups keep their attribute region (the stage buffer's vertex and primitive lines, up to
 // 32 KB) in a slot of a pool in the records buffer instead of in workgroup memory (emit_spirv.h MESH_FALLBACK_POOL_*). Intel

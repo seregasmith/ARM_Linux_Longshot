@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -11,6 +12,7 @@
 #include <vector>
 
 #include <spirv/unified1/spirv.hpp>
+#include <spirv/unified1/GLSL.std.450.h>
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
 #include "shader_recompiler/exception.h"
@@ -842,13 +844,19 @@ static void check_table_loop() {
 // (mma_layout.h graphics_table_loads, RX_VK_GP_TABLE) a stage's global loads through the guest page table: 0 searches the bound
 // storage buffer, 1 reads the table alone (no search left in the load helpers), 2 keeps the search and records a load the two read
 // otherwise in the miss buffer (c0+0xff0). In every stage that takes it, each OpSelectionMerge right before its branch: the check's
-// condition once came between them and RADV crashed compiling those modules. CI validates every module written
+// condition once came between them and RADV crashed compiling those modules. Native task and mesh stages too, whose load helpers
+// are inlined at every load (#994): there the table's address comes in the push block, the member at GUEST_PAGES_PUSH_OFFSET. CI
+// validates every module written
 static void check_table_loads(Stage stage, int mode, const char* name) {
     ObjectPool<IR::Inst> inst_pool;
     IR::Block block{inst_pool};
     IR::Program program;
     program.stage = stage;
     program.workgroup_size = {1, 1, 1};
+    program.output_vertices = stage == Stage::Mesh ? 1 : 0;
+    program.mesh.max_vertices = stage == Stage::Mesh ? 1 : 0;
+    program.mesh.max_primitives = stage == Stage::Mesh ? 1 : 0;
+    program.mesh.payload_words = stage == Stage::Mesh || stage == Stage::Task ? 1 : 0;
     program.blocks.push_back(&block);
     program.post_order_blocks.push_back(&block);
     IR::AbstractSyntaxNode node{};
@@ -882,9 +890,13 @@ static void check_table_loads(Stage stage, int mode, const char* name) {
     std::map<u32, std::pair<bool, bool>> holds;   // (function: a buffer search (OpArrayLength), a table read (OpConvertUToPtr))
     std::vector<u32> called;
     bool record = false;
+    bool pages_member = false;   // (a push block member at GUEST_PAGES_PUSH_OFFSET: the table's address)
     u32 current = 0;
     for (size_t i = 0; i < module.instructions.size(); i++) {
         const auto& inst = module.instructions[i];
+        if (inst.op == spv::Op::OpMemberDecorate && inst.words.size() >= 4 && inst.words[2] == spv::DecorationOffset &&
+            inst.words[3] == Shader::Backend::SPIRV::GUEST_PAGES_PUSH_OFFSET)
+            pages_member = true;
         if (inst.op == spv::Op::OpFunction) current = inst.words[1];
         if (inst.op == spv::Op::OpFunctionEnd) current = 0;
         if (inst.op == spv::Op::OpArrayLength && current) holds[current].first = true;
@@ -904,6 +916,97 @@ static void check_table_loads(Stage stage, int mode, const char* name) {
         if (mode == 2 && !table) fail("RX_VK_GP_TABLE=2: a load helper does not read the table to compare");
     }
     if (mode == 2 && !record) fail("RX_VK_GP_TABLE=2: no load that differs is recorded");
+    if (mode != 0 && !pages_member) fail("the push block has no member for the page table's address");
+    std::printf("PASS: %s\n", name);
+}
+
+// (#1285, as Lichii #1203) RADV before Mesa 26.2.5 (!45092) emitted an invalid SET_SH_REG packet (reg_count == 0) when a native
+// mesh shader did not read gl_NumWorkGroups. With the workaround, native Stage::Mesh must load BuiltIn NumWorkgroups and feed it
+// into OpSetMeshOutputsEXT's primitive count; unaffected native shaders and the compute mesh fallback must not emit it.
+static void check_mesh_num_workgroups(bool fallback, bool workaround, const char* name) {
+    ObjectPool<IR::Inst> inst_pool;
+    IR::Block block{inst_pool};
+    IR::Program program;
+    program.stage = Stage::Mesh;
+    program.workgroup_size = {32, 1, 1};
+    program.output_vertices = 3;
+    program.mesh.max_vertices = 3;
+    program.mesh.max_primitives = 1;
+    program.mesh.payload_words = 1;
+    program.blocks.push_back(&block);
+    program.post_order_blocks.push_back(&block);
+    IR::AbstractSyntaxNode node{};
+    node.type = IR::AbstractSyntaxNode::Type::Block;
+    node.data.block = &block;
+    program.syntax_list.push_back(node);
+    program.syntax_list.push_back({.type = IR::AbstractSyntaxNode::Type::Return});
+    IR::IREmitter ir{block};
+    ir.Prologue();
+    ir.Epilogue();
+    TestEnvironment env{Stage::Mesh};
+    Optimization::CollectShaderInfoPass(env, program);
+    Profile profile{};
+    profile.supported_spirv = 0x00010600;
+    profile.support_int64 = true;
+    profile.unified_descriptor_binding = true;
+    profile.support_descriptor_aliasing = true;
+    profile.min_ssbo_alignment = 16;
+    profile.need_mesh_num_workgroups = workaround;
+    RuntimeInfo runtime_info{};
+    runtime_info.mesh_fallback = fallback;
+    Backend::Bindings bindings{};
+    const auto module = inspect(save_module(name, EmitSPIRV(profile, runtime_info, program, bindings)));
+
+    u32 num_wg_var = 0, primitive_var = 0;
+    bool in_entry_point = false;
+    u32 load_id = 0, extract_id = 0, cmp_id = 0, select_id = 0;
+    u32 mesh_outputs_prim_count = 0;
+    for (const auto& inst : module.instructions) {
+        if (inst.op == spv::Op::OpDecorate && inst.words.size() >= 3 &&
+            inst.words[1] == spv::DecorationBuiltIn && inst.words[2] == spv::BuiltInNumWorkgroups)
+            num_wg_var = inst.words[0];
+        constexpr char primitive_name[] = "isbe_primitive_count";
+        if (inst.op == spv::Op::OpName && inst.words.size() >= 1 + (sizeof primitive_name + 3) / 4 &&
+            std::memcmp(inst.words.data() + 1, primitive_name, sizeof primitive_name) == 0)
+            primitive_var = inst.words[0];
+    }
+    if (fallback || !workaround) {
+        if (num_wg_var != 0) fail("mesh without workaround must not declare BuiltIn NumWorkgroups");
+        std::printf("PASS: %s\n", name);
+        return;
+    }
+    if (num_wg_var == 0) fail("native Stage::Mesh did not declare BuiltIn NumWorkgroups");
+    u32 primitive_load = 0, original_count = 0;
+    for (const auto& inst : module.instructions) {
+        if (inst.op == spv::Op::OpEntryPoint) {
+            for (size_t i = 2; i < inst.words.size(); i++)
+                if (inst.words[i] == num_wg_var) in_entry_point = true;
+        }
+        if (inst.op == spv::Op::OpLoad && inst.words.size() >= 3 && inst.words[2] == num_wg_var)
+            load_id = inst.words[1];
+        if (inst.op == spv::Op::OpLoad && inst.words.size() >= 3 && inst.words[2] == primitive_var)
+            primitive_load = inst.words[1];
+        if (inst.op == spv::Op::OpExtInst && inst.words.size() >= 6 && inst.words[3] == GLSLstd450UMin &&
+            primitive_load && inst.words[4] == primitive_load && constant(module, inst.words[5], "missing primitive limit") == 1)
+            original_count = inst.words[1];
+        if (inst.op == spv::Op::OpCompositeExtract && inst.words.size() >= 4 &&
+            load_id && inst.words[2] == load_id && inst.words[3] == 0)
+            extract_id = inst.words[1];
+        if (inst.op == spv::Op::OpINotEqual && inst.words.size() >= 4 &&
+            extract_id && inst.words[2] == extract_id && constant(module, inst.words[3], "missing comparison constant") == 0)
+            cmp_id = inst.words[1];
+        if (inst.op == spv::Op::OpSelect && inst.words.size() >= 5 &&
+            cmp_id && inst.words[2] == cmp_id && original_count && inst.words[3] == original_count &&
+            constant(module, inst.words[4], "missing select constant") == 0)
+            select_id = inst.words[1];
+        if (inst.op == spv::Op::OpSetMeshOutputsEXT && inst.words.size() >= 2)
+            mesh_outputs_prim_count = inst.words[1];
+    }
+    if (!in_entry_point) fail("BuiltIn NumWorkgroups is missing from OpEntryPoint interfaces");
+    if (!load_id || !extract_id || !cmp_id || !select_id)
+        fail("BuiltIn NumWorkgroups is not loaded and tested in MeshEpilogue");
+    if (mesh_outputs_prim_count != select_id)
+        fail("OpSetMeshOutputsEXT primitive count does not depend on NumWorkgroups");
     std::printf("PASS: %s\n", name);
 }
 
@@ -950,7 +1053,11 @@ int main(int argc, char** argv) {
     check_vertex_load_controls(true, "vertex-global-load-inline128");
     check_table_loop();
     for (const auto& [stage, label] : {std::pair{Stage::VertexB, "vertex"}, std::pair{Stage::Fragment, "fragment"},
-                                       std::pair{Stage::Compute, "compute"}})
+                                       std::pair{Stage::Compute, "compute"}, std::pair{Stage::Task, "task"},
+                                       std::pair{Stage::Mesh, "mesh"}})
         for (int mode = 0; mode <= 2; mode++)
             check_table_loads(stage, mode, (std::string("table-loads-") + label + "-" + std::to_string(mode)).c_str());
+    check_mesh_num_workgroups(false, true, "mesh-num-workgroups-native");
+    check_mesh_num_workgroups(false, false, "mesh-num-workgroups-unaffected");
+    check_mesh_num_workgroups(true, true, "mesh-num-workgroups-fallback");
 }

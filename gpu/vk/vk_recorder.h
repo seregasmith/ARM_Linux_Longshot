@@ -195,7 +195,8 @@ inline void (*g_wake_by_address)(void* addr) = nullptr;
 
 /// (longshot) The Insert menu's Threaded rendering, the recorder's half of it (threaded_rendering.h; vk_menu.cpp
 /// menu_recorder_thread, set by vk_replay.cpp before anything runs): true, the recorder thread, as RX_VK_RECORDER=thread
-/// (the row On, or its Auto from 6 cores; with 4 or 5 Auto has the render thread alone and this is false).
+/// (the row On, its Auto from 4 cores with mirrored buffer pools, or Auto alone with 6 or more cores when only mirrors are
+/// absent).
 /// Asked only with RX_VK_RECORDER unset: the switch, when set, is over the row. Null: no menu (the checks), off
 inline bool (*g_setting_thread)() = nullptr;
 /// RX_VK_RECORDER: sync, defer, thread; anything else, off. Unset: off, or thread where the Threaded rendering row says so

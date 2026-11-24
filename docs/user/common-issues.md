@@ -270,6 +270,20 @@ The [controls](graphics-and-controls.md#controls) cover the keyboard, the mouse 
 
 [Search controller reports](https://longshot.magicbean.dev/progress/#problem-search?q=controller)
 
+### A controller button opens the pause menu, or the menu opens by itself
+
+Controller software can turn a pad's buttons into keys. Steam Input's **Desktop Layout** does this for a game started
+outside Steam (as a Steam Deck in Desktop Mode does): the pad's A becomes <kbd>Enter</kbd>, B and Menu become
+<kbd>Esc</kbd> and View becomes <kbd>Tab</kbd>, and the game sees them as keys beside the pad. Plus (the game's pause)
+was <kbd>Tab</kbd> and <kbd>Enter</kbd> until options_version 8, so A opened the pause menu; Plus is <kbd>Tab</kbd> alone
+now, so on the old default <kbd>Enter</kbd> no longer pauses. That is the one deliberate change: <kbd>Tab</kbd> and the
+pad's Start always pause, and a file that chose <kbd>Enter</kbd> for Plus itself keeps it. On an older build, or if you
+rebound Plus to <kbd>Enter</kbd> yourself, choose Controls → Controls → Plus and clear its <kbd>Enter</kbd> binding, or
+turn Steam's non-game controller layout off: **Steam → Settings → Controller → Desktop Layout → Edit → Disable Steam
+Input**.
+
+[Search pause menu reports](https://longshot.magicbean.dev/progress/#problem-search?q=pause+menu)
+
 ### A save is missing, or a save transfer or update went wrong
 
 1. **Close the game** and stop copying, so nothing else is overwritten.

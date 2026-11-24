@@ -23,6 +23,8 @@ environment a job gets.
   status names it), one under a job or preparing shaders is not, one whose memory can't be read counts as nobody's;
   a build outside the queue is a python running nx2/build.py or make_game.py, backslashes or not. Checked on a made-up
   process table on any OS (the Windows code, its process reads stood in for), and on Windows with real processes.
+- Windows: procs.proc_start sends no Ctrl+C, with common.WINDOWS patched off too, as Environment's test does (os.kill(pid,
+  0) there is a Ctrl+C to the whole console: it ended run_all.py and the shell around it at once, without a word).
 
 python -I -B tests/test_job_queue.py
 """
@@ -60,6 +62,16 @@ class Rules(unittest.TestCase):
         self.assertIn("timed run", q.blocker(ts[1], ts, 10, SLOTS))
         self.assertIsNone(q.blocker(ts[1], ts, 10, SLOTS, quiet=False))   # (LONGSHOT_QUEUE_QUIET=0)
 
+    def test_timing_and_light_jobs_never_together(self):
+        # (a test suite run as light beside a timed run took the PC into swap: the run's p99 went from 13 ms to 25)
+        ts = [T(1, "checks", "light", "active"), T(2, "fps", "timing", t=1)]
+        self.assertIn("checks", q.blocker(ts[1], ts, 10, SLOTS))
+        ts = [T(1, "fps", "timing", "active"), T(2, "checks", "light", t=1)]
+        self.assertIn("timed run", q.blocker(ts[1], ts, 10, SLOTS))
+        self.assertIsNone(q.blocker(ts[1], ts, 10, SLOTS, quiet=False))
+        ts = [T(1, "build-time", "timing-cpu", "active"), T(2, "checks", "light", t=1)]
+        self.assertIn("timed run", q.blocker(ts[1], ts, 10, SLOTS))
+
     def test_no_jumping_ahead(self):
         ts = [T(1, "fps", "timing", t=1), T(2, "b1", "build", t=2)]
         self.assertIn("queued ahead", q.blocker(ts[1], ts, 10, SLOTS))
@@ -94,6 +106,64 @@ class Rules(unittest.TestCase):
         self.assertEqual(low_hour[0], 0)
         self.assertLess(q.rank(T(2, "y", "build", t=3000, prio="high"), 3700), low_hour)
         self.assertEqual(q.rank(T(3, "z", "build", t=0, prio="normal"), 99999)[0], 0)
+
+
+class NoiseOfARun(unittest.TestCase):
+    QUIET = {"cpu": 3.0, "memory": 0.0, "io": 0.2, "load": 9.0, "strays": 0, "beside": [], "other_cpus": 6.0}
+
+    def samples(self, n=5, **busy):
+        return [dict(self.QUIET, t=float(i), swap_pages=1000, **busy) for i in range(n)]
+
+    def test_quiet_pc(self):
+        rec = q.noise_summary(self.samples())
+        self.assertEqual(rec["swap_mb"], 0)
+        self.assertEqual(rec["other_cpus_busy"], 6)
+        self.assertEqual(q.noise_reasons(rec), [])
+
+    def test_each_kind_of_noise(self):
+        swapping = self.samples()
+        for i, x in enumerate(swapping):
+            x["swap_pages"] = 1000 + i * 20000   # (80,000 pages in 4 s: 78 MB/s)
+        trickle = self.samples()
+        for i, x in enumerate(trickle):
+            x["swap_pages"] = 1000 + i * 300   # (an idle PC's few MB/s: no noise)
+        self.assertEqual(q.noise_reasons(q.noise_summary(trickle)), [])
+        # (swapping alone is no noise: the game's own size swaps the rest of the PC out while it stalls on nothing)
+        self.assertEqual(q.noise_summary(swapping)["swap_mb_s"], 78.0)
+        self.assertEqual(q.noise_reasons(q.noise_summary(swapping)), [])
+        cases = [(self.samples(memory=3.6), "memory stalls"), (self.samples(cpu=40.0), "CPU stalls"),
+                 (self.samples(io=30.0), "disk stalls"), (self.samples(other_cpus=85.0), "other CPUs 85% busy"),
+                 (self.samples(strays=1), "builds outside"), (self.samples(beside=["gb-3-tests (light)"]), "gb-3-tests")]
+        for samples, said in cases:
+            reasons = q.noise_reasons(q.noise_summary(samples))
+            self.assertEqual(len(reasons), 1, reasons)
+            self.assertIn(said, reasons[0])
+
+    def test_the_runs_own_stalls(self):
+        # (a job's cgroup: its own PSI, read from <cgroup>/<kind>.pressure)
+        with tempfile.TemporaryDirectory() as d:
+            for kind, full in (("memory", 0.05), ("io", 0.23), ("cpu", 0.06)):
+                with open(os.path.join(d, kind + ".pressure"), "w") as f:
+                    f.write("some avg10=0.50 avg60=0.0 avg300=0.0 total=1\nfull avg10=%.2f avg60=0.0 avg300=0.0 total=1\n" % full)
+            self.assertEqual(q.pressure("memory", "full", d), 0.05)
+            self.assertEqual(q.pressure("cpu", "some", d), 0.5)
+            n = q.Noise(None, None, d)
+            n.sample()
+            self.assertTrue(n.samples[0]["own"])
+            self.assertEqual(n.samples[0]["io"], 0.23)
+
+    def test_samples_written_for_the_caller(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "noise.jsonl")
+            n = q.Noise(None, path)
+            n.sample([42], ["b (build)"])
+            n.sample()
+            with open(path, encoding="utf-8") as f:
+                rows = [json.loads(line) for line in f]
+            self.assertEqual([r["strays"] for r in rows], [1, 0])
+            rec = n.record()
+            self.assertEqual(rec["builds_outside"], 1)
+            self.assertEqual(rec["beside"], ["b (build)"])
 
 
 class Environment(unittest.TestCase):
@@ -460,6 +530,28 @@ class PosixTree(unittest.TestCase):
         self.assertEqual(runner.wait(30), 0)
         time.sleep(1)
         self.assertTrue(self.running(*grand), "the job's end took what its command left running")
+
+
+@unittest.skipUnless(os.name == "nt", "Windows' consoles")
+class WindowsConsole(unittest.TestCase):
+    """proc_start, with common.WINDOWS off as Environment's test patches it, in a python started the way run_all.py starts a
+    check (the same console), under a python with a hidden console of its own that stands in for run_all.py and its shell:
+    that one says whether a Ctrl+C reached it"""
+    CALLER = ("import os, sys; sys.path.insert(0, sys.argv[1]); from devtools import common, procs; common.WINDOWS = False; "
+              "procs.proc_start(os.getpid())")
+    BYSTANDER = ("import signal, subprocess, sys, time; got = []; signal.signal(signal.SIGINT, lambda *_: got.append(1)); "
+                 "subprocess.run([sys.executable, '-I', '-c', sys.argv[3], sys.argv[1]]); time.sleep(1); "
+                 "open(sys.argv[2], 'w').write('ctrl-c' if got else 'quiet')")
+
+    def test_proc_start_sends_no_ctrl_c(self):
+        with tempfile.TemporaryDirectory() as d:
+            said = os.path.join(d, "said")
+            hidden = subprocess.STARTUPINFO()
+            hidden.dwFlags |= subprocess.STARTF_USESHOWWINDOW   # (wShowWindow 0: SW_HIDE)
+            subprocess.run([sys.executable, "-I", "-c", self.BYSTANDER, os.path.join(ROOT, "scripts"), said, self.CALLER],
+                           creationflags=subprocess.CREATE_NEW_CONSOLE, startupinfo=hidden, timeout=60, check=True)
+            with open(said) as f:
+                self.assertEqual(f.read(), "quiet", "proc_start sent a Ctrl+C to every process of its console")
 
 
 if __name__ == "__main__":

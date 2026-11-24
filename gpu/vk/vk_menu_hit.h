@@ -47,6 +47,71 @@ inline int slider_permille(int v, int lo, int hi) {
     const int p = (int)((long long)(v - lo) * 1000 / (hi - lo));
     return p < 0 ? 0 : p > 1000 ? 1000 : p;
 }
+/// Where stop index (0 .. count - 1) sits along a stepped slider track in permille (0..1000).
+/// A 1-stop slider returns 0 (avoiding division by zero, matching slider_permille(v, lo, lo)).
+inline int slider_stop_permille(int index, int count) {
+    if (count <= 1) return 0;
+    const int i = index < 0 ? 0 : index >= count ? count - 1 : index;
+    return (int)((long long)i * 1000 / (count - 1));
+}
+/// Nearest stop index (0 .. count - 1) for a track position permille (0..1000).
+inline int slider_stop_index(int permille, int count) {
+    if (count <= 1) return 0;
+    const int p = permille < 0 ? 0 : permille > 1000 ? 1000 : permille;
+    const int i = (p * (count - 1) + 500) / 1000;
+    return i < 0 ? 0 : i >= count ? count - 1 : i;
+}
+/// Index of value v in an ordered stop list stops[0 .. count - 1], or 0 when not found / empty.
+inline int slider_find_stop(int v, const int* stops, int count) {
+    if (!stops || count <= 0) return 0;
+    for (int i = 0; i < count; i++)
+        if (stops[i] == v) return i;
+    return 0;
+}
+/// Stop value at permille (0..1000) along an ordered stop list stops[0 .. count - 1].
+inline int slider_stop_value(int permille, const int* stops, int count) {
+    if (!stops || count <= 0) return 0;
+    return stops[slider_stop_index(permille, count)];
+}
+
+/// State for a mouse drag on a slider row, supporting commit-on-release for heavy settings.
+/// When commit_on_release is true, dragging updates preview only (leaving live option untouched)
+/// and commits once when release() is called; cancel() discards the preview without committing.
+struct DragState {
+    int row = -1;
+    int preview = 0;
+    bool deferred = false;
+    bool dirty = false;
+
+    bool active() const { return row >= 0; }
+    bool active_on(int r) const { return row >= 0 && row == r; }
+    bool begin(int r, int v, int live, bool commit_on_release) {
+        row = r;
+        preview = v;
+        deferred = commit_on_release;
+        dirty = (v != live);
+        return !deferred && dirty;
+    }
+    bool update(int v, int live) {
+        if (row < 0) return false;
+        preview = v;
+        dirty = (v != live);
+        return !deferred && dirty;
+    }
+    bool release(int* out_value) {
+        const bool commit = row >= 0 && deferred && dirty;
+        if (commit && out_value) *out_value = preview;
+        row = -1;
+        deferred = false;
+        dirty = false;
+        return commit;
+    }
+    void cancel() {
+        row = -1;
+        deferred = false;
+        dirty = false;
+    }
+};
 
 /// What a left click on an option's row does after it selects the row (side: the Hit's): kClickSelect nothing more, kClickRight
 /// and kClickLeft as Right and Left, kClickConfirm as Enter. The name only selects the row and shows its help: a click there

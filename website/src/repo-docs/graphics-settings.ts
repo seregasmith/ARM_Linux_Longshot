@@ -76,6 +76,14 @@ function designated(init) {
   return fields;
 }
 
+/// A field that names a module's string constant (`.help = sim_turf_about` for `constexpr char sim_turf_about[] = "...";`)
+/// as its literal; null when the field is no name, or the modules define that name other than once
+function namedString(text, field) {
+  if (!/^\w+$/.test(field)) return null;
+  const found = [...text.matchAll(new RegExp(`\\bconstexpr char ${field}\\[\\]\\s*=((?:\\s*"(?:[^"\\\\]|\\\\.)*")+)\\s*;`, 'g'))];
+  return found.length === 1 ? cString(found[0][1]) : null;
+}
+
 /// The feature modules' rows and headings (gpu/vk/menu/*.cpp, MENU_MODULE), read without evaluating C++: each chain from
 /// menu::tab or menu::page, its .heading, .section and .row calls, a row's fields and the key its place names
 /// (after/before). `section` is the chain's own section (.heading or .section before it), else null.
@@ -94,8 +102,9 @@ function readModuleRows(text) {
     const place = text.slice(initEnd, callEnd).match(/menu::(?:after|before)\("([^"]+)"\)/)?.[1] || null;
     step.lastIndex = callEnd;
     rows.push({ page, heading: false, key: cString(fields.key || '') || '', name: cString(fields.label || '') || '',
-      value: fields.value || 'nullptr', help: cString(fields.help || '') || '', restart: fields.restart === 'true',
-      moduleShown: 'shown' in fields, kind: fields.kind, activate: fields.on_activate, text: fields.text || '',
+      value: fields.value || 'nullptr', help: cString(fields.help || '') || namedString(text, fields.help || '') || '',
+      restart: fields.restart === 'true', moduleShown: 'shown' in fields, kind: fields.kind, activate: fields.on_activate,
+      opens: cString(fields.opens || '') || '', text: fields.text || '',
       hint: fields.hint || '', section, place });
   }
   return rows;
@@ -261,7 +270,10 @@ export function readGraphicsSettings(page, menu) {
        (row.key === 'reshade_rescan' && row.name === 'Rescan ReShade presets' && row.activate === 'MENU_HOOK(scan_presets)'));
     const reshadeFile = row.key === 'reshade_user_pick' && row.name === 'User preset file' && row.value === '&user_pick' &&
       row.text === 'MENU_HOOK(filename)';
-    if (!row.value.startsWith('&opts.') && !row.textField && !row.monitorSelector && !hudReset && !reshadeAction && !reshadeFile)
+    // (gpu/vk/menu/sim_turf.cpp: the row that opens the area's simulated-turf page, whose values sim_turf_settings.ini keeps)
+    const simTurfPage = row.key === '@Simulated turf' && row.name === 'Simulated turf' && row.value === 'nullptr' &&
+      row.kind === 'menu::Kind::Page' && row.opens === 'sim_turf_settings';
+    if (!row.value.startsWith('&opts.') && !row.textField && !row.monitorSelector && !hudReset && !reshadeAction && !reshadeFile && !simTurfPage)
       throw new Error(`table/menu graphics coverage mismatch at ${row.name}`);
     if (row.section !== groups.at(-1).section) {
       if (!titles.has(row.section) || groups.some(group => group.section === row.section)) throw new Error(`table/menu graphics order mismatch at ${row.name}`);

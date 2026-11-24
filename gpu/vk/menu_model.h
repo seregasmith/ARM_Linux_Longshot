@@ -53,6 +53,13 @@ struct Setting {
     const char* verb = nullptr;                    // what Activate does, for a presenter's prompt ("Save", "Tap"; a text id)
     const void* tag = nullptr;          // the describer's own (the ImGui menu: its record of a row it still describes itself)
     bool confirm = false;               // an Action that asks for a second Activate before it acts (Restart, Quit)
+    bool commit_on_release = false;     // a heavy Slider: dragging updates visual preview only; commits on mouse release
+    bool unsaved = false;               // a UI-only row synced to another saved option (skipped by save() and load())
+    std::function<int()> sync = {};                       // refreshes *value from underlying option state before draw/input
+    std::function<int()> slider_current = {};             // current slider stop ID when distinct from *value (e.g. Native)
+    std::function<int(int v)> slider_permille = {};       // track position (0..1000) for a non-linear or capped Slider
+    std::function<int(int permille)> slider_value = {};   // stop value for permille (0..1000) on a non-linear or capped Slider
+    std::function<std::string(int v)> slider_text = {};   // value text for slider preview/stop ID when distinct from text()
 };
 
 /// A presenter: whatever draws a snapshot (the ImGui menu, the game's menu). A custom item asks it for its name.

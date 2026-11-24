@@ -44,6 +44,7 @@ def definition(text, name):
 
 
 FIXTURE = r"""
+#include "framegen_rows.h"
 #include "upscaler_rows.h"
 #include <algorithm>
 #include <atomic>
@@ -70,6 +71,9 @@ void apply_auto() {}
 void env_release(const int*) {}   // (the environment's hold on a row: none here)
 bool row_fixed(const int*) { return false; }
 namespace ur = mkwvk::upscaler_rows;
+namespace fgr = mkwvk::framegen_rows;
+int fg_last_fixed = 2;
+int fg_mult_ui = 2;
 int upscaler() { return opts.dlss; }
 unsigned upscalers_available() { return ur::bit(ur::GAME) | ur::bit(ur::OFF) | ur::dlss_bits(true); }
 namespace mr { constexpr int kMax = 8; }
@@ -143,20 +147,32 @@ int main() {
         set_row(framegen, 0, -1);
         CHECK(opts.framegen == 0 && opts.preset == preset);
     }
-    // (Frame generation while NVIDIA DLSS FG makes the frames: the arrows step from the value shown, end at its runtime's
-    // most + 1 and go round to Off past it, as past 8x; down from Off comes to that top)
-    struct Step { int most, from, dir, to; } steps[] = {
-        {5, 8, 1, 0}, {5, 8, -1, 5}, {5, 7, -1, 5}, {5, 5, 1, 6}, {5, 6, 1, 0}, {5, 0, -1, 6}, {5, 1, 1, 2},   // (6x)
-        {1, 3, 1, 0}, {1, 3, -1, 1}, {1, 1, 1, 2}, {1, 2, 1, 0}, {1, 0, -1, 2},                                // (2x)
-        {0, 7, 1, 8}, {0, 8, 1, 0}, {0, 0, -1, 8}, {0, 2, -1, 1},   // (no cap: as before)
+    // (Frame generation mode row wraps Off / Auto / Fixed remembering last fixed multiplier;
+    // Frame generation multiplier slider steps monotonically 2x..fixed_top and stops at its ends)
+    struct Step { int most, from, dir, to; } mode_steps[] = {
+        {5, 0, 1, 1}, {5, 1, 1, 2}, {5, 2, 1, 0}, {5, 0, -1, 2}, {5, 2, -1, 1}, {5, 1, -1, 0},
+        {5, 6, 1, 0}, {5, 0, -1, 6}, {1, 0, -1, 2},   // (remembered 6x capped to 2x on RTX 40)
+        {0, 4, 1, 0}, {0, 0, -1, 4},
     };
-    for (const Step& s : steps) {
+    fg_last_fixed = 2;
+    for (const Step& s : mode_steps) {
         opts = Options{};
         fg_most = s.most, opts.framegen = s.from;
         set_row(framegen, s.from + s.dir * framegen.step, s.dir);
         if (opts.framegen != s.to)
-            return std::fprintf(stderr, "FAIL: Frame generation %d, DLSS FG's runtime making %d, arrow %d: %d, wanted %d\n",
+            return std::fprintf(stderr, "FAIL: Frame generation mode %d, DLSS FG's runtime making %d, arrow %d: %d, wanted %d\n",
                                 s.from, s.most, s.dir, opts.framegen, s.to), 1;
+    }
+    struct MultStep { int most, from, dir, to; } mult_steps[] = {
+        {5, 8, 1, 6}, {5, 8, -1, 5}, {5, 7, -1, 5}, {5, 5, 1, 6}, {5, 6, 1, 6}, {5, 2, -1, 2},   // (6x cap, stops at ends)
+        {1, 3, 1, 2}, {1, 3, -1, 2}, {1, 2, 1, 2}, {1, 2, -1, 2},                                 // (2x cap on RTX 40)
+        {0, 7, 1, 8}, {0, 8, 1, 8}, {0, 2, -1, 2}, {0, 2, 1, 3},                                  // (uncapped 2x..8x)
+    };
+    for (const MultStep& s : mult_steps) {
+        const int got = fgr::step_multiplier(s.from, s.dir, s.most);
+        if (got != s.to)
+            return std::fprintf(stderr, "FAIL: Frame generation multiplier %d, DLSS FG's runtime making %d, arrow %d: %d, wanted %d\n",
+                                s.from, s.most, s.dir, got, s.to), 1;
     }
     opts = Options{};
     fg_most = 5, opts.framegen = 2;
@@ -178,7 +194,8 @@ int main() {
         opts = Options{};
         if (r.value == &opts.dlss_model) opts.dlss = ur::DLSS;
         const int previous = *r.value, resets = temporal_resets;
-        set_row(r, previous + r.step, 1);
+        const int dir = r.value == &opts.resolution ? -1 : 1;  // The Handheld default is at the 100% stop.
+        set_row(r, previous + dir * r.step, dir);
         CHECK(*r.value != previous);
         CHECK(temporal_resets == resets + 1);
     }

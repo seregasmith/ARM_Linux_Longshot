@@ -1,4 +1,4 @@
-"""Run the three authored Vulkan fixtures on lavapipe, with validation and no skips.
+"""Run the authored Vulkan fixtures on lavapipe, with validation and no skips.
 
 The workflow supplies exactly one ICD in both loader variables. This is separate
 from run_all.py: that suite must still work on machines without a Vulkan device.
@@ -32,6 +32,11 @@ FIXTURES = (
             "physical16:9", "wide matching", "maximize geometry", "wide into16:9",
             "restore geometry", "padded active crop", "invalid override",
         )), "PASS: seven offscreen GPU cases; no swapchain/window, no game assets"),
+    ("test_astc_decoder_gpu.py", ("--device",), (
+        r"PASS: [1-9][0-9]* astcenc vector block decodes bit-exact on the GPU, 14 footprints, linear and sRGB",
+        r"PASS: [1-9][0-9]* whole levels bit-exact against texdecode: layers, edge blocks, GOB tiles, a short binding",
+        r"PASS: [1-9][0-9]* hand-built levels bit-exact against texdecode: void extents, illegal blocks, 1-4 partitions, two planes, grids",
+    ), "PASS: the GPU ASTC decoder equals astcenc and texdecode on the GPU"),
 )
 VALIDATION_ERROR = re.compile(r"validation error|\bVUID-|^validation:", re.I | re.M)
 

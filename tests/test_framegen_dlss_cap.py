@@ -122,13 +122,18 @@ def check_sources(framegen, main_cpp, dlss, menu, replay):
         too_many.index("skip(FG_SKIP_TOO_MANY)"), \
         "dlss_fg_frames: without a temporal Upscaler (no cap) the reason is the inputs, not the runtime's most"
     tx = block(menu, "const char* tx_framegen(int v) {", where="gpu/vk/vk_menu.cpp")
-    assert "framegen_capped(v, dlss_fg_most())" in tx, "tx_framegen: a saved value past the top shows as the top"
+    tx_mult = block(menu, "const char* tx_framegen_mult(int v) {", where="gpu/vk/menu/framegen.cpp")
+    assert "framegen_capped(" in tx_mult and "dlss_fg_most()" in tx_mult, "tx_framegen_mult: a saved value past the top shows as the top"
     assert "framegen_maker()" in tx and '"Auto (FSR 3.1 FG)"' in tx and '"Auto (Built-in FG)"' in tx, \
         "tx_framegen: Auto names who makes its frames (DLSS FG makes fixed multipliers only)"
-    # (the arrows' step: the row's own step_fn in its module, gpu/vk/menu/framegen.cpp (#1633), as set_row's was)
+    # (the mode row wraps Off / Auto / Fixed; the multiplier slider stops at DLSS FG's top)
     step = block(menu, "int framegen_step(int now, int dir) {", where="gpu/vk/menu/framegen.cpp")
-    assert "top = framegen_capped(8, most)" in step and "framegen_capped(now, most) + dir" in step and \
-        ".step_fn = MENU_HOOK(framegen_step)" in menu, "Frame generation's arrows step from the value shown, up to DLSS FG's top"
+    mult_step = block(menu, "int framegen_mult_step(int now, int dir) {", where="gpu/vk/menu/framegen.cpp")
+    assert "fgr::step_mode(" in step and "dlss_fg_most()" in step and ".step_fn = MENU_HOOK(framegen_step)" in menu, \
+        "Frame generation's mode row steps Off/Auto/Fixed respecting DLSS FG's top"
+    assert "fgr::step_multiplier(" in mult_step and "dlss_fg_most()" in mult_step and \
+        ".step_fn = MENU_HOOK(framegen_mult_step)" in menu, \
+        "Frame generation multiplier's arrows step up to DLSS FG's top"
     bridge = block(menu, "int menu_setting_set(", where="gpu/vk/vk_menu.cpp")
     assert "r.value == &opts.framegen ? 0 :" in bridge, "menu_setting_set: Frame generation's value as asked, not an arrow's step"
 
@@ -146,7 +151,8 @@ def main():
     capped = block(framegen, "int framegen_capped(", where="gpu/vk/vk_framegen.cpp")
     fixture = "#include <algorithm>\n" + capped + MAIN
     hint = HINT.replace("/* CAPPED */", capped).replace(
-        "/* HINT */", block(menu, "const char* hn_framegen(int v, int variant) {", where="gpu/vk/vk_menu.cpp"))
+        "/* HINT */", block(menu, "const char* hn_framegen_mult(int v, int variant) {", where="gpu/vk/menu/framegen.cpp")
+        .replace("hn_framegen_mult", "hn_framegen"))
     check_sources(framegen, main_cpp, dlss, menu, replay)
     with tempfile.TemporaryDirectory(prefix="framegen-dlss-cap-") as tmp:
         for name, text in (("fixture", fixture), ("hint", hint)):

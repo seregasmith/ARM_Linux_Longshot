@@ -51,7 +51,13 @@ void hos_log(const char *fmt, ...) {
     strcat(logged, "\n");
 }
 static uint64_t mapped_from = GUEST;
-int hos_mem_region(uint64_t addr, uint64_t size) { return addr >= mapped_from && addr + size <= GUEST + sizeof guest; }
+static uint64_t asked_most;   /* (the most memory a search asked about) */
+static int far_asks;          /* (searches past where a first channel can start: as far as a later channel's header) */
+int hos_mem_region(uint64_t addr, uint64_t size) {
+    if (size > asked_most) asked_most = size;
+    if (size > 0x280) far_asks++;
+    return addr >= mapped_from && addr + size <= GUEST + sizeof guest;
+}
 void hos_audio_source_load(void);
 int hos_audio_source_of(uint64_t data, uint32_t *crc);
 const char *hos_audio_source_name(int cls);
@@ -84,19 +90,39 @@ int main(int argc, char **argv) {
            strstr(logged, "ocarina 2") && strstr(logged, "pick-ups 0") && strstr(logged, "low health 1"));
     assert(strstr(logged, "Item_Broken.bars.zs is not read as a sound archive"));
     assert(!strstr(logged, "Player_Adult"));                          /* an archive nothing is classed from is not opened */
+    assert(hos_audio_source_of(GUEST + 0x30000, &crc) == -1);           /* a streamed sound's buffer: searched far once */
+    asked_most = 0;
+    assert(hos_audio_source_of(GUEST + 0x30000, &crc) == -1);           /* the ring come round to it again */
+    assert(asked_most <= 0x280);   /* looked at only where a first channel can start, not 64 KB of memory a buffer */
     /* Npc_Navi in the game's memory: SE_Navi_LockOn at 0x200, SE_Navi_FlyApproach (2 channels) at 0x2000, a cutscene's at 0x6000 */
-    assert(hos_audio_source_of(bars + 0x200 + 0x80, &crc) == AUDIO_SOURCE_TARGET && crc == 0xb2db631e);
-    assert(hos_audio_source_of(bars + 0x2000 + 0xc0, &crc) == AUDIO_SOURCE_NAVI_SOUND && crc == 0x7da57872);
-    assert(hos_audio_source_of(bars + 0x2000 + 0xc0 + 0x1c40, &crc) == AUDIO_SOURCE_NAVI_SOUND);   /* its second channel */
+    const uint64_t lock_on = bars + 0x200 + 0x80, fly = bars + 0x2000 + 0xc0, fly2 = fly + 0x1c40;
+    /* a mono sound (a footstep's kind) played again and again: found right behind its header, never searched far */
+    far_asks = 0;
+    for (int i = 0; i < 100; i++) assert(hos_audio_source_of(lock_on, &crc) == AUDIO_SOURCE_TARGET && crc == 0xb2db631e);
+    assert(far_asks == 0);
+    /* a later channel queued before its wave's first: found as far as main looked, once; then by its address, every play */
+    for (int i = 0; i < 10; i++) assert(hos_audio_source_of(fly2, &crc) == AUDIO_SOURCE_NAVI_SOUND && crc == 0x7da57872);
+    assert(far_asks == 1);
+    assert(hos_audio_source_of(fly, &crc) == AUDIO_SOURCE_NAVI_SOUND);  /* its first channel: from the same header */
+    assert(far_asks == 1);
+    /* a streamed sound's ring (no header in front of its buffers): each of its places searched far once, however often it
+       comes round (GUEST + 0x30000 was searched above) */
+    for (int round = 0; round < 100; round++)
+        for (int i = 0; i < 8; i++) assert(hos_audio_source_of(GUEST + 0x30000 + i * 0x1000, &crc) == -1);
+    assert(far_asks == 1 + 7);
+    /* what was kept pushed out by many other places: the later channel at its sound's start found again, searched once */
+    for (int i = 0; i < 2048; i++) (void)hos_audio_source_of(GUEST + 0x28000 + (uint64_t)i * 0x40, &crc);
+    const int before_evicted = far_asks;
+    for (int i = 0; i < 10; i++) assert(hos_audio_source_of(fly2, &crc) == AUDIO_SOURCE_NAVI_SOUND);
+    assert(far_asks <= before_evicted + 1);
     assert(hos_audio_source_of(bars + 0x6000 + 0x80, &crc) == AUDIO_SOURCE_NONE && crc == 0xa4a6a6ef);   /* found, not classed */
-    assert(hos_audio_source_of(bars + 0x200 + 0x80 + 0x40, &crc) == -1);   /* the middle of a sound: no asset's start */
-    assert(hos_audio_source_of(GUEST + 0x30000, &crc) == -1);              /* a streamed sound's buffer */
+    assert(hos_audio_source_of(lock_on + 0x40, &crc) == -1);            /* the middle of a sound: no asset's start */
     assert(hos_audio_source_of(0, &crc) == -1);
-    assert(hos_audio_source_of(GUEST + 0x40, &crc) == -1);                 /* too near the start of the mapped memory to have a header */
+    assert(hos_audio_source_of(GUEST + 0x40, &crc) == -1);              /* too near the start of the mapped memory to have a header */
     mapped_from = bars + 0x200;                                            /* memory mapped from the header on: still found */
-    assert(hos_audio_source_of(bars + 0x200 + 0x80, &crc) == AUDIO_SOURCE_TARGET);
+    assert(hos_audio_source_of(lock_on, &crc) == AUDIO_SOURCE_TARGET);
     mapped_from = bars + 0x200 + 0x40;                                     /* the header itself not mapped: not read */
-    assert(hos_audio_source_of(bars + 0x200 + 0x80, &crc) == -1);
+    assert(hos_audio_source_of(lock_on, &crc) == -1);
     assert(!strcmp(hos_audio_source_name(AUDIO_SOURCE_TARGET), "targeting") && !strcmp(hos_audio_source_name(99), "?"));
     logged[0] = 0;
     hos_audio_source_load();                                               /* read once */

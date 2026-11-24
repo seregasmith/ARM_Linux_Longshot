@@ -157,8 +157,8 @@ EOF
 cp builder/linux/AppRun "$APPDIR/AppRun"
 cp builder/linux/longshot-builder.desktop "$APPDIR/"
 # (RecompLauncher reads this from inside the AppImage, at /recomplauncher.json: docs/dev/reference/releases.md, "Update channels".
-# Its prepare.version is this release's, so an update builds the game again: scripts/builder_package.py release_manifest)
-"$PY" -I scripts/builder_package.py manifest "$VERSION" --out "$APPDIR/recomplauncher.json"
+# It ships as it is: RecompLauncher builds the game again whenever the release it installed changes)
+cp recomplauncher.json "$APPDIR/recomplauncher.json"
 cp assets/longshot.png "$APPDIR/longshot.png"
 mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 cp assets/longshot.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/longshot.png"

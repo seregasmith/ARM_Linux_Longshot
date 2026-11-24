@@ -55,8 +55,8 @@ def main():
                     following = following[:following.index("    reflex_presented();")]
                 else:
                     following = following[:1]
-                snippet += "\n" + "\n".join(line for line in following
-                                                  if line.strip() == "if (res == VK_ERROR_DEVICE_LOST) device_lost();")
+                snippet += "\n" + "\n".join(line for line in following if re.fullmatch(
+                    r"if \(\w+ == VK_ERROR_DEVICE_LOST\) device_lost\(\);", line.strip()))
             if "VkResult res =" not in snippet:
                 snippet = "VkResult res = VK_SUCCESS; (void)res;\n" + snippet
             sites.append((call, snippet))
@@ -69,7 +69,7 @@ enum { VK_SUCCESS=0, VK_ERROR_DEVICE_LOST=-4, VK_TRUE=1, VK_NULL_HANDLE=0 };
 struct { int device=1, queue=2, present_queue=3, swapchain=4; } dev;
 int sc=4;   // (acquire ahead's acquire: on the swapchain the presenter's present went to)
 struct { int done=5, pool=7, cmd=8; } f;
-bool was_held=false; int acquire_fence=6;   // (#1376: the acquire's fence, and no image held from an earlier present)
+bool was_held=false; int acquire_fence=6, acquire_semaphore=0;
 int bi=0, si=0, pi=0, index=0;
 uint64_t acquire_timeout=UINT64_MAX;
 int result=VK_SUCCESS, calls=0, reports=0, continued=0;

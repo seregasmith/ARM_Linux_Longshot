@@ -1,0 +1,3 @@
+[allowlist]
+description = "The guide manifest records SHA-256 source fingerprints, not credentials."
+paths = ['''docs/user/images/guide/manifest.json''']

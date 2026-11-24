@@ -78,6 +78,8 @@ static int oot_gamedata_string(Ctx *c, uint32_t hash, char *buf, size_t size) {
     return 1;
 }
 static int oot_pouch_count(Ctx *c, const char *name) { (void)c, (void)name; return -1; }
+/* (the first-night repair beside the map line: this test is about the pose, so the refresh's call does nothing) */
+static int oot_first_night_fix(Ctx *c, const char *map) { (void)c, (void)map; return 0; }
 static void hos_movie_stats(int64_t out[5]) { memset(out, 0, 5 * sizeof out[0]); }
 
 #include "oot_cheat_items.h"

@@ -19,6 +19,13 @@
 #define HOS_NX2_REGION_BASE 0x3000000000ULL
 #define HOS_NX2_REGION_SIZE 0x2000000000ULL
 #define R_INVALID_ENUM 0xF001   /* svc::ResultInvalidEnumValue */
+#define R_INVALID_COMBINATION 0xE801   /* svc::ResultInvalidCombination: an empty core mask */
+int hos_svc_set_thread_core_mask(HosThread *t, int ideal, uint64_t mask) {
+    if (!t) return 0xE401;               /* svc::ResultInvalidHandle */
+    if (!mask) return R_INVALID_COMBINATION;
+    hos_thread_affinity(t, ideal, mask);
+    return R_OK;
+}
 
 static uint64_t get_info(uint32_t id0, uint64_t id1, int *ok) {
     *ok = 1;
@@ -422,9 +429,7 @@ void a64_svc(Ctx *c, uint32_t imm) {
         return;
     }
     case 0x0F: { /* SetThreadCoreMask(handle, ideal core, mask): -1 keeps the ideal core, -2/-3 defaults */
-        HosThread *t = thread_handle((uint32_t)c->x[0]);
-        if (t) hos_thread_affinity(t, (int)c->x[1], c->x[2]);
-        c->x[0] = t ? R_OK : 0xE401;
+        c->x[0] = hos_svc_set_thread_core_mask(thread_handle((uint32_t)c->x[0]), (int)c->x[1], c->x[2]);
         return;
     }
     case 0x24:   /* GetProcessId(-, handle) -> (result, id) */

@@ -5,6 +5,7 @@ Exits 1 when anything failed. On Linux a check that ends or times out takes ever
 
     python -I -B tests/run_all.py [--jobs N] [--timeout SECONDS] [--strict] [--no-skip] [--shard K/N]
                                   [--list] [--junit FILE] [--exact] [name ...]
+    python -I -B tests/run_all.py --container [any of these]   (Linux: in a container with CI's tools, scripts/linux/checks.sh)
     python -I -B tests/run_all.py --changed [BASE]   (only the checks that read files changed since BASE: main on the
                                                      remote that points at Longshot, else origin/main)
 
@@ -571,8 +572,18 @@ def unicode_output():
             stream.reconfigure(encoding="utf-8", errors="replace")
 
 
+def in_container(args):
+    """--container: the same run in a container with CI's tools, its exit status"""
+    if not sys.platform.startswith("linux"):
+        print("tests/run_all.py: --container is for Linux", file=sys.stderr)
+        return 2
+    return subprocess.run([os.path.join(ROOT, "scripts", "linux", "checks.sh")] + [a for a in args if a != "--container"]).returncode
+
+
 def main():
     unicode_output()
+    if "--container" in sys.argv[1:]:
+        return in_container(sys.argv[1:])
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("names", nargs="*")
     p.add_argument("--jobs", type=int, default=os.cpu_count() or 2)
@@ -585,6 +596,8 @@ def main():
     p.add_argument("--list", action="store_true",
                    help="print the name of each check a run would start, one a line, and run none")
     p.add_argument("--junit", metavar="FILE", help="also write the results as JUnit XML to FILE")
+    p.add_argument("--container", action="store_true",
+                   help="(Linux) in a container with CI's tools: Podman or Docker, its image built first (scripts/linux/checks.sh)")
     p.add_argument("--exact", action="store_true",
                    help="a name must be a check's whole path, and with names given and none matching, run nothing")
     p.add_argument("--changed", nargs="?", const="", metavar="BASE",

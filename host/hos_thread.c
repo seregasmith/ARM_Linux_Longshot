@@ -42,6 +42,7 @@ struct HosThread {
     uint64_t tls_block, tlr;
     int priority, ideal_core;
     uint64_t core_mask;
+    int mask_set;   /* SetThreadCoreMask was called: 0 then is the game's no-affinity; 0 without it is "never set" */
     uint64_t tls_slots[HOS_TLS_SLOTS];
     char name[48];
     HANDLE handle;
@@ -122,20 +123,20 @@ static void pin_by_core(HosThread *t) {
 #endif
 }
 #if !defined(__EMSCRIPTEN__)
-static void vc_note_mask_change(HosThread *t);
+static void vc_set_affinity(HosThread *t, int ideal, uint64_t mask);
+static void vc_note_mask_change_locked(HosThread *t);
 static int vc_mask_changed(uint64_t old_mask, uint64_t new_mask);
 #endif
 void hos_thread_affinity(HosThread *t, int ideal, uint64_t mask) {
+#if !defined(__EMSCRIPTEN__)
+    vc_set_affinity(t, ideal, mask);
+#else
     if (ideal >= 0) t->ideal_core = ideal;
-    const uint64_t old_mask = t->core_mask;
     /* (the real kernel refuses an empty affinity; 0 is this game's own no-affinity convention, and its
        trampoline caches the entry core for it) */
     t->core_mask = mask;
+    t->mask_set = 1;
     pin_by_core(t);
-#if !defined(__EMSCRIPTEN__)
-    if (vc_mask_changed(old_mask, mask)) vc_note_mask_change(t);
-#else
-    (void)old_mask;
 #endif
 }
 uint64_t hos_thread_mask(HosThread *t) { return t->core_mask; }
@@ -145,7 +146,7 @@ static int hos_thread_wrapper_mask(HosThread *t, uint32_t *out) {
     if (!tt || *tt != t->guest_tt) return 0;
     uint32_t *m = (uint32_t *)hos_guest_range(t->arg + 0xb0, 4);
     if (!m) return 0;
-    *out = *m;
+    if (out) *out = *m;
     return 1;
 }
 void hos_thread_boost(int level) {
@@ -1840,12 +1841,17 @@ static int vc_mask_changed(uint64_t old_mask, uint64_t new_mask) {
     const uint64_t all = (1u << vc_cores()) - 1;
     return (old_mask & all) != (new_mask & all);
 }
+/* the core a thread that never had a mask keeps: its ideal core, as the kernel and main pinned it */
+static int vc_pin_core(const HosThread *t) {
+    if (t->ideal_core >= 0) return t->ideal_core % vc_cores();
+    return 0;
+}
 /* the core a mask-0 thread should take: the guest's cached core (seam threads), then its last one, then ideal/lowest */
 static int vc_pref_core(HosThread *t) {
+    if (t->core_mask == 0 && !t->mask_set) return vc_pin_core(t);
     int c = -1;
     const int slot = core_tls_slot;
-    uint32_t wm = 0;
-    const int seam = hos_thread_wrapper_mask(t, &wm);
+    const int seam = hos_thread_wrapper_mask(t, NULL);
     if (seam && slot >= 0 && slot < HOS_TLS_SLOTS && !core_tls_alias_now()) {
         const uint64_t cached = t->tls_slots[slot];
         if (cached > 0 && cached <= (uint64_t)vc_cores()) c = (int)cached - 1;
@@ -1861,7 +1867,9 @@ static uint32_t vc_mask(const HosThread *t) {
 }
 static unsigned vc_allowed(HosThread *t) {
     const unsigned all = (1u << vc_cores()) - 1;
-    if (t->core_mask == 0) return all;   /* (the guest's no-affinity value) */
+    /* (0 is the guest's no-affinity value only after SetThreadCoreMask; before that it is "never set", and the
+       thread stays on its ideal core as the kernel and main pinned it) */
+    if (t->core_mask == 0) return t->mask_set ? all : (1u << vc_pin_core(t));
     const unsigned m = vc_mask(t);
     return m ? m : (1u << hos_thread_core(t));   /* (nonzero but past the vcores: pinned as before) */
 }
@@ -1874,7 +1882,7 @@ static int vc_better(HosThread *a, HosThread *b) {
 /* a free core t may run on (its last one, its ideal one, then the lowest), or -1; holding vc_lock */
 static int vc_free_for(HosThread *t) {
     const unsigned m = vc_allowed(t);
-    if (t->core_mask == 0) {
+    if (t->core_mask == 0 && t->mask_set) {
         const int pref = vc_pref_core(t);
         if (pref >= 0 && !vc_owner[pref]) return pref;
         for (int c = 0; c < vc_cores(); c++)
@@ -1894,8 +1902,7 @@ static int vc_free_for(HosThread *t) {
    and the next take rewrites it. */
 static void vc_sync_tls(HosThread *t, int c) {
     const uint32_t mask = vc_mask(t);
-    uint32_t wm = 0;
-    if (!hos_thread_wrapper_mask(t, &wm)) return;
+    if (!hos_thread_wrapper_mask(t, NULL)) return;
     AcquireSRWLockExclusive(&tls_slot_lock);
     const int slot = core_tls_slot;   /* (validated, then held: a free clears it under this lock) */
     if (slot >= 0 && slot < HOS_TLS_SLOTS && !core_tls_alias_now())
@@ -1910,15 +1917,15 @@ static void vc_wake_holder(HosThread *t) {
 }
 /* A post-start mask change can leave the holder on a core the new mask excludes. Ask it to yield at its next
    checkpoint; the reacquisition uses the new mask. A change that keeps the same core syncs the cell now. */
-static void vc_note_mask_change(HosThread *t) {
+/* (vc_set_affinity calls this with vc_lock held) */
+static void vc_note_mask_change_locked(HosThread *t) {
     if (!hos_vcores_on() || !t) return;
-    AcquireSRWLockExclusive(&vc_lock);
     const uint32_t mask = vc_mask(t);
     if (t->vc_held) {
         const int c = t->vc_held - 1;
         int move;
-        if (t->core_mask == 0) move = (c != vc_pref_core(t));
-        else if (mask == 0) move = 0;   /* (nonzero but past the vcores: pinned as before) */
+        if (t->core_mask == 0 && t->mask_set) move = (c != vc_pref_core(t));
+        else if (mask == 0) move = 0;   /* (never set, or nonzero but past the vcores: pinned as before) */
         else move = !((mask >> c) & 1);
         if (move) {
             __atomic_store_n(&t->vc_kick, 2, __ATOMIC_RELAXED);
@@ -1928,6 +1935,19 @@ static void vc_note_mask_change(HosThread *t) {
             vc_sync_tls(t, c);
         }
     }
+}
+/* the game's SetThreadCoreMask: publish the ideal core, mask and mask_set together for the scheduler */
+static void vc_set_affinity(HosThread *t, int ideal, uint64_t mask) {
+    AcquireSRWLockExclusive(&vc_lock);
+    if (ideal >= 0) t->ideal_core = ideal;
+    const uint64_t old_mask = t->core_mask;
+    const int was_set = t->mask_set;
+    /* (the real kernel refuses an empty affinity; 0 is this game's own no-affinity convention, and its
+       trampoline caches the entry core for it) */
+    t->core_mask = mask;
+    t->mask_set = 1;
+    pin_by_core(t);
+    if (!was_set || vc_mask_changed(old_mask, mask)) vc_note_mask_change_locked(t);
     ReleaseSRWLockExclusive(&vc_lock);
 }
 static void vc_take(HosThread *t, int c) {
@@ -2159,7 +2179,7 @@ static void vc_yield(HosThread *t, int strict) {
        wholly outside the vcores is pinned as before and does not force a move */
     const uint32_t mask = vc_mask(t);
     int any;
-    if (t->core_mask == 0) any = (c != vc_pref_core(t));
+    if (t->core_mask == 0 && t->mask_set) any = (c != vc_pref_core(t));
     else if (mask == 0) any = 0;
     else any = !((mask >> c) & 1);
     for (int i = 0; i < vc_nq && !any; i++) {

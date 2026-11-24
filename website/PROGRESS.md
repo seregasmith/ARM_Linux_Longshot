@@ -7,13 +7,19 @@ closed items updated within 90 days, up to 20 published releases and the latest
 stable release. No stable release is represented explicitly, without borrowing
 another project's releases. Previous repository curation is not reused.
 
+Issues and pull requests both come from the `issues` endpoint (`type=issues` and `type=pulls`, `sort=recentupdate`,
+50 a page, Forgejo's most), never `pulls`: that one runs git for every pull request it lists (diff stats and
+mergeability), which made each page take seconds on the forge. A pull request's merge date and draft flag come from
+the issue's `pull_request` field. The closed lists pass `since=` the start of the 90-day window, so the server leaves
+older items out; the collector checks the dates again.
+
 ## Collection and hosting
 
 The site's build collects the feed (`src/lib/progress-feed.mjs`, `buildFeed()`), once per build, and publishes it as
 `/progress-feed.json` (`src/pages/progress-feed.json.ts`) and in the front page's release and activity panels. Nothing
 is committed and no server runs: the data is as fresh as the last build, and the website workflow rebuilds it every
 hour. Each API request allows 120 seconds (including its JSON body: a busy forge can take more than 30 seconds to
-list 100 open pull requests) and up to three attempts for timeouts, temporary
+answer one page) and up to three attempts for timeouts, temporary
 network errors, HTTP 408/429 and HTTP 500/502/503/504. Retries wait 1 then 2 seconds, or a longer `Retry-After` up to
 30 seconds. Authentication errors, invalid JSON, private sources and unsafe pagination fail without retries.
 

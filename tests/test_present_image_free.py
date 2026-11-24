@@ -57,6 +57,7 @@ FIXTURE_HEAD = r'''
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <utility>
 #include <vector>
 using VkResult = int;
 using VkFence = uint64_t; using VkSemaphore = uint64_t; using VkSwapchainKHR = uint64_t; using VkCommandBuffer = uint64_t;
@@ -67,6 +68,8 @@ constexpr VkResult VK_SUCCESS = 0, VK_NOT_READY = 1, VK_TIMEOUT = 2, VK_ERROR_DE
 constexpr int VK_TRUE = 1, VK_STRUCTURE_TYPE_FENCE_CREATE_INFO = 8, VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO = 1000314005,
     VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO = 1000314006, VK_STRUCTURE_TYPE_SUBMIT_INFO_2 = 1000314004;
 constexpr uint64_t VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT = 0x10000;
+constexpr int VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO = 9;
+struct VkSemaphoreCreateInfo { int sType; };
 struct VkFenceCreateInfo { int sType; const void* pNext = nullptr; int flags = 0; };
 struct VkSemaphoreSubmitInfo { int sType; const void* pNext = nullptr; VkSemaphore semaphore = 0; uint64_t value = 0;
     uint64_t stageMask = 0; uint32_t deviceIndex = 0; };
@@ -82,8 +85,9 @@ struct Policy {   // (device_policy.h's acquire_ahead off, as with every driver 
     bool set(Sw) const { return false; }
 };
 struct Device { int device = 1; VkSwapchainKHR swapchain = 1; uint64_t swapchain_generation = 0; Extent swap_extent;
+    struct { uint32_t vendorID = 0; } props;
     std::vector<VkSemaphore> swap_rendered{901, 902, 903, 904}; std::mutex present_mu; Policy policy; } dev;
-struct Frame { VkCommandPool pool = 11; VkCommandBuffer cmd = 12; VkFence done = 13; VkSemaphore acquired = 14; };
+struct Frame { VkCommandPool pool = 11; VkCommandBuffer cmd = 12; VkFence done = 13; VkSemaphore acquired = 0, retired_acquire = 0; };
 namespace fps_stats { enum { kGpuWait, kPace }; }
 namespace gpu_wait_stats { struct Exclude { Exclude() {} }; }   // (vk_work.h: a wait left out of the GPU wait counts)
 void fps_wait(int, int64_t) {}
@@ -148,6 +152,8 @@ VkResult vkResetFences(int, uint32_t n, const VkFence* fences) {
 }
 VkResult vkCreateFence(int, const VkFenceCreateInfo*, void*, VkFence* out) { *out = ++next_fence; made_fences.push_back(*out); return VK_SUCCESS; }
 VkResult vkEndCommandBuffer(VkCommandBuffer) { return VK_SUCCESS; }
+VkResult vkCreateSemaphore(int, const VkSemaphoreCreateInfo*, void*, VkSemaphore*) { return VK_ERROR_DEVICE_LOST; }
+void vkDestroyFence(int, VkFence, void*) {}
 '''
 
 FIXTURE_TAIL = r'''

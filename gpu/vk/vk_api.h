@@ -411,6 +411,8 @@ typedef struct MkwVkHost {
     int (*rebind_control)(int set, int button, int slot, int code, uint64_t approved, uint64_t *conflicts);
     /* Version 44: whether the row's bindings match its current reset defaults. */
     int (*binding_is_default)(int button);
+    /* (version 45) Resolve vkGetInstanceProcAddr through the executable on Windows. */
+    uintptr_t (*vulkan_loader_proc)(void);
 } MkwVkHost;
 /* (version 35) a cheat's kind: a heading (no opcodes), a data cheat (switched), a master cheat (always on), not supported (note) */
 enum { MKWVK_CHEAT_HEADING, MKWVK_CHEAT_DATA, MKWVK_CHEAT_MASTER, MKWVK_CHEAT_UNSUPPORTED };

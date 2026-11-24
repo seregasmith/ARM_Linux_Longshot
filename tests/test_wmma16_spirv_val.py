@@ -53,7 +53,7 @@ using u32 = std::uint32_t;
 using u64 = std::uint64_t;
 enum class Stage { Compute, Fragment };
 namespace IR {
-enum class Opcode { Input, MatrixMulAddF16, CompositeExtractU32x2, CompositeConstructU32x4, Identity,
+enum class Opcode { Input, MatrixMulAddF16, CompositeExtractU32x2, CompositeConstructU32x2, CompositeConstructU32x4, Identity,
 	Barrier, WorkgroupMemoryBarrier, DeviceMemoryBarrier };
 struct Inst;
 struct Value {
@@ -109,14 +109,18 @@ struct EmitContext : Sirit::Module {
 	Profile profile;
 	std::vector<Id> interfaces;
 	struct Wmma16Step {
-		enum class Kind { Skip, Single, Pair };
+		enum class Kind { Skip, Single, Pair, PairZeroC, QuadZeroC, PairK2ZeroC };
 		Kind kind{Kind::Single};
-		IR::Inst *m0{}, *m1{};
+		IR::Inst *m0{}, *m1{}, *m2{}, *m3{};
 		std::vector<IR::Inst*> deferred_extracts;
 	};
 	struct {
 		bool active{};
 		Id pair_fn{};
+		Id pair_zero_c_fn{};
+		Id quad_zero_c_fn{};
+		Id quad_ret_type{};
+		Id pair_k2_zero_c_fn{};
 		std::unordered_map<const IR::Inst*, Wmma16Step> steps;
 		std::unordered_set<const IR::Inst*> skip_insts;
 	} wmma16_fused;
@@ -175,7 +179,10 @@ int main(int argc, char** argv) {
 	program.blocks.push_back(&block);
 	using IR::Opcode;
 	const auto a = block.Add(Opcode::Input), other_a = block.Add(Opcode::Input);
+	const auto a_pz = block.Add(Opcode::Input), a_quad = block.Add(Opcode::Input);
+	const auto a_k0 = block.Add(Opcode::Input), a_k1 = block.Add(Opcode::Input);
 	const auto b = block.Add(Opcode::Input), c = block.Add(Opcode::Input);
+	const auto c_zero = block.Add(Opcode::CompositeConstructU32x2, {u32(0), u32(0)});
 	const auto m0 = block.Add(Opcode::MatrixMulAddF16, {a, b, c});
 	const auto ext = block.Add(Opcode::CompositeExtractU32x2, {m0, u32(0)});
 	const auto identity = block.Add(Opcode::Identity, {ext});
@@ -185,6 +192,16 @@ int main(int argc, char** argv) {
 	const auto m4 = block.Add(Opcode::MatrixMulAddF16, {other_a, b, c});
 	block.Add(Opcode::Barrier);
 	const auto m5 = block.Add(Opcode::MatrixMulAddF16, {other_a, b, c});
+	const auto pz0 = block.Add(Opcode::MatrixMulAddF16, {a_pz, b, c_zero});
+	const auto pz1 = block.Add(Opcode::MatrixMulAddF16, {a_pz, b, c_zero});
+	const auto q0 = block.Add(Opcode::MatrixMulAddF16, {a_quad, b, c_zero});
+	const auto q1 = block.Add(Opcode::MatrixMulAddF16, {a_quad, b, c_zero});
+	const auto q2 = block.Add(Opcode::MatrixMulAddF16, {a_quad, b, c_zero});
+	const auto q3 = block.Add(Opcode::MatrixMulAddF16, {a_quad, b, c_zero});
+	const auto k0_0 = block.Add(Opcode::MatrixMulAddF16, {a_k0, b, c_zero});
+	const auto k0_1 = block.Add(Opcode::MatrixMulAddF16, {a_k0, b, c_zero});
+	const auto k1_0 = block.Add(Opcode::MatrixMulAddF16, {a_k1, b, k0_0});
+	const auto k1_1 = block.Add(Opcode::MatrixMulAddF16, {a_k1, b, k0_1});
 	Id own_shared{};
 	if (explicit_layout) {   // (as DefineSharedMemory's make with an explicit layout)
 		ctx.uses_explicit_workgroup_layout = true;
@@ -208,9 +225,11 @@ int main(int argc, char** argv) {
 	DefineWmma16PairFunction(ctx, program);
 	const auto& fs = ctx.wmma16_fused;
 	using Kind = EmitContext::Wmma16Step::Kind;
-	if (!fs.active || fs.steps.size() != 2 || fs.steps.at(m0).kind != Kind::Skip ||
+	if (!fs.active || fs.quad_ret_type.value == 0 || fs.steps.at(m0).kind != Kind::Skip ||
 		fs.steps.at(m1).kind != Kind::Pair || fs.steps.at(m1).m0 != m0 ||
 		fs.steps.at(m1).m1 != m1 || fs.steps.at(m1).deferred_extracts != std::vector<IR::Inst*>{ext, identity} ||
+		fs.steps.at(pz1).kind != Kind::PairZeroC || fs.steps.at(q3).kind != Kind::QuadZeroC ||
+		fs.steps.at(k1_1).kind != Kind::PairK2ZeroC ||
 		fs.skip_insts.size() != 2 || !fs.skip_insts.contains(ext) || !fs.skip_insts.contains(identity) ||
 		fs.steps.contains(m2) || fs.steps.contains(m3) || fs.steps.contains(m4) || fs.steps.contains(m5)) return 3;
 	const Id main_fn{ctx.OpFunction(void_t, spv::FunctionControlMask::MaskNone, ctx.TypeFunction(void_t))};
@@ -218,14 +237,16 @@ int main(int argc, char** argv) {
 	const Id one{ctx.Const(1)};
 	const Id av{ctx.OpCompositeConstruct(ctx.U32[4], one, one, one, one)};
 	const Id bc{ctx.OpCompositeConstruct(ctx.U32[2], one, one)};
-	a->SetDefinition(av); other_a->SetDefinition(av); b->SetDefinition(bc); c->SetDefinition(bc);
+	const Id zc{ctx.OpCompositeConstruct(ctx.U32[2], ctx.u32_zero_value, ctx.u32_zero_value)};
+	a->SetDefinition(av); other_a->SetDefinition(av); a_pz->SetDefinition(av); a_quad->SetDefinition(av);
+	a_k0->SetDefinition(av); a_k1->SetDefinition(av); b->SetDefinition(bc); c->SetDefinition(bc); c_zero->SetDefinition(zc);
 	for (IR::Inst& inst : block.Instructions()) {
 		if (fs.skip_insts.contains(&inst)) continue;
 		if (inst.GetOpcode() == Opcode::MatrixMulAddF16) EmitMatrixMulAddF16Fused(ctx, &inst);
 	}
 	const Id lane{ctx.OpLoad(ctx.U32[1], ctx.subgroup_local_invocation_id)};
 	const Id word_ptr{ctx.TypePointer(spv::StorageClass::StorageBuffer, ctx.U32[1])};
-	for (IR::Inst* result : {m0, m1, m2, m3, m4, m5})
+	for (IR::Inst* result : {m0, m1, m2, m3, m4, m5, pz0, pz1, q0, q1, q2, q3, k1_0, k1_1})
 		ctx.OpStore(ctx.OpAccessChain(word_ptr, ssbo, ctx.u32_zero_value, lane),
 			ctx.OpCompositeExtract(ctx.U32[1], result->definition, 0U));
 	ctx.OpStore(ctx.OpAccessChain(word_ptr, ssbo, ctx.u32_zero_value, lane), identity->definition);

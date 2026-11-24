@@ -129,7 +129,7 @@ struct Texture {
     int type = VK_IMAGE_TYPE_2D;
     int samples = VK_SAMPLE_COUNT_1_BIT;
     uint32_t width = 1, height = 1, depth = 1, levels = 1, layers = 1, skip = 0;
-    int block_w = 8, block_h = 8, bpb = 16;
+    int block_w = 8, block_h = 8, bpb = 16, nvn_format = 0;
     bool bc = true, bc_resized = false;
     uint64_t gpu = 0x100000;
     VkImage image = nullptr;
@@ -167,6 +167,9 @@ struct {
             uint32_t maxComputeWorkGroupCount[3] = {65535, 65535, 65535};
         } limits;
     } props;
+    struct {
+        bool bc_copy_per_layer = false;
+    } policy;
 } dev;
 
 static VkPipeline_T pipe_astc_obj{1}, pipe_bc_obj{2}, pipe_bc7_obj{3};
@@ -182,6 +185,7 @@ static VkPipeline astc_pipe = &pipe_astc_obj, bc_pipe = &pipe_bc_obj, bc7_pipe =
 static VkPipelineLayout astc_layout = &layout_astc_obj, bc_layout = &layout_bc_obj;
 static VkImage bc_scratch = &scratch_img1, bc_scratch2 = &scratch_img2;
 static VkImageView bc_scratch_view = &scratch_view1, bc_scratch2_view = &scratch_view2;
+static VkImageView bc_scratch_uview = &scratch_view1;   // (the decoder writes the scratch through its UINT views)
 static VkBuffer bc_out = &bc_out_obj;
 static bool bc7_enabled() { return false; }
 constexpr uint32_t kBcDim = 2048, kBcLayers = 8;
@@ -470,7 +474,8 @@ int main(int argc, char** argv) {
         reset_spy();
         bc_small = &scratch_img2;
         bc_small_view = &scratch_view2;
-        for (unsigned i = 0; i < 8; ++i) bc_small_layer[i] = &small_views[i];
+        bc_small_uview = &scratch_view2;
+        for (unsigned i = 0; i < 8; ++i) bc_small_layer[i] = bc_small_layer_u[i] = &small_views[i];
         Texture tex = mode == "levels_split" ? make_tex(31, 1024, 1024, 11, 1, true) : make_tex(31, 64, 64, 7, 1, true);
         begin_rec(1);
         active_tex = &tex;
@@ -606,7 +611,7 @@ def build_fixture(cxx, temp):
     prod = []
     if "uint32_t bc_small_layers() {" in tex:   # (#1843's small scratch: not made here, every level through the first)
         prod.append("static VkImage bc_small = VK_NULL_HANDLE;\nstatic VkImageView bc_small_view = VK_NULL_HANDLE;\n"
-                    "static VkImageView bc_small_layer[8] = {};\nstatic bool bc_levels_on() { return std::getenv(\"RX_VK_BC_LEVELS\") != nullptr; }\n"
+                    "static VkImageView bc_small_layer[8] = {};\nstatic VkImageView bc_small_uview = VK_NULL_HANDLE, bc_small_layer_u[8] = {};\nstatic bool bc_levels_on() { return std::getenv(\"RX_VK_BC_LEVELS\") != nullptr; }\n"
                     "constexpr uint32_t kBcSmallDim = 1024;\nstatic uint32_t bc_small_px = kBcSmallDim;\nstatic uint32_t bc_small_layers() { return 8; }")
     if "bool upload_never_put_off(const Texture& tex) {" in tex:
         prod.append(block(tex, "bool upload_never_put_off(const Texture& tex) {"))
@@ -622,6 +627,7 @@ def build_fixture(cxx, temp):
         block(tex, "LevelGeo level_geo("),
         "using Ranges = std::vector<std::pair<uint64_t, uint64_t>>;",
         block(tex, "bool overlaps("),
+        block(tex, "bool astc_nvn_srgb(int nvn) {"),
         block(tex, "bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {"),
     ])
     push_structs = block(tex, "struct AstcPush {") + ";\n" + block(tex, "struct BcPush {") + ";"

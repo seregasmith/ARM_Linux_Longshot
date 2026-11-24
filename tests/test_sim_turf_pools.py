@@ -91,8 +91,12 @@ def wiring():
         fails.append("private producers do not mirror a stock-compatible record window for unpatched readers")
     if "sim_turf_adaptive() && !sim_turf_monitor_ready" not in draw:
         fails.append("a failed demand monitor does not fail private bindings closed to the game's stock buffers")
-    if "maximum, 0u" not in draw or "RX_VK_SIM_TURF_SUBSTOCK" in draw or "RX_VK_SIM_TURF_SUBSTOCK" in switches:
-        fails.append("adaptive buffers do not default to their measured minimum floor")
+    # (the floor is the game's own size since #2174: a list shrunk below it in an area without turf came back empty and
+    # stalled the replay as it grew; tests/test_sim_turf_floor.py plays that)
+    ctor = " ".join(draw[draw.find("SimTurfPrivate(bool pool, uint32_t maximum)"):].split("{}", 1)[0].split())
+    stock = "pool ? Shader::Optimization::kSimTurfPoolCap : Shader::Optimization::kSimTurfBladeCap"
+    if f"maximum, {stock})" not in ctor or "RX_VK_SIM_TURF_SUBSTOCK" in draw or "RX_VK_SIM_TURF_SUBSTOCK" in switches:
+        fails.append("adaptive buffers do not keep the game's own size as their floor")
     begin = block(draw, "void draw_begin_recording(")
     if "if (sim_turf_adaptive())" not in begin:
         fails.append("RX_VK_SIM_TURF_ADAPTIVE=0 does not skip demand readback and observation")

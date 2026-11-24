@@ -43,6 +43,7 @@
 #include "vk_shader.h"
 #include "mesh_mode.h"
 #include "crash_markers.h"   // (mkwvk_close_asked: a close is not a crash)
+#include "prepare_journal.h"   // (kExitEntryLimit: the journalled preparation's exit status for one entry past its limit)
 #include "vk_fps.h"
 #include "memory_priority.h"
 #ifndef LONGSHOT_ENV_H   // (env_on: the switches' one rule)
@@ -66,17 +67,21 @@ VKX_DEVICE3(VKX_DEFINE)
 static PFN_vkGetInstanceProcAddr get_instance_proc;
 
 bool load_global() {
-#ifdef _WIN32   // (longshot: the loader from System32 only, not from the current folder or PATH)
-    // (longshot) The drivers are the loader's to find: it reads the ones in use from the display adapters. Nothing here
-    // sets VK_ICD_FILENAMES or VK_DRIVER_FILES, which make the loader take the named files and no other driver: DriverStore
-    // keeps the packages of drivers no longer in use, and one of those named can list no GPU at all.
-    // pick_device chooses the GPU; RX_VK_DEVICE or the GPU row choose another
-    HMODULE m = LoadLibraryExA("vulkan-1.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+#ifdef _WIN32
+    // Windows Vulkan shims can intercept the executable's imports but miss calls from this DLL.
+    if (mkwvk::host && mkwvk::host->vulkan_loader_proc) {
+        get_instance_proc = reinterpret_cast<PFN_vkGetInstanceProcAddr>(mkwvk::host->vulkan_loader_proc());
+    } else {
+        // Older hosts leave System32 loader resolution to the renderer. The loader chooses the drivers in use.
+        HMODULE m = LoadLibraryExA("vulkan-1.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (!m) return false;
+        get_instance_proc = (PFN_vkGetInstanceProcAddr)(void*)GetProcAddress(m, "vkGetInstanceProcAddr");
+    }
 #else
     HMODULE m = LoadLibraryA("vulkan-1.dll");   // (linux: libvulkan.so.1, host/posix/win32_posix.c)
-#endif
     if (!m) return false;
     get_instance_proc = (PFN_vkGetInstanceProcAddr)(void*)GetProcAddress(m, "vkGetInstanceProcAddr");
+#endif
     if (!get_instance_proc) return false;
 #define VKX_LOAD(f) f = (PFN_##f)get_instance_proc(nullptr, #f);
     VKX_GLOBAL(VKX_LOAD)
@@ -703,9 +708,12 @@ bool create_device() {
         sc.pNext = &drv;
         VkPhysicalDeviceSubgroupProperties sg{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
         sg.pNext = &sc;
+        VkPhysicalDeviceMeshShaderPropertiesEXT mesh_props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT};
         VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
         p2.pNext = &sg;
+        if (dev.mesh_shader) fc.pNext = &mesh_props;   // (with the extension on only)
         vkGetPhysicalDeviceProperties2(dev.physical, &p2);
+        if (dev.mesh_shader) dev.max_mesh_groups = std::min(mesh_props.maxMeshWorkGroupCount[0], mesh_props.maxMeshWorkGroupTotalCount);
         const bool pin = f13.subgroupSizeControl && sc.minSubgroupSize <= 32 && sc.maxSubgroupSize >= 32 && !env_on("RX_VK_NO_SUBGROUP_PIN");
         dev.sg32_stages = pin ? sc.requiredSubgroupSizeStages : 0;
         dev.max_workgroup_subgroups = sc.maxComputeWorkgroupSubgroups;
@@ -1207,6 +1215,11 @@ bool create_swapchain(uint32_t width, uint32_t height) {
         ci.pQueueFamilyIndices = sharing;
     }
     ci.clipped = VK_TRUE;
+#ifdef _WIN32
+    // Streamline can release the old swapchain's images inside its create hook.
+    // Retire explicitly on NVIDIA so the game and overlay release their views first.
+    if (dev.props.vendorID == 0x10de) retire_swapchain();
+#endif
     ci.oldSwapchain = dev.swapchain;
     // (longshot) an sRGB swapchain (some drivers list no UNORM format) made mutable when the driver can: the overlays draw
     // through UNORM views, their colours as they are, as on a UNORM swapchain. Without it, vk_imgui.cpp makes them linear
@@ -1515,6 +1528,31 @@ void prepare_watchdog() {
         }
     }).detach();
 }
+// (longshot) The journalled run's own limit, per entry (prepare_journal.h, --prepare-entry-limit <s>): the watchdog above
+// stops a run in which nothing moves and cannot say which shader the driver is stuck in, so the whole preparation was given
+// up for one shader. With a journal, an entry that has been inside the driver for longer than one gets is named in the
+// journal and the run ends at once with exit status 6 (prepare_journal::kExitEntryLimit), through prepare_end as the
+// watchdog's stop: the supervisor (nx2/prepare_supervisor.py) starts it again without that program. Looked at once a
+// second, on a thread of its own: the watchdog's is compiled alone by its check. No journal, or no limit: nothing to do
+void prepare_entry_watch() {
+    const char* limit = getenv("LONGSHOT_PREPARE_ENTRY_S");
+    const char* journal = getenv("LONGSHOT_PREPARE_JOURNAL");
+    if (!limit || atoi(limit) <= 0 || !journal || !*journal) return;
+    std::thread([] {
+        for (;;) {
+            Sleep(1000);
+            if (prepare_journal_overdue()) prepare_end(prepare_journal::kExitEntryLimit);
+        }
+    }).detach();
+}
+/// Before the parts of a --prepare-shaders run: what one the supervisor started needs. The entry watch; and, started again
+/// past a shader the run before died or hung in (--prepare-from), that run taken off the steps' crash markers before the
+/// steps read them (vk_draw.cpp prepare_restart_forgive). Nothing in a game run
+void prepare_supervised() {
+    if (!prepare_only()) return;
+    prepare_entry_watch();
+    prepare_restart_forgive();
+}
 // (longshot) The first start after an update prepares every shader (prepare_run) and the pipelines the last sessions noted
 // (precompile_run): a minute and more, before the game's first frame. They run on a thread of their own while this one, the
 // renderer's start, shows the window at once with what they are doing on it, and keeps it shown and sized; on Windows it is also
@@ -1689,6 +1727,7 @@ bool started_up() {
         return true;
     }
 #endif
+    prepare_supervised();   // (a --prepare-shaders run the Builder's supervisor started: its entry watch, the run before forgiven)
     if (prepare_only()) {
         // (three parts: the programs, the pipelines the notes predict, then those they name, on one bar whose total has all three
         // from the start: PrepareBar. The fixed shares it had (70%, 20%, 10%) kept the predicted pipelines' minutes in a fifth)
@@ -2111,6 +2150,7 @@ static const MkwVkRenderer* init_body(const MkwVkHost* h) {
         h->version < 35 ? offsetof(MkwVkHost, mod_info) :
         h->version < 36 ? offsetof(MkwVkHost, ab_value) :
         h->version < 41 ? offsetof(MkwVkHost, output_preview_request) :
+        h->version < 45 ? offsetof(MkwVkHost, vulkan_loader_proc) :
         sizeof(MkwVkHost);
     std::memcpy(&host_storage, h, std::min(sizeof(host_storage), copy_size));
     host = &host_storage;

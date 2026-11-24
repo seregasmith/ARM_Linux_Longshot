@@ -52,7 +52,7 @@ Read by the build, not the game, so they are not in `switches.def`.
 | `LONGSHOT_KEEP_BUILD_FILES=1` | Keep the lifted C and objects after a build |
 | `LONGSHOT_OBJ_STORE=<dir>` | One store of compiled objects shared by every work folder (hard links: same drive) |
 | `LONGSHOT_LIFT_STORE=<dir>` | Translations shared by every work folder with the same lift key |
-| `LONGSHOT_NO_PREPARE=1` | Skip the shader preparation |
+| `LONGSHOT_NO_PREPARE=1` | Skip the shader preparation. A run that dies or hangs inside the GPU driver's compiler is started again without that shader: [shader preparation](shader-preparation.md) |
 | `LONGSHOT_ROMFS_IN_PLACE=1` (or `--romfs-in-place`) | With `--romfs` and `--exefs`: read the romfs where it is; the game folder has no `romfs`, so start the game with `--romfs <folder>`. Passed over by a `.nup` or `--update` build (the switch with them is refused). `dev.py packs` sets it for packs |
 | `LONGSHOT_HOT_LIST=0` | No hot list (lifts again) |
 | `A64_HOT_FUNCS=<file>` or empty | This hot list (a relative path from the checkout's root), or none; the lift key hashes the list's contents |

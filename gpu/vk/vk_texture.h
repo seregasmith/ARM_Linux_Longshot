@@ -131,6 +131,10 @@ bool texture_touch_quick(Texture* tex, bool for_sampling);
 uint32_t texture_epoch();
 /// Changes whenever a texture is destroyed (pointers to textures kept elsewhere go stale)
 uint64_t texture_destroy_generation();
+/// (RX_VK_EXACT_STALE) Whether what was resolved to the texture of creation number `id` at generation `since`
+/// still stands at generation `now` (texture_destroy_generation()): no generation between the two is that texture's going
+/// or one that makes every resolved view stale. False for id 0 (nothing was resolved) and past what the log holds.
+bool texture_still_resolved(uint32_t id, uint64_t since, uint64_t now);
 /// (longshot) Whether t, listed at gpu, is still that texture with that image: not destroyed since (t is only compared until
 /// it is found, so a freed one is never read). Replay thread
 bool texture_alive(uint64_t gpu, const Texture* t, VkImage image);

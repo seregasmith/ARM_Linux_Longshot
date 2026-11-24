@@ -163,7 +163,7 @@ class OcarinaNoteBindingsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="longshot-note-bindings-") as tmp:
             tmp = Path(tmp)
             (tmp / "longshot_options.ini").write_text(
-                "options_version=8\nkey_move_up=90,0\npad_a=5\nkey_note_y=78,0\n", encoding="utf-8")
+                "options_version=9\nkey_move_up=90,0\npad_a=5\nkey_note_y=78,0\n", encoding="utf-8")
             (tmp / "t.c").write_text(PRELUDE + code + MAIN, encoding="utf-8")
             binary = tmp / ("t.exe" if sys.platform == "win32" else "t")
             build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-Wno-unused-function", "-I", str(ROOT / "gpu" / "vk"), "-I", str(ROOT / "host"),

@@ -28,11 +28,10 @@ out_start = replay.index('static bool present_out(uint32_t index, std::unique_lo
 present_out = replay[out_start:replay.index('\n}', out_start) + 2]
 signal = re.search(r'    signal\.semaphore = [^;]+;', present)[0]
 wait = re.search(r'    pi\.pWaitSemaphores = [^;]+;', present_out)[0]
-# (#1376: the acquire signals its fence, waited for on the CPU; the copy's submission waits for nothing of the acquire's on the
-# GPU: tests/test_present_image_free.py)
-assert 'acquire_timeout, VK_NULL_HANDLE, acquire_fence, &index)' in present
+# The acquire still supplies a CPU fence, including when the NVIDIA acquire also needs a semaphore.
+assert 'acquire_timeout, acquire_semaphore, acquire_fence, &index)' in present
 # Include the actual creation attempt: passing oldSwapchain retires it even on failure.
-start = main.index('    ci.oldSwapchain = dev.swapchain;')
+start = main.index('    ci.clipped = VK_TRUE;')
 end = main.index('    logf("vk: swapchain', start)
 tail = main[start:end]
 retire_start = main.index('void retire_swapchain()')
@@ -90,13 +89,14 @@ fixture = r'''
 #include <thread>
 using VkSemaphore=uint64_t; using VkImage=uint64_t; using VkSwapchainKHR=uint64_t; using VkResult=int;
 constexpr uint64_t VK_NULL_HANDLE=0;
-constexpr int VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO=1, VK_SUCCESS=0;
+constexpr int VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO=1, VK_SUCCESS=0, VK_TRUE=1;
 constexpr VkResult VK_ERROR_SURFACE_LOST_KHR = -1000000000;
 constexpr int VK_PRESENT_MODE_MAILBOX_KHR=1, VK_PRESENT_MODE_IMMEDIATE_KHR=2;
 struct VkSemaphoreCreateInfo { int type; };
 struct Extent { uint32_t width,height; };
 struct Device { int device=1;uint64_t swapchain=0;int swap_format=0;Extent swap_extent{};bool swap_mutable=false;std::atomic<uint32_t> swap_spare{0};std::atomic<uint32_t> swap_slots{3};
     std::vector<VkImage> swap_images;std::vector<VkSemaphore> swap_rendered;
+    struct { uint32_t vendorID=0; } props;
     std::atomic<uint64_t> swap_resize{0};std::mutex present_mu;uint64_t swapchain_generation=0;
     std::atomic<bool> closing{false};   // (vk_internal.h: the close retired the chain; present_image must not make another)
     int instance=1;uint64_t surface=1;bool present_queue_supported=true; } dev;
@@ -107,7 +107,8 @@ bool idle=false, bad_destroy=false; std::set<uint64_t> live,used;
 std::set<uint64_t> chains, retired;
 unsigned surfaces_destroyed=0;
 uint64_t next_chain=0;int create_result=0;bool bad_chain=false;
-struct CreateInfo {uint64_t oldSwapchain=0;unsigned imageUsage=1,minImageCount=4,flags=0;const void* pNext=nullptr;};
+struct CreateInfo {uint64_t oldSwapchain=0;unsigned imageUsage=1,minImageCount=4,flags=0,clipped=0;const void* pNext=nullptr;};
+bool require_retired_before_create=false, created_too_early=false, views_live=false;
 // (longshot: the overlays' mutable sRGB swapchain, vk_main.cpp: its format list, never used by these formats)
 using VkFormat=int;
 constexpr int VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO=2, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT=16,
@@ -128,6 +129,8 @@ void fg_latency_swapchain_gone() {}   // (RX_VK_FG_LATENCY_LOG unset: no waits f
 std::atomic<bool> presenter_surface_lost{false};   // (and nothing found lost by it)
 std::atomic<bool> output_preview_path{false};
 int vkCreateSwapchainKHR(int,const CreateInfo* ci,void*,uint64_t* out) {
+    if (require_retired_before_create && (ci->oldSwapchain || !chains.empty() || !live.empty() || views_live || !idle))
+        created_too_early=true;
     if(ci->oldSwapchain) {
         if(!chains.count(ci->oldSwapchain) || retired.count(ci->oldSwapchain))bad_chain=true;
         retired.insert(ci->oldSwapchain); // Vulkan retires oldSwapchain even on creation failure.
@@ -145,7 +148,7 @@ void vkDestroySemaphore(int,uint64_t s,void*) {
     if((used.count(s) && !idle) || !live.erase(s))bad_destroy=true;
 }
 void vkDestroySwapchainKHR(int,uint64_t sc,void*) {
-    if(cached.swapchain==sc)bad_chain=true;
+    if(cached.swapchain==sc || (sc==dev.swapchain && views_live))bad_chain=true;
     if(!chains.erase(sc))bad_chain=true;
     retired.erase(sc);destroyed_swapchain=sc;
 }
@@ -153,7 +156,7 @@ void queue_flush_locked() {}
 void vkDeviceWaitIdle(int) {idle=true;}
 // (vk_replay.cpp's helper: held submits out, then the device idle; the real one also takes the present queue's own lock)
 void device_wait_idle_locked() {queue_flush_locked();vkDeviceWaitIdle(dev.device);}
-void swap_views_drop() {}   // (longshot: the overlays' views, vk_main.cpp)
+void swap_views_drop() {views_live=false;}
 void vkDestroySurfaceKHR(int, uint64_t surface, void*) {
     if (!surface || !chains.empty() || !live.empty() || !idle) bad_destroy=true;
     ++surfaces_destroyed;
@@ -165,6 +168,7 @@ bool recreate() {
     CreateInfo ci;int mode=0;VkResult result;
     const uint32_t slots_made=6;   // (vk_main.cpp: present_slots_for's count for the chain, computed before the cut)
 ''' + tail + r'''
+    views_live=true;
     reflex_swapchain_created(sc);
     return true;
 }
@@ -232,6 +236,17 @@ uint64_t choose(unsigned index,unsigned frame_slot) {
 }
 int main() {
     if(!recreate())return 1;
+#ifdef _WIN32
+    dev.props.vendorID=0x10de;
+    require_retired_before_create=true;
+    idle=false;
+    if (!recreate() || created_too_early || bad_chain || bad_destroy) {
+        std::puts("FAIL: NVIDIA replacement entered the create hook before retiring the old swapchain");
+        return 52;
+    }
+    dev.props.vendorID=0;
+    require_retired_before_create=false;
+#endif
     uint64_t pending[16]{};unsigned owner[16]{},count=0;
     // Only reacquiring image i releases its previous presentation wait.
     unsigned images[]={0,1,2,3,0,1,2,3,3,1,0,2};

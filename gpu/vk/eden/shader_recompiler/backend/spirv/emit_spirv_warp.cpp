@@ -753,7 +753,8 @@ bool DefineWmma16MatrixFunction(EmitContext& ctx, const IR::Program& program) {
     const Id zero{ctx.u32_zero_value};
     const auto part = [&](Id words, u32 index) { return ctx.OpCompositeExtract(u32ty, words, index); };
     constexpr u32 region_a = 0, region_b_lo = 1, region_b_hi = 2, region_c = 3;
-    // trailing reads of the last multiply in this subgroup are done before these writes (the barrier at the end)
+    // Wait for any trailing region_c reads from a prior WMMA16 helper before writing region_c.
+    barrier();
     store(word(region_a, 0, 0), part(matrix_a, 0));
     store(word(region_a, 8, 0), part(matrix_a, 1));
     store(word(region_a, 0, 4), part(matrix_a, 2));
@@ -789,18 +790,317 @@ bool DefineWmma16MatrixFunction(EmitContext& ctx, const IR::Program& program) {
     barrier();
     const Id d0{load(word(region_c, 0, 0))};
     const Id d1{load(word(region_c, 8, 0))};
-    barrier();
     ctx.OpReturnValue(ctx.OpCompositeConstruct(ctx.U32[2], d0, d1));
     ctx.OpFunctionEnd();
     return true;
 }
 
-// (longshot, AMD RDNA 3/3.5/4) Fused WMMA16 N-pair DontInline helper + block-local N-pair planner.
-// Pairs two HMMA_nx2 ops sharing canonical A into one 16x16 [B0|B1] / [C0|C1] -> [D0|D1] call, doubling N-utilization
-// and halving barriers, A loads, CoopStores, and WMMA instructions. Kept separate from DefineWmma16MatrixFunction so
-// tests/test_wmma16_spirv_val.py's standalone fixture compiles cleanly without IR::Block/IR::Inst.
+// (longshot, AMD RDNA 3/3.5/4) Fused WMMA16 N-pair, zero-C, quad-A, and K-chain DontInline helpers + planner.
+// Zero-C pairs skip region_c LDS stores/loads via OpCompositeConstruct(c_type, f16_zero) and cut barriers from 4 to 2.
+// Quad-A fuses two zero-C pairs sharing canonical A, keeping A in a cooperative matrix register across both pairs.
+// K-chain fuses a zero-C producer pair into its consuming accumulator pair, keeping the accumulator in registers.
 void DefineWmma16PairFunction(EmitContext& ctx, const IR::Program& program) {
     if (ctx.interfaces.size() < 2) return;
+    auto& fs = ctx.wmma16_fused;
+
+    struct CanonKey4 {
+        std::array<uintptr_t, 4> e{};
+        bool operator==(const CanonKey4&) const = default;
+    };
+    struct CanonKey4Hash {
+        size_t operator()(const CanonKey4& k) const noexcept {
+            size_t h = 0;
+            for (uintptr_t v : k.e) h ^= std::hash<uintptr_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+            return h;
+        }
+    };
+    const auto encode_val = [](IR::Value v) -> uintptr_t {
+        v = v.Resolve();
+        if (v.IsEmpty()) return 0u;
+        if (v.IsImmediate()) return (static_cast<uintptr_t>(v.U32()) << 2) | 1u;
+        return reinterpret_cast<uintptr_t>(v.Inst());
+    };
+    const auto canon_a = [&](IR::Value a) -> CanonKey4 {
+        a = a.Resolve();
+        if (!a.IsEmpty() && !a.IsImmediate() && a.Inst()->GetOpcode() == IR::Opcode::CompositeConstructU32x4) {
+            const IR::Inst* cc = a.Inst();
+            return CanonKey4{{encode_val(cc->Arg(0)), encode_val(cc->Arg(1)), encode_val(cc->Arg(2)), encode_val(cc->Arg(3))}};
+        }
+        return CanonKey4{{encode_val(a), 0, 0, 0}};
+    };
+    const auto is_zero_c = [](IR::Value c) -> bool {
+        c = c.Resolve();
+        if (c.IsEmpty()) return false;
+        if (c.IsImmediate()) return c.U32() == 0;
+        const IR::Inst* inst = c.Inst();
+        if (inst->GetOpcode() != IR::Opcode::CompositeConstructU32x2) return false;
+        const IR::Value c0 = inst->Arg(0).Resolve(), c1 = inst->Arg(1).Resolve();
+        return !c0.IsEmpty() && c0.IsImmediate() && c0.U32() == 0 &&
+               !c1.IsEmpty() && c1.IsImmediate() && c1.U32() == 0;
+    };
+    const auto c_src_mma = [](IR::Value c) -> IR::Inst* {
+        c = c.Resolve();
+        if (c.IsEmpty() || c.IsImmediate()) return nullptr;
+        IR::Inst* inst = c.Inst();
+        if (inst->GetOpcode() == IR::Opcode::MatrixMulAddF16) return inst;
+        if (inst->GetOpcode() != IR::Opcode::CompositeConstructU32x2) return nullptr;
+        IR::Inst* src = nullptr;
+        for (u32 idx = 0; idx < 2; ++idx) {
+            const IR::Value e = inst->Arg(idx).Resolve();
+            if (e.IsEmpty() || e.IsImmediate()) return nullptr;
+            IR::Inst* ei = e.Inst();
+            if (ei->GetOpcode() != IR::Opcode::CompositeExtractU32x2) return nullptr;
+            const IR::Value k = ei->Arg(1).Resolve();
+            if (k.IsEmpty() || !k.IsImmediate() || k.U32() != idx) return nullptr;
+            const IR::Value m = ei->Arg(0).Resolve();
+            if (m.IsEmpty() || m.IsImmediate() || m.Inst()->GetOpcode() != IR::Opcode::MatrixMulAddF16) return nullptr;
+            if (src && src != m.Inst()) return nullptr;
+            src = m.Inst();
+        }
+        return src;
+    };
+    const auto is_seg_barrier = [](IR::Opcode op) -> bool {
+        return op == IR::Opcode::Barrier || op == IR::Opcode::WorkgroupMemoryBarrier ||
+               op == IR::Opcode::DeviceMemoryBarrier;
+    };
+
+    std::unordered_map<const IR::Inst*, u32> global_uses;
+    for (IR::Block* const blk : program.blocks) {
+        for (IR::Inst& inst : blk->Instructions()) {
+            const size_t nargs = inst.NumArgs();
+            for (size_t k = 0; k < nargs; ++k) {
+                const IR::Value v = inst.Arg(k);
+                if (!v.IsEmpty() && !v.IsImmediate()) {
+                    ++global_uses[v.Inst()];
+                }
+            }
+        }
+    }
+
+    u32 next_a_id = 1;
+    for (IR::Block* const block : program.blocks) {
+        std::unordered_map<const IR::Inst*, u32> inst_pos;
+        std::unordered_map<const IR::Inst*, u32> inst_seg;
+        std::unordered_map<const IR::Inst*, std::vector<IR::Inst*>> uses;
+        std::vector<IR::Inst*> mmas;
+        u32 pos = 0, seg = 0;
+        for (IR::Inst& inst : block->Instructions()) {
+            inst_pos[&inst] = pos++;
+            inst_seg[&inst] = seg;
+            if (is_seg_barrier(inst.GetOpcode())) ++seg;
+            const size_t nargs = inst.NumArgs();
+            for (size_t k = 0; k < nargs; ++k) {
+                const IR::Value v = inst.Arg(k);
+                if (!v.IsEmpty() && !v.IsImmediate()) {
+                    uses[v.Inst()].push_back(&inst);
+                }
+            }
+            if (inst.GetOpcode() == IR::Opcode::MatrixMulAddF16) mmas.push_back(&inst);
+        }
+        if (mmas.size() < 2) continue;
+
+        auto collect_defer = [&](IR::Inst* root, u32 limit_pos, std::vector<IR::Inst*>& out,
+                                 std::unordered_set<const IR::Inst*>& seen) -> bool {
+            bool ok = true;
+            auto dfs = [&](auto& self, IR::Inst* node) -> void {
+                auto it = uses.find(node);
+                if (it == uses.end()) return;
+                for (IR::Inst* u : it->second) {
+                    const bool pure = (u->GetOpcode() == IR::Opcode::CompositeExtractU32x2 && node == root) ||
+                                      (u->GetOpcode() == IR::Opcode::Identity && node != root);
+                    if (pure) {
+                        if (inst_pos[u] < limit_pos && seen.insert(u).second) out.push_back(u);
+                        self(self, u);
+                    } else if (inst_pos[u] <= limit_pos) {
+                        ok = false;
+                    }
+                }
+            };
+            dfs(dfs, root);
+            return ok;
+        };
+
+        auto has_no_external_uses = [&](const IR::Inst* node) -> bool {
+            const auto git = global_uses.find(node);
+            const u32 g = git == global_uses.end() ? 0u : git->second;
+            const auto lit = uses.find(node);
+            const u32 l = lit == uses.end() ? 0u : static_cast<u32>(lit->second.size());
+            return g == l;
+        };
+
+        auto is_pure_k_feed = [&](IR::Inst* prod, IR::Inst* cons, std::vector<IR::Inst*>& dead_chain) -> bool {
+            if (!has_no_external_uses(prod)) return false;
+            const IR::Value cv = cons->Arg(2).Resolve();
+            if (cv.IsEmpty() || cv.IsImmediate()) return false;
+            IR::Inst* const c_node = cv.Inst();
+            if (c_node == prod) {
+                auto it = uses.find(prod);
+                return it != uses.end() && it->second.size() == 1 && it->second[0] == cons;
+            }
+            if (c_node->GetOpcode() != IR::Opcode::CompositeConstructU32x2) return false;
+            if (!has_no_external_uses(c_node)) return false;
+            auto cit = uses.find(c_node);
+            if (cit == uses.end() || cit->second.size() != 1 || cit->second[0] != cons) return false;
+            bool ok = true;
+            std::unordered_set<const IR::Inst*> seen;
+            auto dfs = [&](auto& self, IR::Inst* node) -> void {
+                if (!has_no_external_uses(node)) {
+                    ok = false;
+                    return;
+                }
+                auto it = uses.find(node);
+                if (it == uses.end()) return;
+                for (IR::Inst* u : it->second) {
+                    if (u == c_node) continue;
+                    const bool pure = (u->GetOpcode() == IR::Opcode::CompositeExtractU32x2 && node == prod) ||
+                                      (u->GetOpcode() == IR::Opcode::Identity && node != prod);
+                    if (pure) {
+                        if (seen.insert(u).second) dead_chain.push_back(u);
+                        self(self, u);
+                    } else {
+                        ok = false;
+                    }
+                }
+            };
+            dfs(dfs, prod);
+            if (ok) dead_chain.push_back(c_node);
+            return ok;
+        };
+
+        std::unordered_map<CanonKey4, u32, CanonKey4Hash> a_ids;
+        std::unordered_map<u64, std::vector<IR::Inst*>> groups;
+        std::vector<u64> group_order;
+        for (IR::Inst* m : mmas) {
+            const CanonKey4 ck = canon_a(m->Arg(0));
+            auto [it, ins] = a_ids.emplace(ck, next_a_id);
+            if (ins) ++next_a_id;
+            const u64 gk = (static_cast<u64>(inst_seg[m]) << 32) | it->second;
+            auto& vec = groups[gk];
+            if (vec.empty()) group_order.push_back(gk);
+            vec.push_back(m);
+        }
+
+        struct PlannedPair {
+            u64 gk{};
+            u32 seg{};
+            IR::Inst* m0{};
+            IR::Inst* m1{};
+            bool zero_c{};
+            bool consumed{};
+            std::vector<IR::Inst*> deferred;
+        };
+        std::vector<PlannedPair> pairs;
+        std::unordered_map<const IR::Inst*, size_t> pair_of_m0;
+
+        for (u64 gk : group_order) {
+            const auto& grp = groups[gk];
+            size_t idx = 0;
+            while (idx + 1 < grp.size()) {
+                IR::Inst* m0 = grp[idx];
+                IR::Inst* m1 = grp[idx + 1];
+                std::vector<IR::Inst*> to_defer;
+                std::unordered_set<const IR::Inst*> seen_defer;
+                if (!collect_defer(m0, inst_pos[m1], to_defer, seen_defer)) {
+                    ++idx;
+                    continue;
+                }
+                std::sort(to_defer.begin(), to_defer.end(),
+                          [&](const IR::Inst* a, const IR::Inst* b) { return inst_pos[a] < inst_pos[b]; });
+                const bool zc = is_zero_c(m0->Arg(2)) && is_zero_c(m1->Arg(2));
+                pair_of_m0[m0] = pairs.size();
+                pairs.push_back({gk, inst_seg[m0], m0, m1, zc, false, std::move(to_defer)});
+                idx += 2;
+            }
+        }
+
+        // Pass 1: Fuse pure 2-step K-chains (zero-C producer pair -> consuming accumulator pair) into PairK2ZeroC.
+        for (size_t ci = 0; ci < pairs.size(); ++ci) {
+            auto& cp = pairs[ci];
+            if (cp.consumed || cp.zero_c) continue;
+            IR::Inst* const p0 = c_src_mma(cp.m0->Arg(2));
+            IR::Inst* const p1 = c_src_mma(cp.m1->Arg(2));
+            if (!p0 || !p1) continue;
+            auto pit = pair_of_m0.find(p0);
+            if (pit == pair_of_m0.end()) continue;
+            auto& pp = pairs[pit->second];
+            if (pp.consumed || !pp.zero_c || pp.m1 != p1 || pp.seg != cp.seg) continue;
+            std::vector<IR::Inst*> dead_chain;
+            if (!is_pure_k_feed(p0, cp.m0, dead_chain) || !is_pure_k_feed(p1, cp.m1, dead_chain)) continue;
+
+            pp.consumed = true;
+            cp.consumed = true;
+            for (IR::Inst* d : dead_chain) fs.skip_insts.insert(d);
+            for (IR::Inst* d : cp.deferred) fs.skip_insts.insert(d);
+            for (IR::Inst* sk_m : {p0, p1, cp.m0}) {
+                EmitContext::Wmma16Step sk{};
+                sk.kind = EmitContext::Wmma16Step::Kind::Skip;
+                fs.steps[sk_m] = std::move(sk);
+            }
+            EmitContext::Wmma16Step st{};
+            st.kind = EmitContext::Wmma16Step::Kind::PairK2ZeroC;
+            st.m0 = p0;
+            st.m1 = p1;
+            st.m2 = cp.m0;
+            st.m3 = cp.m1;
+            st.deferred_extracts = std::move(cp.deferred);
+            fs.steps[cp.m1] = std::move(st);
+        }
+
+        // Pass 2: Fuse adjacent unconsumed zero-C pairs sharing canonical A into QuadZeroC.
+        for (size_t i = 0; i + 1 < pairs.size(); ++i) {
+            auto& p0 = pairs[i];
+            auto& p1 = pairs[i + 1];
+            if (p0.consumed || p1.consumed || !p0.zero_c || !p1.zero_c || p0.gk != p1.gk) continue;
+            std::vector<IR::Inst*> to_defer;
+            std::unordered_set<const IR::Inst*> seen_defer;
+            const u32 lim = inst_pos[p1.m1];
+            if (!collect_defer(p0.m0, lim, to_defer, seen_defer) ||
+                !collect_defer(p0.m1, lim, to_defer, seen_defer) ||
+                !collect_defer(p1.m0, lim, to_defer, seen_defer)) {
+                continue;
+            }
+            std::sort(to_defer.begin(), to_defer.end(),
+                      [&](const IR::Inst* a, const IR::Inst* b) { return inst_pos[a] < inst_pos[b]; });
+            p0.consumed = true;
+            p1.consumed = true;
+            for (IR::Inst* d : to_defer) fs.skip_insts.insert(d);
+            for (IR::Inst* sk_m : {p0.m0, p0.m1, p1.m0}) {
+                EmitContext::Wmma16Step sk{};
+                sk.kind = EmitContext::Wmma16Step::Kind::Skip;
+                fs.steps[sk_m] = std::move(sk);
+            }
+            EmitContext::Wmma16Step st{};
+            st.kind = EmitContext::Wmma16Step::Kind::QuadZeroC;
+            st.m0 = p0.m0;
+            st.m1 = p0.m1;
+            st.m2 = p1.m0;
+            st.m3 = p1.m1;
+            st.deferred_extracts = std::move(to_defer);
+            fs.steps[p1.m1] = std::move(st);
+            ++i;
+        }
+
+        // Pass 3: Remaining pairs -> PairZeroC or Pair.
+        for (auto& p : pairs) {
+            if (p.consumed) continue;
+            for (IR::Inst* d : p.deferred) fs.skip_insts.insert(d);
+            EmitContext::Wmma16Step sk{};
+            sk.kind = EmitContext::Wmma16Step::Kind::Skip;
+            sk.m0 = p.m0;
+            sk.m1 = p.m1;
+            fs.steps[p.m0] = std::move(sk);
+
+            EmitContext::Wmma16Step st{};
+            st.kind = p.zero_c ? EmitContext::Wmma16Step::Kind::PairZeroC : EmitContext::Wmma16Step::Kind::Pair;
+            st.m0 = p.m0;
+            st.m1 = p.m1;
+            st.deferred_extracts = std::move(p.deferred);
+            fs.steps[p.m1] = std::move(st);
+        }
+    }
+
+    if (fs.steps.empty()) return;
+
     const Id scratch{ctx.interfaces[ctx.interfaces.size() - 2]};
     const Id subgroup_id{ctx.interfaces.back()};
     const bool explicit_layout = ctx.uses_explicit_workgroup_layout && program.shared_memory_size != 0;
@@ -830,188 +1130,196 @@ void DefineWmma16PairFunction(EmitContext& ctx, const IR::Program& program) {
     const Id a_type{type(spv::CooperativeMatrixUse::MatrixAKHR)};
     const Id b_type{type(spv::CooperativeMatrixUse::MatrixBKHR)};
     const Id c_type{type(spv::CooperativeMatrixUse::MatrixAccumulatorKHR)};
+    const Id f16_zero{ctx.Constant(f16, 0U)};
     const Id zero{ctx.u32_zero_value};
     const Id row_major{imm(0)}, column_major{imm(1)}, stride{imm(8)};
     const auto part = [&](Id words, u32 index) { return ctx.OpCompositeExtract(u32ty, words, index); };
     constexpr u32 region_a = 0, region_b_lo = 1, region_b_hi = 2, region_c = 3;
 
-    auto& fs = ctx.wmma16_fused;
     fs.active = true;
 
-    const Id pair_fn_type{ctx.TypeFunction(ctx.U32[4], ctx.U32[4], ctx.U32[2], ctx.U32[2], ctx.U32[2], ctx.U32[2])};
-    const Id pfn{ctx.OpFunction(ctx.U32[4], spv::FunctionControlMask::DontInline, pair_fn_type)};
-    fs.pair_fn = pfn;
-    const Id pa{ctx.OpFunctionParameter(ctx.U32[4])};
-    const Id pb0{ctx.OpFunctionParameter(ctx.U32[2])};
-    const Id pb1{ctx.OpFunctionParameter(ctx.U32[2])};
-    const Id pc0{ctx.OpFunctionParameter(ctx.U32[2])};
-    const Id pc1{ctx.OpFunctionParameter(ctx.U32[2])};
-    ctx.AddLabel();
-    const Id plane{ctx.OpBitwiseAnd(u32ty, ctx.OpLoad(u32ty, ctx.subgroup_local_invocation_id), imm(31))};
-    const Id pbase{ctx.OpIMul(u32ty, ctx.OpLoad(u32ty, subgroup_id), imm(mma_wmma16_tile_words))};
-    const Id pg{ctx.OpShiftRightLogical(u32ty, plane, imm(2))};
-    const Id pi{ctx.OpBitwiseAnd(u32ty, plane, imm(3))};
-    const Id pgi{add(ctx.OpShiftLeftLogical(u32ty, pg, imm(3)), pi)};
-    const auto pword = [&](u32 region, u32 plus_rows, u32 plus_words) {
-        return add(add(pbase, imm(region * 128 + plus_rows * 8 + plus_words)), pgi);
+    const auto emit_addr_setup = [&] {
+        const Id plane{ctx.OpBitwiseAnd(u32ty, ctx.OpLoad(u32ty, ctx.subgroup_local_invocation_id), imm(31))};
+        const Id pbase{ctx.OpIMul(u32ty, ctx.OpLoad(u32ty, subgroup_id), imm(mma_wmma16_tile_words))};
+        const Id pg{ctx.OpShiftRightLogical(u32ty, plane, imm(2))};
+        const Id pi{ctx.OpBitwiseAnd(u32ty, plane, imm(3))};
+        const Id pgi{add(ctx.OpShiftLeftLogical(u32ty, pg, imm(3)), pi)};
+        return std::pair{pbase, pgi};
     };
-    store(pword(region_a, 0, 0), part(pa, 0));
-    store(pword(region_a, 8, 0), part(pa, 1));
-    store(pword(region_a, 0, 4), part(pa, 2));
-    store(pword(region_a, 8, 4), part(pa, 3));
-    if (mma_wmma16_fast) {
-        store(pword(region_b_lo, 0, 0), part(pb0, 0));
-        store(pword(region_b_lo, 0, 4), part(pb0, 1));
-        store(pword(region_b_lo, 8, 0), part(pb1, 0));
-        store(pword(region_b_lo, 8, 4), part(pb1, 1));
-    } else {
-        store(pword(region_b_lo, 0, 0), part(pb0, 0));
-        store(pword(region_b_lo, 0, 4), zero);
-        store(pword(region_b_lo, 8, 0), part(pb1, 0));
-        store(pword(region_b_lo, 8, 4), zero);
-        store(pword(region_b_hi, 0, 0), zero);
-        store(pword(region_b_hi, 0, 4), part(pb0, 1));
-        store(pword(region_b_hi, 8, 0), zero);
-        store(pword(region_b_hi, 8, 4), part(pb1, 1));
-    }
-    store(pword(region_c, 0, 0), part(pc0, 0));
-    store(pword(region_c, 8, 0), part(pc0, 1));
-    store(pword(region_c, 0, 4), part(pc1, 0));
-    store(pword(region_c, 8, 4), part(pc1, 1));
-    barrier();
-    const auto ptile = [&](Id matrix_type, u32 region, Id layout) {
+    const auto emit_store_a = [&](Id pbase, Id pgi, Id pa) {
+        const auto pword = [&](u32 region, u32 plus_rows, u32 plus_words) {
+            return add(add(pbase, imm(region * 128 + plus_rows * 8 + plus_words)), pgi);
+        };
+        store(pword(region_a, 0, 0), part(pa, 0));
+        store(pword(region_a, 8, 0), part(pa, 1));
+        store(pword(region_a, 0, 4), part(pa, 2));
+        store(pword(region_a, 8, 4), part(pa, 3));
+    };
+    const auto emit_store_b = [&](Id pbase, Id pgi, Id pb0, Id pb1) {
+        const auto pword = [&](u32 region, u32 plus_rows, u32 plus_words) {
+            return add(add(pbase, imm(region * 128 + plus_rows * 8 + plus_words)), pgi);
+        };
+        if (mma_wmma16_fast) {
+            store(pword(region_b_lo, 0, 0), part(pb0, 0));
+            store(pword(region_b_lo, 0, 4), part(pb0, 1));
+            store(pword(region_b_lo, 8, 0), part(pb1, 0));
+            store(pword(region_b_lo, 8, 4), part(pb1, 1));
+        } else {
+            store(pword(region_b_lo, 0, 0), part(pb0, 0));
+            store(pword(region_b_lo, 0, 4), zero);
+            store(pword(region_b_lo, 8, 0), part(pb1, 0));
+            store(pword(region_b_lo, 8, 4), zero);
+            store(pword(region_b_hi, 0, 0), zero);
+            store(pword(region_b_hi, 0, 4), part(pb0, 1));
+            store(pword(region_b_hi, 8, 0), zero);
+            store(pword(region_b_hi, 8, 4), part(pb1, 1));
+        }
+    };
+    const auto emit_load_d = [&](Id pbase, Id pgi) {
+        const auto pw = [&](u32 plus_rows, u32 plus_words) {
+            return add(add(pbase, imm(region_c * 128 + plus_rows * 8 + plus_words)), pgi);
+        };
+        const Id d0_0{load(pw(0, 0))};
+        const Id d0_1{load(pw(8, 0))};
+        const Id d1_0{load(pw(0, 4))};
+        const Id d1_1{load(pw(8, 4))};
+        return ctx.OpCompositeConstruct(ctx.U32[4], d0_0, d0_1, d1_0, d1_1);
+    };
+    const auto ptile = [&](Id pbase, Id matrix_type, u32 region, Id layout) {
         return ctx.OpCooperativeMatrixLoadKHR(matrix_type, at(add(pbase, imm(region * 128))), layout, stride,
                                               spv::MemoryAccessMask::NonPrivatePointer);
     };
-    const Id pa_mat{ptile(a_type, region_a, row_major)};
-    Id pd{ctx.OpCooperativeMatrixMulAddKHR(c_type, pa_mat, ptile(b_type, region_b_lo, column_major),
-                                           ptile(c_type, region_c, row_major))};
-    if (!mma_wmma16_fast)
-        pd = ctx.OpCooperativeMatrixMulAddKHR(c_type, pa_mat, ptile(b_type, region_b_hi, column_major), pd);
-    barrier();
-    ctx.OpCooperativeMatrixStoreKHR(at(add(pbase, imm(region_c * 128))), pd, row_major, stride,
-                                    spv::MemoryAccessMask::NonPrivatePointer);
-    barrier();
-    const Id pd0_0{load(pword(region_c, 0, 0))};
-    const Id pd0_1{load(pword(region_c, 8, 0))};
-    const Id pd1_0{load(pword(region_c, 0, 4))};
-    const Id pd1_1{load(pword(region_c, 8, 4))};
-    barrier();
-    ctx.OpReturnValue(ctx.OpCompositeConstruct(ctx.U32[4], pd0_0, pd0_1, pd1_0, pd1_1));
-    ctx.OpFunctionEnd();
 
-    struct CanonKey4 {
-        std::array<uintptr_t, 4> e{};
-        bool operator==(const CanonKey4&) const = default;
-    };
-    struct CanonKey4Hash {
-        size_t operator()(const CanonKey4& k) const noexcept {
-            size_t h = 0;
-            for (uintptr_t v : k.e) h ^= std::hash<uintptr_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-            return h;
-        }
-    };
-    const auto encode_val = [](IR::Value v) -> uintptr_t {
-        v = v.Resolve();
-        if (v.IsImmediate()) return (static_cast<uintptr_t>(v.U32()) << 2) | 1u;
-        return reinterpret_cast<uintptr_t>(v.Inst());
-    };
-    const auto canon_a = [&](IR::Value a) -> CanonKey4 {
-        a = a.Resolve();
-        if (!a.IsImmediate() && a.Inst()->GetOpcode() == IR::Opcode::CompositeConstructU32x4) {
-            const IR::Inst* cc = a.Inst();
-            return CanonKey4{{encode_val(cc->Arg(0)), encode_val(cc->Arg(1)), encode_val(cc->Arg(2)), encode_val(cc->Arg(3))}};
-        }
-        return CanonKey4{{encode_val(a), 0, 0, 0}};
-    };
-    const auto is_seg_barrier = [](IR::Opcode op) -> bool {
-        return op == IR::Opcode::Barrier || op == IR::Opcode::WorkgroupMemoryBarrier ||
-               op == IR::Opcode::DeviceMemoryBarrier;
-    };
+    // 1. General N-pair with non-zero C: pair_fn(a, b0, b1, c0, c1) -> U32[4]
+    {
+        const Id fn_type{ctx.TypeFunction(ctx.U32[4], ctx.U32[4], ctx.U32[2], ctx.U32[2], ctx.U32[2], ctx.U32[2])};
+        fs.pair_fn = ctx.OpFunction(ctx.U32[4], spv::FunctionControlMask::DontInline, fn_type);
+        const Id pa{ctx.OpFunctionParameter(ctx.U32[4])};
+        const Id pb0{ctx.OpFunctionParameter(ctx.U32[2])};
+        const Id pb1{ctx.OpFunctionParameter(ctx.U32[2])};
+        const Id pc0{ctx.OpFunctionParameter(ctx.U32[2])};
+        const Id pc1{ctx.OpFunctionParameter(ctx.U32[2])};
+        ctx.AddLabel();
+        const auto [pbase, pgi] = emit_addr_setup();
+        barrier();
+        emit_store_a(pbase, pgi, pa);
+        emit_store_b(pbase, pgi, pb0, pb1);
+        const auto pword = [&](u32 region, u32 plus_rows, u32 plus_words) {
+            return add(add(pbase, imm(region * 128 + plus_rows * 8 + plus_words)), pgi);
+        };
+        store(pword(region_c, 0, 0), part(pc0, 0));
+        store(pword(region_c, 8, 0), part(pc0, 1));
+        store(pword(region_c, 0, 4), part(pc1, 0));
+        store(pword(region_c, 8, 4), part(pc1, 1));
+        barrier();
+        const Id pa_mat{ptile(pbase, a_type, region_a, row_major)};
+        Id pd{ctx.OpCooperativeMatrixMulAddKHR(c_type, pa_mat, ptile(pbase, b_type, region_b_lo, column_major),
+                                               ptile(pbase, c_type, region_c, row_major))};
+        if (!mma_wmma16_fast)
+            pd = ctx.OpCooperativeMatrixMulAddKHR(c_type, pa_mat, ptile(pbase, b_type, region_b_hi, column_major), pd);
+        barrier();
+        ctx.OpCooperativeMatrixStoreKHR(at(add(pbase, imm(region_c * 128))), pd, row_major, stride,
+                                        spv::MemoryAccessMask::NonPrivatePointer);
+        barrier();
+        ctx.OpReturnValue(emit_load_d(pbase, pgi));
+        ctx.OpFunctionEnd();
+    }
 
-    u32 next_a_id = 1;
-    for (IR::Block* const block : program.blocks) {
-        std::unordered_map<const IR::Inst*, u32> inst_pos;
-        std::unordered_map<const IR::Inst*, u32> inst_seg;
-        std::unordered_map<const IR::Inst*, std::vector<IR::Inst*>> uses;
-        std::vector<IR::Inst*> mmas;
-        u32 pos = 0, seg = 0;
-        for (IR::Inst& inst : block->Instructions()) {
-            inst_pos[&inst] = pos++;
-            inst_seg[&inst] = seg;
-            if (is_seg_barrier(inst.GetOpcode())) ++seg;
-            const size_t nargs = inst.NumArgs();
-            for (size_t k = 0; k < nargs; ++k) {
-                const IR::Value v = inst.Arg(k);
-                if (!v.IsImmediate() && !v.IsEmpty()) {
-                    uses[v.Inst()].push_back(&inst);
-                }
-            }
-            if (inst.GetOpcode() == IR::Opcode::MatrixMulAddF16) mmas.push_back(&inst);
-        }
-        if (mmas.size() < 2) continue;
+    // 2. Zero-C N-pair: pair_zero_c_fn(a, b0, b1) -> U32[4] (2 barriers, no C LDS store/load)
+    {
+        const Id fn_type{ctx.TypeFunction(ctx.U32[4], ctx.U32[4], ctx.U32[2], ctx.U32[2])};
+        fs.pair_zero_c_fn = ctx.OpFunction(ctx.U32[4], spv::FunctionControlMask::DontInline, fn_type);
+        const Id pa{ctx.OpFunctionParameter(ctx.U32[4])};
+        const Id pb0{ctx.OpFunctionParameter(ctx.U32[2])};
+        const Id pb1{ctx.OpFunctionParameter(ctx.U32[2])};
+        ctx.AddLabel();
+        const Id null_c{ctx.OpCompositeConstruct(c_type, f16_zero)};
+        const auto [pbase, pgi] = emit_addr_setup();
+        emit_store_a(pbase, pgi, pa);
+        emit_store_b(pbase, pgi, pb0, pb1);
+        barrier();
+        const Id pa_mat{ptile(pbase, a_type, region_a, row_major)};
+        Id pd{ctx.OpCooperativeMatrixMulAddKHR(c_type, pa_mat, ptile(pbase, b_type, region_b_lo, column_major), null_c)};
+        if (!mma_wmma16_fast)
+            pd = ctx.OpCooperativeMatrixMulAddKHR(c_type, pa_mat, ptile(pbase, b_type, region_b_hi, column_major), pd);
+        ctx.OpCooperativeMatrixStoreKHR(at(add(pbase, imm(region_c * 128))), pd, row_major, stride,
+                                        spv::MemoryAccessMask::NonPrivatePointer);
+        barrier();
+        ctx.OpReturnValue(emit_load_d(pbase, pgi));
+        ctx.OpFunctionEnd();
+    }
 
-        std::unordered_map<CanonKey4, u32, CanonKey4Hash> a_ids;
-        std::unordered_map<u64, std::vector<IR::Inst*>> groups;
-        std::vector<u64> group_order;
-        for (IR::Inst* m : mmas) {
-            const CanonKey4 ck = canon_a(m->Arg(0));
-            auto [it, ins] = a_ids.emplace(ck, next_a_id);
-            if (ins) ++next_a_id;
-            const u64 gk = (static_cast<u64>(inst_seg[m]) << 32) | it->second;
-            auto& vec = groups[gk];
-            if (vec.empty()) group_order.push_back(gk);
-            vec.push_back(m);
-        }
+    // 3. Zero-C Quad-A: quad_zero_c_fn(a, b0, b1, b2, b3) -> {U32[4], U32[4]} (keeps A in cooperative matrix VGPRs)
+    fs.quad_ret_type = ctx.TypeStruct(ctx.U32[4], ctx.U32[4]);
+    {
+        const Id fn_type{ctx.TypeFunction(fs.quad_ret_type, ctx.U32[4], ctx.U32[2], ctx.U32[2], ctx.U32[2], ctx.U32[2])};
+        fs.quad_zero_c_fn = ctx.OpFunction(fs.quad_ret_type, spv::FunctionControlMask::DontInline, fn_type);
+        const Id pa{ctx.OpFunctionParameter(ctx.U32[4])};
+        const Id pb0{ctx.OpFunctionParameter(ctx.U32[2])};
+        const Id pb1{ctx.OpFunctionParameter(ctx.U32[2])};
+        const Id pb2{ctx.OpFunctionParameter(ctx.U32[2])};
+        const Id pb3{ctx.OpFunctionParameter(ctx.U32[2])};
+        ctx.AddLabel();
+        const Id null_c{ctx.OpCompositeConstruct(c_type, f16_zero)};
+        const auto [pbase, pgi] = emit_addr_setup();
+        emit_store_a(pbase, pgi, pa);
+        emit_store_b(pbase, pgi, pb0, pb1);
+        barrier();
+        const Id pa_mat{ptile(pbase, a_type, region_a, row_major)};
+        Id pd0{ctx.OpCooperativeMatrixMulAddKHR(c_type, pa_mat, ptile(pbase, b_type, region_b_lo, column_major), null_c)};
+        if (!mma_wmma16_fast)
+            pd0 = ctx.OpCooperativeMatrixMulAddKHR(c_type, pa_mat, ptile(pbase, b_type, region_b_hi, column_major), pd0);
+        ctx.OpCooperativeMatrixStoreKHR(at(add(pbase, imm(region_c * 128))), pd0, row_major, stride,
+                                        spv::MemoryAccessMask::NonPrivatePointer);
+        barrier();
+        const Id res0{emit_load_d(pbase, pgi)};
+        emit_store_b(pbase, pgi, pb2, pb3);
+        barrier();
+        Id pd1{ctx.OpCooperativeMatrixMulAddKHR(c_type, pa_mat, ptile(pbase, b_type, region_b_lo, column_major), null_c)};
+        if (!mma_wmma16_fast)
+            pd1 = ctx.OpCooperativeMatrixMulAddKHR(c_type, pa_mat, ptile(pbase, b_type, region_b_hi, column_major), pd1);
+        ctx.OpCooperativeMatrixStoreKHR(at(add(pbase, imm(region_c * 128))), pd1, row_major, stride,
+                                        spv::MemoryAccessMask::NonPrivatePointer);
+        barrier();
+        const Id res1{emit_load_d(pbase, pgi)};
+        ctx.OpReturnValue(ctx.OpCompositeConstruct(fs.quad_ret_type, res0, res1));
+        ctx.OpFunctionEnd();
+    }
 
-        for (u64 gk : group_order) {
-            const auto& grp = groups[gk];
-            size_t idx = 0;
-            while (idx + 1 < grp.size()) {
-                IR::Inst* m0 = grp[idx];
-                IR::Inst* m1 = grp[idx + 1];
-                const u32 pos1 = inst_pos[m1];
-                bool can_pair = true;
-                std::vector<IR::Inst*> to_defer;
-                std::unordered_set<const IR::Inst*> seen_defer;
-                auto check_uses = [&](auto& self, IR::Inst* node) -> void {
-                    auto it = uses.find(node);
-                    if (it == uses.end()) return;
-                    for (IR::Inst* u : it->second) {
-                        const bool pure = (u->GetOpcode() == IR::Opcode::CompositeExtractU32x2 && node == m0) ||
-                                          (u->GetOpcode() == IR::Opcode::Identity && node != m0);
-                        if (pure) {
-                            if (inst_pos[u] < pos1 && seen_defer.insert(u).second) to_defer.push_back(u);
-                            self(self, u);
-                        } else if (inst_pos[u] <= pos1) {
-                            can_pair = false;
-                        }
-                    }
-                };
-                check_uses(check_uses, m0);
-                if (!can_pair) {
-                    ++idx;
-                    continue;
-                }
-                std::sort(to_defer.begin(), to_defer.end(),
-                          [&](const IR::Inst* a, const IR::Inst* b) { return inst_pos[a] < inst_pos[b]; });
-                for (IR::Inst* d : to_defer) fs.skip_insts.insert(d);
-
-                EmitContext::Wmma16Step sk{};
-                sk.kind = EmitContext::Wmma16Step::Kind::Skip;
-                sk.m0 = m0;
-                sk.m1 = m1;
-                fs.steps[m0] = std::move(sk);
-
-                EmitContext::Wmma16Step st{};
-                st.kind = EmitContext::Wmma16Step::Kind::Pair;
-                st.m0 = m0;
-                st.m1 = m1;
-                st.deferred_extracts = std::move(to_defer);
-                fs.steps[m1] = std::move(st);
-                idx += 2;
-            }
-        }
+    // 4. Zero-C 2-step K-chain pair: pair_k2_zero_c_fn(a0, b00, b01, a1, b10, b11) -> U32[4]
+    // Keeps the intermediate K-step accumulator in cooperative matrix VGPRs (eliminates intermediate CoopStore/load/C-store/CoopLoad).
+    {
+        const Id fn_type{ctx.TypeFunction(ctx.U32[4], ctx.U32[4], ctx.U32[2], ctx.U32[2], ctx.U32[4], ctx.U32[2], ctx.U32[2])};
+        fs.pair_k2_zero_c_fn = ctx.OpFunction(ctx.U32[4], spv::FunctionControlMask::DontInline, fn_type);
+        const Id pa0{ctx.OpFunctionParameter(ctx.U32[4])};
+        const Id pb00{ctx.OpFunctionParameter(ctx.U32[2])};
+        const Id pb01{ctx.OpFunctionParameter(ctx.U32[2])};
+        const Id pa1{ctx.OpFunctionParameter(ctx.U32[4])};
+        const Id pb10{ctx.OpFunctionParameter(ctx.U32[2])};
+        const Id pb11{ctx.OpFunctionParameter(ctx.U32[2])};
+        ctx.AddLabel();
+        const Id null_c{ctx.OpCompositeConstruct(c_type, f16_zero)};
+        const auto [pbase, pgi] = emit_addr_setup();
+        emit_store_a(pbase, pgi, pa0);
+        emit_store_b(pbase, pgi, pb00, pb01);
+        barrier();
+        const Id pa0_mat{ptile(pbase, a_type, region_a, row_major)};
+        Id pd{ctx.OpCooperativeMatrixMulAddKHR(c_type, pa0_mat, ptile(pbase, b_type, region_b_lo, column_major), null_c)};
+        if (!mma_wmma16_fast)
+            pd = ctx.OpCooperativeMatrixMulAddKHR(c_type, pa0_mat, ptile(pbase, b_type, region_b_hi, column_major), pd);
+        barrier();
+        emit_store_a(pbase, pgi, pa1);
+        emit_store_b(pbase, pgi, pb10, pb11);
+        barrier();
+        const Id pa1_mat{ptile(pbase, a_type, region_a, row_major)};
+        pd = ctx.OpCooperativeMatrixMulAddKHR(c_type, pa1_mat, ptile(pbase, b_type, region_b_lo, column_major), pd);
+        if (!mma_wmma16_fast)
+            pd = ctx.OpCooperativeMatrixMulAddKHR(c_type, pa1_mat, ptile(pbase, b_type, region_b_hi, column_major), pd);
+        ctx.OpCooperativeMatrixStoreKHR(at(add(pbase, imm(region_c * 128))), pd, row_major, stride,
+                                        spv::MemoryAccessMask::NonPrivatePointer);
+        barrier();
+        ctx.OpReturnValue(emit_load_d(pbase, pgi));
+        ctx.OpFunctionEnd();
     }
 }
 
@@ -1026,18 +1334,42 @@ void EmitMatrixMulAddF16Fused(EmitContext& ctx, IR::Inst* inst) {
     const auto& step = it->second;
     if (step.kind == EmitContext::Wmma16Step::Kind::Skip) return;
 
-    // Paired N-fusion: call DontInline wmma16_pair_fn(a, b0, b1, c0, c1) -> U32x4
     const Id u32ty{ctx.U32[1]};
-    const Id packed{ctx.OpFunctionCall(ctx.U32[4], fs.pair_fn,
-                                       ctx.Def(step.m0->Arg(0)),
-                                       ctx.Def(step.m0->Arg(1)), ctx.Def(step.m1->Arg(1)),
-                                       ctx.Def(step.m0->Arg(2)), ctx.Def(step.m1->Arg(2)))};
-    const Id d0_0{ctx.OpCompositeExtract(u32ty, packed, 0U)};
-    const Id d0_1{ctx.OpCompositeExtract(u32ty, packed, 1U)};
-    const Id d1_0{ctx.OpCompositeExtract(u32ty, packed, 2U)};
-    const Id d1_1{ctx.OpCompositeExtract(u32ty, packed, 3U)};
-    step.m0->SetDefinition(ctx.OpCompositeConstruct(ctx.U32[2], d0_0, d0_1));
-    step.m1->SetDefinition(ctx.OpCompositeConstruct(ctx.U32[2], d1_0, d1_1));
+    const auto unpack_pair = [&](Id packed, IR::Inst* dst0, IR::Inst* dst1) {
+        const Id d0_0{ctx.OpCompositeExtract(u32ty, packed, 0U)};
+        const Id d0_1{ctx.OpCompositeExtract(u32ty, packed, 1U)};
+        const Id d1_0{ctx.OpCompositeExtract(u32ty, packed, 2U)};
+        const Id d1_1{ctx.OpCompositeExtract(u32ty, packed, 3U)};
+        dst0->SetDefinition(ctx.OpCompositeConstruct(ctx.U32[2], d0_0, d0_1));
+        dst1->SetDefinition(ctx.OpCompositeConstruct(ctx.U32[2], d1_0, d1_1));
+    };
+
+    if (step.kind == EmitContext::Wmma16Step::Kind::Pair) {
+        const Id packed{ctx.OpFunctionCall(ctx.U32[4], fs.pair_fn,
+                                           ctx.Def(step.m0->Arg(0)),
+                                           ctx.Def(step.m0->Arg(1)), ctx.Def(step.m1->Arg(1)),
+                                           ctx.Def(step.m0->Arg(2)), ctx.Def(step.m1->Arg(2)))};
+        unpack_pair(packed, step.m0, step.m1);
+    } else if (step.kind == EmitContext::Wmma16Step::Kind::PairZeroC) {
+        const Id packed{ctx.OpFunctionCall(ctx.U32[4], fs.pair_zero_c_fn,
+                                           ctx.Def(step.m0->Arg(0)),
+                                           ctx.Def(step.m0->Arg(1)), ctx.Def(step.m1->Arg(1)))};
+        unpack_pair(packed, step.m0, step.m1);
+    } else if (step.kind == EmitContext::Wmma16Step::Kind::QuadZeroC) {
+        const Id ret{ctx.OpFunctionCall(fs.quad_ret_type, fs.quad_zero_c_fn,
+                                        ctx.Def(step.m0->Arg(0)),
+                                        ctx.Def(step.m0->Arg(1)), ctx.Def(step.m1->Arg(1)),
+                                        ctx.Def(step.m2->Arg(1)), ctx.Def(step.m3->Arg(1)))};
+        unpack_pair(ctx.OpCompositeExtract(ctx.U32[4], ret, 0U), step.m0, step.m1);
+        unpack_pair(ctx.OpCompositeExtract(ctx.U32[4], ret, 1U), step.m2, step.m3);
+    } else if (step.kind == EmitContext::Wmma16Step::Kind::PairK2ZeroC) {
+        const Id packed{ctx.OpFunctionCall(ctx.U32[4], fs.pair_k2_zero_c_fn,
+                                           ctx.Def(step.m0->Arg(0)),
+                                           ctx.Def(step.m0->Arg(1)), ctx.Def(step.m1->Arg(1)),
+                                           ctx.Def(step.m2->Arg(0)),
+                                           ctx.Def(step.m2->Arg(1)), ctx.Def(step.m3->Arg(1)))};
+        unpack_pair(packed, step.m2, step.m3);
+    }
 
     for (IR::Inst* ext : step.deferred_extracts) {
         if (ext->GetOpcode() == IR::Opcode::CompositeExtractU32x2) {

@@ -87,12 +87,12 @@ apart.
 | The version | checks `tools.lock` has every tool each builder needs, then names the version: a tag is checked; a push gets the nightly name, after waiting for more merges and only when it brings something for the notes; a tag of a commit released already names that release | `tools.py check --require`, `release.py check-tag`, `released-as`, `nightly-age`, `nightly-news`, `nightly-name` |
 | Linux builder | builds the AppImage in Ubuntu 22.04 (glibc 2.35), compiles the Vulkan back end to check it (with and without AMD FSR 4), and starts a player's build from the image | `build-linux.yml`: `scripts/linux/deps.sh`, `scripts/linux/appimage.sh`, `scripts/linux/check_player_build.sh` |
 | Windows builder | cross-builds the setup, the builder (`dotnet publish -r win-x64`) and the zip on Linux with llvm-mingw's Linux build, checks them as Windows files, starts them under Wine, checks the `cpm` package's dav1d under Wine, and compiles the Vulkan back end to check it | `build-windows.yml`: `scripts/builder_package.py`, `scripts/check_windows_files.py` |
-| Sign and publish | writes and signs `SHA256SUMS`, checks the signature with the key the launcher trusts, writes the notes, uploads everything to a draft and publishes it; a nightly also deletes the nightlies past the newest 5 | `release.py sums`, `sign`, `verify`, `notes`, `publish`, `prune` |
+| Sign and publish | writes and signs `SHA256SUMS`, checks the signature with the key the launcher trusts, writes the notes, uploads everything to a draft and publishes it; a nightly also deletes the nightlies past the newest 20 that are 5 days old or more | `release.py sums`, `sign`, `verify`, `notes`, `publish`, `prune` |
 
 - **Drafts make a release appear at once.** Until the last step no launcher sees it; a failed run leaves a draft, which
   a re-run of the same tag reuses.
 - **A commit released already is rebuilt but not rechecked.** Every file carries its version, so a tag always builds
-  again. When the commit's nightly is still published (the newest 5 are kept), `release.py released-as` checks its
+  again. When the commit's nightly is still published (the newest 20, and every one from the last 5 days, are kept), `release.py released-as` checks its
   signed `SHA256SUMS`, and the build checks that ship no file are skipped.
 - **Every job runs on Linux.** The Windows files are cross-built; what only Windows can check is a
   [Windows tester's](#windows-tester).
@@ -290,15 +290,16 @@ launcher: `/download/launcher/<os>` for the best channel there is (stable, else 
 `linux`. There are no links to the builder files: only the launcher downloads them.
 
 **RecompLauncher** can also run both builders through their `recomplauncher.json`
-([recomplauncher.json](../../../recomplauncher.json), `tests/test_recomplauncher_json.py`): `--cli --prepare
+([recomplauncher.json](../../../recomplauncher.json), `tests/test_recomplauncher_json.py`). The player's copy is its
+input `game` (the .nup or the extracted folder, checked by its build ID), and the builders run with `--cli --prepare
 --game=<copy> --out <the game folder> --work <the install folder>/recompdata/cache/work`, then `--play`. The work folder
 is in the install folder, so it moves and uninstalls with the game, and RecompLauncher's backups leave its `cache` out.
 The build is finished when the folder has its `image.bin` (*prepare*'s `done`). With *prepare*'s `keeps_copy`, a player
 who deleted their copy isn't asked for it again: the launcher runs the same line without `--game`, and the game is built
-from the game files its folder kept, as an update is. RecompLauncher keeps a game set up through an update and builds it
-again only when *prepare*'s `version` changes, so each release's copy of the file carries the release's version there
-(`scripts/builder_package.py` `release_manifest`, for the zip and the AppImage): after an update, the next Play builds
-the game again, from what the folder kept.
+from the game files its folder kept, as an update is. RecompLauncher builds the game again whenever the release it
+installed changes, so the zip and the AppImage carry the file as it is, with nothing stamped per release: after an
+update, the next Play builds the game again, from what the folder kept. This needs RecompLauncher 0.90 Beta 68 or
+newer; older ones don't read a `check` on an input.
 
 ## One-time setup
 

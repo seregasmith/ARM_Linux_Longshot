@@ -16,6 +16,15 @@ Switch's bottom one, B). The player's bindings come from the Insert menu's Contr
 Controllers also count while the window is in the background when Controller in background is on
 (`HOS_INPUT_BACKGROUND`).
 
+Controller software can also send the game *keys*: Steam Input's Desktop Layout, active over a game launched outside
+Steam, sends a pad's A as Enter, B and Menu as Escape and View as Tab. The keyboard is read globally, so those presses are
+the player's. Plus is Tab alone for that reason, a **deliberate default change** (Enter was its second key until
+options_version 8: a pad's A opened the pause menu,
+[#1992](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/1992)): an old file's default pair moves to Tab, a Plus
+chosen otherwise keeps its keys, and Tab and the pad's Start always pause. The general rule for every synthesized key, a
+Keyboard row that can leave the keyboard out while a controller is connected, is
+[#152](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/152).
+
 ## Vibration
 
 The game sends a value per side: a low and a high band, an amplitude and a frequency each.
@@ -48,6 +57,30 @@ build` makes it; `nx2/build.py` copies it beside the game from `third_party/renh
 3. Camera inversion is applied after rest detection (SDL controllers; XInput pads get only the dead zone and
    inversion), to the output only. Inverting before it would let a settings change
    look like movement and permanently admit a phantom axis.
+
+## Triggers
+
+An SDL controller's trigger presses ZL or ZR past 8000 of 32767, and only once it has read let go (8000 or below) for a
+second without a break since the pad was opened, each trigger on its own (`trigger_pull` in `host/pad_sdl.c`). A device
+whose trigger reads held for good (#2327: a ShanWan USB receiver, 2563:0575) would otherwise hold ZL and ZR from every
+pad. It would also keep the Controls page from listening for a binding, since that waits for every input to be let go.
+And once the Insert menu closed, it would keep the player's own triggers from the game, since an input down at the
+close waits to be let go. One let-go reading is not enough: with that receiver, "seen let go once" still let its
+triggers through. A real trigger rests when its pad opens, so it counts a second later. A pull in that second, or one
+held as the pad opens, counts once the trigger has been let go for a second. A DualSense's HD Haptics triggers read the
+same admitted value.
+
+The log names the pad and the reading, once each per pad and trigger:
+
+- `hid: "<pad>": its left trigger reads 16384 of 32767 and has not read let go for a second since it was opened, so it
+  does not count until it does`: not counting 3 s after the pad opened;
+- `... its left trigger has read let go for a second (0 of 32767): it counts from now`: counting after that line;
+- `... its left trigger has read held (16384 of 32767) for 30 s without a break`: held 30 s once it counts. This is a
+  player's long pull, or a device whose trigger was let go for a while and then held, which the rule lets through.
+
+At debug, each trigger's first reading and its first changes between let go and held (nine lines at most per trigger),
+each with its time since the pad opened: `... its left trigger reads 16384 of 32767 (held), 0.004 s after it was
+opened`. They show how a device's trigger reads as it opens.
 
 ## The free pointer
 
@@ -196,9 +229,11 @@ Scripted input for test runs (`HOS_INPUT_SCRIPT`, `HOS_INPUT_LIVE`) is in [devel
 | Check | Covers |
 |---|---|
 | `tests/test_stick_rest.py`, `tests/test_stick_inversion_rest.py`, `tests/test_stick_dead_zone.py` | Rest detection, inversion and dead zones |
+| `tests/test_trigger_rest.py` | A trigger presses only once seen let go; one held for good never does |
 | `tests/test_display_pointer.py` | Pointer sampling and consumption on both hosts, DPI ratios, concurrent samples |
 | `tests/test_menu_hit.py`, `tests/test_game_menu_mouse_buttons.py` | Menu hit regions and the game-menu mailbox |
 | `tests/test_steam_pads.py` | Steam's ignore list |
+| `tests/test_plus_binding.py` | Plus's default keys and a pad's A: Enter (Steam Input's Desktop layout key for A) does not open the pause, the pad still maps by position |
 | `tests/test_input_movie.py` | Input recordings: the format, the recorder, playback, the frame alignment, loads, actions and rows, drift correction and divergence, starting and stopping at run time, routes |
 | `tests/test_routes.py` | Routes hold only what a route may (`assets/routes/`) |
 

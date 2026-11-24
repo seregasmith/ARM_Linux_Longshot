@@ -1,15 +1,33 @@
 // Synthetic PE images for gpu/vk/fsr4_models.h's scanner: the four FSR 4 provider classes, their Complete Object
 // Locators, vtables and static registry, laid out as AMD's 4.1.2 Vulkan DLL has them. No AMD DLL, no GPU, no game.
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <utility>
 #include <vector>
 
 #include "fsr4_models.h"
 
 using namespace mkwvk::fsr4_models;
+
+#ifdef FSR4_MODELS_TEST
+static int fail_protect = -1, protect_calls = 0;
+static std::vector<void*> protected_slots;
+bool fsr4_test_protect(void* slot, bool writable, uintptr_t* protection) {
+    if (writable) {
+        if (protect_calls++ == fail_protect) return false;
+        protected_slots.push_back(slot);
+        *protection = 1;
+    } else {
+        if (protected_slots.empty() || protected_slots.back() != slot || *protection != 1) std::abort();
+        protected_slots.pop_back();
+    }
+    return true;
+}
+#endif
 
 namespace {
 
@@ -289,17 +307,96 @@ void test_not_pe() {
 bool yes(void*, void*) { return true; }
 bool no(void*, void*) { return false; }
 
+const char* const kSdk24 = "4a7e895af6e0b615d40a84d59eb8c2b1054ad91cdd0c739567940270d51bdab7";
+
+void test_known_library() {
+    std::printf("case: the known library and SHA-256\n");
+    check(sha256_hex("", 0) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "SHA-256 of nothing");
+    check(sha256_hex("abc", 3) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "SHA-256 of abc");
+    const std::string two_blocks(1000, 'a');   // (crosses block boundaries and the padding's second block)
+    check(sha256_hex(two_blocks.data(), two_blocks.size()) == "41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3",
+          "SHA-256 of 1000 a");
+    check(sha256_file("no such file here").empty(), "a file that cannot be read has no SHA-256");
+    check(known_library(kSdk24) != nullptr, "FSR SDK 2.4's upscaler library is known");
+    std::string upper = kSdk24;
+    for (char& c : upper) c = (char)std::toupper((unsigned char)c);
+    check(known_library(upper.c_str()) == known_library(kSdk24), "the SHA-256 in upper case names the same library");
+    std::string other = kSdk24;
+    other[63] = other[63] == '0' ? '1' : '0';
+    check(!known_library(other.c_str()), "another SHA-256 names no library");
+    check(!known_library(nullptr) && !known_library("") && !known_library("4a7e895a"), "a short or missing SHA-256 names none");
+    const KnownModule none = load_known("no such folder here");
+    check(!none.library && !none.scan.base, "no library is loaded from a folder without the file");
+}
+
+/// The fixture's instance i, with its vtable's IsSupported a function of this program (the image's own code is not
+/// executable memory here)
+void set_answer(ScanResult& r, int i, bool (*answer)(void*, void*)) {
+    r.providers[i].vtable[2] = reinterpret_cast<void*>(answer);
+    r.providers[i].is_supported = answer;
+}
+
+bool ask(const Built& b, const ScanResult& r, int i) {
+    void* instance = (void*)b.image.va(b.instance_rva[i]);
+    return reinterpret_cast<bool (*)(void*, void*)>(r.providers[i].vtable[2])(instance, nullptr);
+}
+
 void test_patch() {
-    std::printf("case: unverified provider layout\n");
-    check(scan_loaded_modules().empty(), "live discovery is disabled without a verified ABI");
+    std::printf("case: the hook, only for a known library\n");
+    check(scan_loaded_modules().empty(), "live discovery stays disabled");
     const Built b = build(Fixture{});
-    const ScanResult r = scan_image(b.image.bytes.data(), b.image.bytes.size());
+    ScanResult r = scan_image(b.image.bytes.data(), b.image.bytes.size());
     check(r.providers.size() == 4 && r.shape_ok && r.lite_present, "patch fixture scans");
-    check(!install(b.image.base(), r), "shared shape alone is not a verified ABI");
-    check(!hook_installed() && !has_model(MODEL_LITE), "unverified layout leaves Lite unavailable");
-    for (int i = 0; i < b.count; i++)
-        check((uintptr_t)r.providers[i].vtable[2] == b.image.va(kText + 0x200 + (uint32_t)i * 0x10),
-              "rejected layout leaves every slot unchanged");
+    for (int i = 0; i < 4; i++) set_answer(r, i, i == 2 ? yes : no);   // (the RX 6600 case: only Navi 2 says yes)
+    const KnownLibrary* known = known_library(kSdk24);
+    const KnownLibrary made_up{kSdk24, "a copy of the table's row"};
+
+    check(!install(b.image.base(), r, nullptr), "the shared shape alone is not a known library");
+    check(!install(b.image.base(), r, &made_up), "a library the caller made up is not a known one");
+    check(!install(0, r, known), "no module, no hook");
+    ScanResult bad = r;
+    bad.shape_ok = false;
+    check(!install(b.image.base(), bad, known), "a shape that is not understood is not hooked");
+    ScanResult moved = r;
+    moved.providers[1].is_supported = yes;   // (its slot holds `no`: the vtable changed under the scan)
+    check(!install(b.image.base(), moved, known), "a slot that no longer holds what the scan read is not hooked");
+    check(!hook_installed() && !has_model(MODEL_LITE), "every refusal leaves Lite unavailable");
+    for (int i = 0; i < 4; i++)
+        check(r.providers[i].vtable[2] == reinterpret_cast<void*>(i == 2 ? yes : no), "every refusal leaves every slot unchanged");
+
+#ifdef FSR4_MODELS_TEST
+    for (int failure = 0; failure < 4; failure++) {
+        fail_protect = failure;
+        protect_calls = 0;
+        check(!install(b.image.base(), r, known), "a protection failure refuses the whole install");
+        check(protected_slots.empty(), "all acquired protections restored in reverse order");
+        check(!hook_installed() && !has_model(MODEL_LITE), "no model exposed after a protection failure");
+        for (int i = 0; i < 4; i++)
+            check(r.providers[i].vtable[2] == reinterpret_cast<void*>(i == 2 ? yes : no), "protection failure leaves every slot unchanged");
+    }
+    fail_protect = -1;
+    protect_calls = 0;
+#endif
+    check(install(b.image.base(), r, known), "the known library's providers are hooked");
+    check(hook_installed() && has_model(MODEL_LITE) && has_model(MODEL_FP8), "the hooked models are known");
+    for (int i = 0; i < 4; i++) {
+        check(r.providers[i].vtable[2] != reinterpret_cast<void*>(i == 2 ? yes : no), "IsSupported is the delegating answer");
+        for (int e = 0; e < 8; e++)
+            if (e != 2)
+                check((uintptr_t)r.providers[i].vtable[e] != (uintptr_t)r.providers[i].vtable[2], "only entry 2 is written");
+    }
+    check(!install(b.image.base(), r, known), "a second install is refused");
+
+    set_model(SELECT_AUTO);
+    check(!ask(b, r, 0) && !ask(b, r, 1) && ask(b, r, 2) && !ask(b, r, 3), "Auto: each provider's own answer");
+    check(native_model() == MODEL_INT8_NAVI2, "the first yes of an Auto walk is AMD's pick");
+    set_model(SELECT_LITE);
+    check(!ask(b, r, 0) && !ask(b, r, 1) && !ask(b, r, 2) && ask(b, r, 3), "Lite: yes for the Lite provider alone");
+    release();
+    check(!ask(b, r, 0) && !ask(b, r, 1) && ask(b, r, 2) && !ask(b, r, 3), "after release: AMD's own answers with Lite selected");
+    check(!hook_installed() && !has_model(MODEL_LITE), "after release no model counts as hooked");
+    check(!known_module_is_loaders(KnownModule{}), "a module that was never loaded is not the loader's");
+    set_model(SELECT_AUTO);
 }
 
 void test_selection() {
@@ -308,10 +405,8 @@ void test_selection() {
     check(selected_model() == SELECT_LITE, "set_model/selected_model Lite");
     set_model(SELECT_AUTO);
     check(selected_model() == SELECT_AUTO, "set_model/selected_model Auto");
-    record_native_model(MODEL_INT8_NAVI2);
-    check(native_model() == MODEL_INT8_NAVI2, "record_native_model");
     record_native_model(MODEL_LITE);
-    check(native_model() == MODEL_INT8_NAVI2, "the first native model is kept");
+    check(native_model() == MODEL_INT8_NAVI2, "the first native model is kept (the hook's Auto walk recorded Navi 2)");
     check(parse_model_env(nullptr) == -1, "unset env");
     check(parse_model_env("") == -1, "empty env");
     check(parse_model_env("auto") == SELECT_AUTO, "auto");
@@ -371,6 +466,7 @@ int main() {
     test_bad_shape();
     test_unknown();
     test_not_pe();
+    test_known_library();
     test_patch();
     test_selection();
     test_native_model();

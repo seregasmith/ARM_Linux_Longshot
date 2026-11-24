@@ -439,6 +439,7 @@ ItemView view_of(const Entry& e) {
     v.custom = it.custom != nullptr;
     v.selectable = selectable(it);
     if (s.value && (s.kind == Kind::Choice || s.kind == Kind::Toggle || s.kind == Kind::Slider)) {
+        if (s.sync) *s.value = s.sync();
         v.raw = *s.value;
         v.value = value_text(s, v.raw);
     }
@@ -469,6 +470,7 @@ int stepped(const Setting& s, int v, int dir) {
 Outcome change(const Setting& s, int dir) {
     Outcome o;
     o.taken = true;
+    if (s.sync && s.value) *s.value = s.sync();
     const int v = *s.value, next = stepped(s, v, dir);
     if (next == v) return o;
     *s.value = next;

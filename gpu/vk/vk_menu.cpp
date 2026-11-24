@@ -220,11 +220,12 @@ Out output_preview_target{};
 bool output_preview_from_field = false;
 /// A row with nothing else to choose here: shown without its arrows, Left and Right leave it (and the saved value) alone
 bool module_locked(const int* value);   // (#1633: a module's row with this value, locked by its own locked(): below)
+bool preview_locked(const int* value);
 bool row_fixed(const int* value) {
     // Output and the settings that can change its shape or invalidate the preview path wait for the trial.
     if (output_preview_target.w && (value == &opts.output_res || value == &opts.ultrawide ||
         value == &opts.handheld || value == &opts.preset || value == &opts.vsync || value == &opts.framegen ||
-        value == &opts.hdr || value == &opts.reflex || value == &opts.dlss)) return true;
+        value == &opts.hdr || value == &opts.reflex || value == &opts.dlss || preview_locked(value))) return true;
     return module_locked(value) || (value == &opts.upscale && !filter_needed()) ||
            (value == &opts.framegen_by && framegen_by_fixed()) ||   // (its line says why)
            (value == &opts.hud_layout && getenv("HOS_WIDE_UI") && *getenv("HOS_WIDE_UI"));   // (host/hos_wide_ui.c's, first)
@@ -578,6 +579,12 @@ bool module_locked(const int* value) {
         if (r.setting && r.value == value && r.setting->locked && r.setting->locked()) return true;
     return false;
 }
+bool preview_locked(const int* value) {
+    if (!value) return false;
+    for (const Row& r : row_table())
+        if (r.setting && r.value == value && r.setting->key && !strcmp(r.setting->key, "frame_generation_multiplier")) return true;
+    return false;
+}
 /// The page a module's row opens (Kind::Page): its MenuTab, -1 none
 int row_opens(const Row& r) {
     return r.setting && r.setting->kind == menu::Kind::Page ? page_tab(r.setting->opens) : -1;
@@ -916,12 +923,33 @@ bool menu_refresh = false;
 int marquee_pos = 0, marquee_max = 0;
 int64_t marquee_next = 0;
 constexpr int64_t kMarqueeStep = 150000000LL, kMarqueeRest = 1200000000LL;   // (ns)
-// (longshot) the mouse (menu_tick): the tab strip's part under the cursor (a tab 0 to TAB_COUNT - 1, TAB_COUNT the previous,
-// TAB_COUNT + 1 the next; -1 none); the slider held with the left button (its row in the tab, -1 none)
+// (longshot) the mouse (menu_tick): the tab strip's part under the cursor and the slider held with the left button.
+// The drag holds a global row identity; its tab and visible index also identify the hit map used when it began.
 int hover_tab = -1;
-int drag_row = -1;
+menu_hit::DragState drag_state;
+int drag_tab = -1, drag_visible_row = -1;
+bool drag_row_valid() {
+    return drag_state.active() && cur_tab == drag_tab && drag_visible_row >= 0 &&
+           drag_visible_row < tab_row_count(cur_tab) &&
+           tab_row_to_global(cur_tab, drag_visible_row) == drag_state.row && row_shown(drag_state.row);
+}
 bool mouse_read = false;   // (the menu has read the mouse since it opened)
 bool is_slider(const Row& r) { return (r.setting && r.setting->kind == menu::Kind::Slider); }
+void row_sync(const Row& r) {
+    if (r.setting && r.setting->sync && r.value) *r.value = r.setting->sync();
+}
+int slider_current_value(const Row& r) {
+    if (r.setting && r.setting->slider_current) return r.setting->slider_current();
+    return r.value ? *r.value : r.lo;
+}
+int slider_permille_for(const Row& r, int v) {
+    if (r.setting && r.setting->slider_permille) return r.setting->slider_permille(v);
+    return menu_hit::slider_permille(v, r.lo, r.hi);
+}
+int slider_value_for(const Row& r, int permille) {
+    if (r.setting && r.setting->slider_value) return r.setting->slider_value(permille);
+    return menu_hit::slider_value(permille, r.lo, r.hi, r.step);
+}
 /// (a scale: the arrows and a click stop at its ends; Rumble strength would go from Off to its strongest)
 // (a Slider unless it wraps, as Sharpness; a Choice that says so: tests/test_menu_slider_ends.py. One line: checks read it so)
 bool stops_at_ends(const Row& r) { return r.setting && ((r.setting->kind == menu::Kind::Slider && !r.setting->wraps) || r.setting->stops_at_ends); }
@@ -1057,13 +1085,14 @@ void save() {
             mine |= key == "vram_budget";
             mine |= key == "gpu_device_id";   // (the GPU device row's card: written below)
             for (const Row& r : rows)
-                if (!mine && r.value && key == ini_key(r)) mine = true;
+                if (!mine && r.value && !(r.setting && r.setting->unsaved) && key == ini_key(r)) mine = true;
             if (!mine) others += line, others += others.back() == '\n' ? "" : "\n";
         }
         fclose(f);
     }
     const auto write_lines = [&](FILE* f) {
         for (const Row& r : rows) {
+            if (r.setting && r.setting->unsaved) continue;
             if (r.value == &opts.output_res) {   // (the size itself: host/nn_applet.c reads it)
                 const int v = saved_value(r.value);
                 const Out o = v == custom_index() && player_custom_output.w && env_holds(r.value) ? player_custom_output : output_at(v);
@@ -1101,8 +1130,8 @@ void save() {
         // host/nn_hid.c binds_load; 4: Descriptor reuse on by default, see menu_init and vk_draw.cpp desc_slotgen_on; 5: the
         // Menu shortcut "Insert, F1 or Esc" by default, see menu_init; 6: the Aspect ratio's 16:9 from before moves on a
         // screen narrower than 16:9, see menu_init and host/hos_wide_size.h; 7: Sprint's Toggle on by default, see
-        // menu_init)
-        fprintf(f, "options_version=8\n");
+        // menu_init; 8: Plus is Tab alone; 9: Xbox face buttons are the default, see host/nn_hid.c binds_load)
+        fprintf(f, "options_version=9\n");
         fputs(others.c_str(), f);
         if (!can_bind()) fputs(kept.c_str(), f);
         else if (const int sprint_auto = host->binding(HOS_BIND_SPRINT_AUTO, 0, 0))
@@ -1254,18 +1283,26 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     if (r.value == &output_pick && output_forced()) return;
     // (nothing else to choose: no change, no save. A saved choice that cannot run here is kept)
     if (row_fixed(r.value)) return;
+    if (r.setting && r.setting->sync && r.value) *r.value = r.setting->sync();
+    const int prev_res = opts.resolution, prev_dlss = opts.dlss;
     // (#1633) a module's row: stepped by its own step_fn
     // (an arrow's step alone, the value one step from the row's: a value set as it is, or a jump, is kept as asked)
     if (r.setting && r.setting->step_fn && dir && v == *r.value + dir * r.step) v = r.setting->step_fn(*r.value, dir);
-    const int old_upscaler = opts.dlss;
-    // (the scaling rows: only what can run here; the Render resolution row through the Upscaler's own steps)
+    // (the scaling rows: only what can run here; the Render resolution row through the Upscaler's own ascending fixed stops)
     // (the Upscaler by engine; the Render resolution's Native is the engine's full-size form: upscaler_rows.h)
     if (r.value == &opts.dlss) v = ur::step_engine(upscaler(), dir, upscalers_available());
     if (r.value == &opts.resolution) {
         int up = upscaler(), res = *r.value;
-        ur::step_render(upscaler(), ur::snap_render(upscaler(), *r.value), dir, &up, &res);
+        if (dir) {
+            ur::step_fixed_render(upscaler(), *r.value, dir, &up, &res);
+        } else if (v == 0) {
+            up = ur::engine(upscaler());
+            res = 0;
+        } else {
+            ur::apply_fixed_stop(upscaler(), *r.value, v, &up, &res);
+        }
         if (up != upscaler()) opts.dlss = up;   // (Native in or out: DLAA / DLSS, FSR 4's native AA / FSR 4, XeSS's / XeSS)
-        v = ur::full_scale(up) ? *r.value : res;   // (Native changes the mode, not the saved numeric scale)
+        v = res;   // (Native changes the mode, not the saved numeric scale)
     }
     if (r.value == &opts.output_res) {   // (smallest to largest: step_output_choice)
         v = step_output_choice(*r.value, dir);
@@ -1293,9 +1330,11 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     if (r.value == &opts.transition_autosave) sync_transition_autosave();
     if (r.value == &opts.grass_distance) grass_distance_now.store(opts.grass_distance, std::memory_order_relaxed);
     // (longshot: the samplers made again, at once: their anisotropy, and the upscalers' LOD bias, vk_draw.cpp upscale_lod_bias)
-    if (r.value == &opts.anisotropy || r.value == &opts.dlss || r.value == &opts.resolution || r.value == &opts.preset)
+    if (r.value == &opts.anisotropy || r.value == &opts.dlss || r.value == &opts.resolution || r.value == &opts.preset ||
+        opts.dlss != prev_dlss || opts.resolution != prev_res)
         samplers_changed();
-    if (opts.dlss != old_upscaler || r.value == &opts.dlss || r.value == &opts.resolution || r.value == &opts.dlss_model)
+    if (r.value == &opts.dlss || r.value == &opts.resolution || r.value == &opts.dlss_model ||
+        opts.dlss != prev_dlss || (r.value != &opts.preset && opts.resolution != prev_res))
         temporal_reset_failure();
     prompts_at_once(r);   // (longshot)
     {   // (a row that takes a restart, or a preset that sets one: asked again at the next close)
@@ -2060,16 +2099,19 @@ void halves_cell(ui::Ctx& c, ImVec2 a, ImVec2 b, const char* lo, const char* hi,
 /// A slider's value cell; a display-only meter omits adjustment arrows and mouse track bounds.
 void slider_cell(ui::Ctx& c, ImVec2 a, ImVec2 b, const char* value, int permille, bool sel, float* t0, float* t1, bool adjustable = true) {
     const float s = c.s, mid = (a.y + b.y) * 0.5f, in = 4 * s, px = 18 * s;
+    const bool lit = sel && adjustable;
     value_frame(c, a, b, sel);
-    if (sel) ui::gold(c, a + ImVec2(in, in), b - ImVec2(in, in));
+    if (lit) ui::gold(c, a + ImVec2(in, in), b - ImVec2(in, in));
     const float x0 = a.x + in + 24 * s, x1 = b.x - in - 24 * s, xv = x0 + (x1 - x0) * permille / 1000.0f, ty = b.y - in - 5.5f * s;
-    const ImU32 track = sel ? ui::kTrackSel : ui::rgba(255, 255, 255, 40), done = sel ? ui::kGoldInk : ui::kAccent;
+    const ImU32 track = lit ? ui::kTrackSel : ui::rgba(255, 255, 255, 40), done = lit ? ui::kGoldInk : ui::kAccent;
+    const ImU32 ink = lit ? ui::kGoldInk : (sel && !adjustable) ? ui::kDim : ui::kInk;
     c.d->AddRectFilled(ImVec2(x0, ty - 1.5f * s), ImVec2(x1, ty + 1.5f * s), track, 1.5f * s);
     c.d->AddRectFilled(ImVec2(x0, ty - 1.5f * s), ImVec2(xv, ty + 1.5f * s), done, 1.5f * s);
     ui::diamond(c, ImVec2(xv, ty), 4.5f * s, done);
-    ui::text_mid_centre(c, c.f.strong, px, (a.x + b.x) * 0.5f, mid - 3 * s, sel ? ui::kGoldInk : ui::kInk, value);
+    const std::string shown = fit(c, c.f.strong, px, b.x - a.x - 2 * in - (adjustable ? 48 : 16) * s, value, sel);
+    ui::text_mid_centre(c, c.f.strong, px, (a.x + b.x) * 0.5f, mid - 3 * s, ink, shown.c_str());
     if (adjustable) {
-        const ImU32 arrow = sel ? ui::kGoldInk : ui::kDim;
+        const ImU32 arrow = lit ? ui::kGoldInk : ui::kDim;
         ui::triangle(c, ImVec2(a.x + in + 11 * s, mid), 9 * s, 0, arrow), ui::triangle(c, ImVec2(b.x - in - 11 * s, mid), 9 * s, 1, arrow);
     }
     if (sel) value_glow(c, a, b);
@@ -2351,6 +2393,11 @@ std::string changed_rows_text(std::string& pc_options) {
         to += ": ";
         // (a microphone chosen by its name, not the name: a device's name can be a person's)
         to += r.value == &opts.mic && *r.value >= 2 ? "a microphone by its name" : r.text(*r.value);
+        if (r.value == &opts.framegen && *r.value >= 2) {
+            char mult[16];
+            snprintf(mult, sizeof mult, " (%dx)", *r.value);
+            to += mult;
+        }
         to += depends ? " (default depends on this PC" : " (default: ";
         if (!depends) to += r.text(was);
         if (restart_changed(r)) to += "; takes effect after a restart";
@@ -2410,11 +2457,15 @@ void row_value_cell(ui::Ctx& c, const Row& r, ImVec2 va, ImVec2 vb, bool selecte
             ui::triangle(c, ImVec2(vb.x - 15 * s, mid), 10 * s, 1, selected ? ui::kGoldInk : ui::kInk);
         }
     } else {
+        row_sync(r);
         const bool fixed = row_fixed(r.value);
         const std::string lo = r.text(r.lo), hi = r.text(r.hi);
         const float half = (vb.x - va.x) * 0.5f - 18 * s;
         if (is_slider(r)) {
-            slider_cell(c, va, vb, r.text(*r.value), menu_hit::slider_permille(*r.value, r.lo, r.hi), selected, t0, t1);
+            const bool dragging = drag_row_valid() && &r == &rows[drag_state.row];
+            const int show_v = dragging ? drag_state.preview : slider_current_value(r);
+            const std::string label = (r.setting && r.setting->slider_text) ? r.setting->slider_text(show_v) : std::string(r.text(show_v));
+            slider_cell(c, va, vb, label.c_str(), slider_permille_for(r, show_v), selected, t0, t1, !fixed);
         } else if (r.hi - r.lo == r.step && !fixed && ui::size_of(c.f.strong, 18 * s, lo.c_str()).x <= half &&
                    ui::size_of(c.f.strong, 18 * s, hi.c_str()).x <= half) {
             halves_cell(c, va, vb, lo.c_str(), hi.c_str(), *r.value == r.hi, selected, fixed);
@@ -2652,6 +2703,7 @@ void draw_options(ui::Ctx& c) {
     }
     const int count = tab_row_count(cur_tab), sel = tab_selected[cur_tab];
     const Row& selr = rows[tab_row_to_global(cur_tab, sel)];
+    row_sync(selr);
     const bool mic_help = mic_help_row(selr);
     const FieldRow* field = field_row(selr);   // (longshot: a text field: why Enter did not take it, while it is edited)
     const char* hint = selr.value && selr.hint ? selr.hint(*selr.value, -1) : field && editing == field->field ? edit_why : nullptr;
@@ -4204,7 +4256,7 @@ void menu_init() {
             // A file with only the Builder's Compile shaders setting still counts as a first start.
             has_options |= strcmp(line, "compile_shaders") != 0;
             for (Row& r : rows) {
-                if (!r.value || r.value == &opts.game_lang || strcmp(line, ini_key(r))) continue;
+                if (!r.value || r.value == &opts.game_lang || (r.setting && r.setting->unsaved) || strcmp(line, ini_key(r))) continue;
                 const int v = atoi(eq + 1);
                 *r.value = r.value == &opts.output_res ? parse_output(eq + 1) : std::min(std::max(v, r.lo), r.hi);
             }
@@ -4400,8 +4452,10 @@ int menu_vsync() { static const int run = env_on("RX_VK_FIFO") ? 1 : env_on("RX_
 /// logical count where the cores cannot be read) and, for Auto, whether the mode is safe on this run. Known at the start and
 /// read here: the capture off (RX_VK_CAPTURE=0: a replay behind the game is right only from the capture),
 /// RX_VK_LOW_SPEC, a frame dump (RX_VK_DUMP), a benchmark replay (RX_VK_BENCH), and buffer pools with no mirrors at all
-/// (pools_mirrored: RX_VK_MIRROR=0, an integrated GPU, GCN), asked last and only when Auto would otherwise pick a thread, in
-/// either of its tiers, since it reads the device. Not known at the start, so not here: one pool refused its mirror or over the
+/// (pools_mirrored: an integrated GPU where !f.discrete(), or RX_VK_MIRROR=0), asked last and only when Auto would otherwise
+/// pick the threads, since it reads the device. When only mirrors are absent, without_mirrors(c, cores) keeps the recorder
+/// thread alone at kAutoRecorderOnlyCores (6) or more physical cores while leaving the render thread off, and turns both off
+/// below that threshold. Not known at the start, so not here: one pool refused its mirror or over the
 /// mirrors' budget while the game runs (that needs the run-time fallback, which is not written). On is the player's word:
 /// nothing is checked for it. Each reader takes its half: menu_render_thread, menu_recorder_thread
 static const threaded::Choice& threaded_choice() {
@@ -4415,7 +4469,7 @@ static const threaded::Choice& threaded_choice() {
                              getenv("RX_VK_BENCH") ? "RX_VK_BENCH" : nullptr;
         threaded::Choice c = threaded::choose(opts.threaded_rendering, cores, unsafe != nullptr);
         if (threaded::auto_picked(c) && !pools_mirrored()) {
-            c = threaded::Choice{false, false, threaded::Why::AutoUnsafe};
+            c = threaded::without_mirrors(c, cores);
             unsafe = "the buffer pools have no mirrors";
         }
         char line[256];
@@ -4655,12 +4709,13 @@ void menu_option_set(int id, int value) {
 // The settings rows (a value, not a heading or a debug tool, shown on this PC: row_shown), found by their key in
 // longshot_options.ini (ini_key), which stays the same while rows come and go or are renamed. The bridge calls these from
 // its own thread: menu_mu keeps them apart from menu_tick (the present's thread) and from menu_option_set (the game's)
-bool bridge_row(int i) { return rows[i].value && !rows[i].heading && rows[i].cheat < 0 && row_shown(i); }
+bool bridge_row(int i) { return rows[i].value && !rows[i].heading && rows[i].cheat < 0 && (row_shown(i) || rows[i].value == &opts.resolution); }
 void bridge_fill(int i, MkwVkSetting* out) {
     static const char* const tabs[] = {"graphics", "audio", "gameplay", "controls", "nfc", "mods", "debug", "motion",
                                        "audio", "gameplay", "debug", "graphics", "controls"};
     static_assert(sizeof tabs / sizeof tabs[0] == TAB_PAGE + 1, "a name for each MenuTab");
     const Row& r = rows[i];
+    row_sync(r);
     *out = MkwVkSetting{};
     snprintf(out->key, sizeof out->key, "%s", ini_key(r));
     snprintf(out->name, sizeof out->name, "%s", r.name);
@@ -4782,6 +4837,7 @@ int menu_setting_set(const char* key, int value, MkwVkSetting* out) {
     if (i == (int)std::size(rows)) return 0;
     Row& r = rows[i];
     if (row_fixed(r.value)) return bridge_fill(i, out), -1;
+    row_sync(r);
     const int want = std::min(std::max(value, r.lo), r.value == &opts.pad_layout ? std::min(r.hi, 3) : r.hi);   // (4: Custom, shown only)
     if (r.value == &opts.output_res && output_choice(want) == want &&
         dm::ratio_name(size_of(output_at(want))) != dm::ratio_name(size_of(output_at(opts.output_res)))) {
@@ -4790,17 +4846,30 @@ int menu_setting_set(const char* key, int value, MkwVkSetting* out) {
         for (Row& a : rows)
             if (a.value == &opts.ultrawide) set_row(a, aspect_for_choice(want), 1, false);
     }
-    if (r.value == &opts.dlss || r.value == &opts.resolution || r.value == &opts.output_res) {
-        // (the Render resolution's Native is a place of its own, DLAA or FSR 4's native AA, whatever the value it kept; the
-        // Upscaler that runs, as set_row steps it: a saved DLAA that cannot run here is the game's own, and its values count)
-        const auto native = [&] { return r.value == &opts.resolution && ur::full_scale(upscaler()); };
+    if (r.value == &opts.resolution) {
+        if (want == 0) {
+            set_row(r, 0, 0, true);
+        } else {
+            int n = 0;
+            const int* stops = ur::fixed_steps(upscaler(), n);
+            bool reachable = false;
+            for (int k = 0; k < n; k++)
+                if (stops[k] == want) reachable = true;
+            if (!reachable) {
+                menu_refresh = true;
+                bridge_fill(i, out);
+                return -2;
+            }
+            set_row(r, want, 0, true);
+        }
+    } else if (r.value == &opts.dlss || r.value == &opts.output_res) {
         // (a value none of the steps reach: everything the steps on the way changed is put back, the Quality preset and the
         // rows the environment holds too)
         const Options opts_was = opts;
         EnvOverride env_was[sizeof env_overrides / sizeof env_overrides[0]];
         std::copy(std::begin(env_overrides), std::end(env_overrides), env_was);
         const mr::State restart_was = restart_state;
-        if (!walk_to([&] { return std::pair(native() ? -1 : *r.value, opts.dlss); }, [&] { return *r.value == want && !native(); },
+        if (!walk_to([&] { return std::pair(*r.value, opts.dlss); }, [&] { return *r.value == want; },
                      [&](int dir) { set_row(r, *r.value + dir * r.step, dir, false); }, 64)) {
             opts = opts_was;
             toggle_set(HOS_KEY_SPRINT, opts.sprint_toggle != 0);
@@ -5492,6 +5561,15 @@ void menu_tick() {
             if (teleport_choice != was) teleport_follow = true, changed = true;
         }
     } else if (open_now.load()) {
+        if (drag_state.active() && (!drag_row_valid() || tab_left || tab_right || press[5] || (ptr.pressed & HOS_MOUSE_RIGHT))) {
+            if (!drag_state.deferred) save();
+            drag_state.cancel();
+            if (press[5] || (ptr.pressed & HOS_MOUSE_RIGHT)) {
+                press[5] = false;
+                ptr.pressed &= ~HOS_MOUSE_RIGHT;
+            }
+            changed = true;
+        }
         if (mouse) {   // (the mouse: see the top of this file)
             const menu_hit::Hit hit = hits.at((float)mx, (float)my);
             const int ht = hit.part == menu_hit::kTab ? hit.index : hit.part == menu_hit::kTabPrev ? TAB_COUNT
@@ -5499,15 +5577,25 @@ void menu_tick() {
             if (ht != hover_tab) hover_tab = ht, changed = true;
             int& sel = cur_tab == TAB_MODS ? mods_sel : tab_selected[cur_tab];   // (the Mods tab: its line, draw_mods)
             const bool on_row = hit.part == menu_hit::kRow || hit.part == menu_hit::kSlider;
-            if (drag_row >= 0) {   // (a slider held: it follows the cursor's x until let go)
-                Row& d = rows[tab_row_to_global(cur_tab, drag_row)];
+            if (drag_state.active()) {   // (a slider held: it follows the cursor's x until let go)
+                Row& d = rows[drag_state.row];
                 if (!(ptr.held & HOS_MOUSE_LEFT) || !d.value) {
-                    drag_row = -1;
-                    save();
+                    const bool was_deferred = drag_state.deferred;
+                    int commit_v = 0;
+                    if (drag_state.release(&commit_v)) {
+                        set_row(d, commit_v, 0, true);
+                        changed = true;
+                    } else if (!was_deferred) {
+                        save();
+                    }
                 } else {
-                    const int permille = hits.drag((float)mx, drag_row);
-                    const int v = permille < 0 ? *d.value : menu_hit::slider_value(permille, d.lo, d.hi, d.step);
-                    if (v != *d.value) set_row(d, v, v > *d.value ? 1 : -1, false), changed = true;
+                    row_sync(d);
+                    const int permille = hits.drag((float)mx, drag_visible_row);
+                    const int live_v = slider_current_value(d);
+                    const int v = permille < 0 ? live_v : slider_value_for(d, permille);
+                    const int prev_preview = drag_state.preview;
+                    if (drag_state.update(v, live_v)) set_row(d, v, v > live_v ? 1 : -1, false), changed = true;
+                    else if (drag_state.preview != prev_preview) changed = true;
                 }
             } else if (on_row && (moved || ptr.pressed) && hit.index != sel) {
                 // (the row under the cursor is in view already: no scrolling to it. Brought into view as the keys' choice
@@ -5515,7 +5603,7 @@ void menu_tick() {
                 // the row above: picking the Upscaler changed the Output resolution, and the menu asked to restart)
                 sel = hit.index, scrolled_to[cur_tab] = sel, changed = true;
             }
-            if ((ptr.pressed & HOS_MOUSE_LEFT) && drag_row < 0) {
+            if ((ptr.pressed & HOS_MOUSE_LEFT) && !drag_state.active()) {
                 if (hit.part == menu_hit::kTabPrev) tab_left = true;
                 else if (hit.part == menu_hit::kTabNext) tab_right = true;
                 else if (hit.part == menu_hit::kTab && hit.index != cur_tab) cur_tab = hit.index, changed = true;
@@ -5523,12 +5611,19 @@ void menu_tick() {
                     if (hit.side) press[hit.side < 0 ? 3 : 4] = true;   // (a switch's halves: Off and On)
                 } else if (hit.part == menu_hit::kSlider) {
                     Row& d = rows[tab_row_to_global(cur_tab, hit.index)];
-                    drag_row = hit.index;
-                    const int v = menu_hit::slider_value(hit.permille, d.lo, d.hi, d.step);
-                    if (v != *d.value) set_row(d, v, v > *d.value ? 1 : -1, false);
-                    changed = true;
+                    if (d.value && !row_fixed(d.value)) {
+                        row_sync(d);
+                        const int live_v = slider_current_value(d);
+                        const int v = slider_value_for(d, hit.permille);
+                        const bool defer = d.setting && d.setting->commit_on_release;
+                        drag_tab = cur_tab, drag_visible_row = hit.index;
+                        if (drag_state.begin(tab_row_to_global(cur_tab, hit.index), v, live_v, defer))
+                            set_row(d, v, v > live_v ? 1 : -1, false);
+                        changed = true;
+                    }
                 } else if (hit.part == menu_hit::kRow) {
                     Row& d = rows[tab_row_to_global(cur_tab, hit.index)];
+                    row_sync(d);
                     if (!d.value && d.cheat >= 0 && (cheat_chooses(d.cheat) || age_shown(d.cheat) || d.cheat <= 1 || d.cheat == 7) &&
                         hit.side != 0)
                         press[hit.side < 0 ? 3 : 4] = true;   // (a tool's choice: its halves as Left and Right)
@@ -5544,12 +5639,17 @@ void menu_tick() {
             if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;   // (as Esc)
             // (the wheel scrolls the rows, wherever the cursor is; it never changes a value, the selection or the tab: the
             // values change by a click on their arrows or halves, a slider's drag, Left and Right, A and Enter)
-            if (ptr.wheel && drag_row < 0) wheel_rows[cur_tab] += ptr.wheel, changed = true;
+            if (ptr.wheel && !drag_state.active()) wheel_rows[cur_tab] += ptr.wheel, changed = true;
         }
         if (tune_down && (press[12] || tab_left || tab_right || press[1] || press[2] || press[3] || press[4] || press[5] || press[7] || ptr.pressed))
             tune_cancelled = true;
         const bool tune_toggle = tune_release || pad(HOS_PAD_WEST);
         if (tune_toggle && listening == 0) tune_mode = !tune_mode, changed = true;
+        if (press[5] && drag_state.active()) {
+            if (!drag_state.deferred) save();
+            drag_state.cancel();
+            press[5] = false, changed = true;
+        }
         if (press[5] && cur_tab == TAB_MOTION) cur_tab = TAB_CONTROLS, press[5] = false, changed = true;   // (back)
         if (press[5] && cur_tab == TAB_FPS_DEV) cur_tab = TAB_GAMEPLAY, press[5] = false, changed = true;   // (back)
         if (press[5] && cur_tab == TAB_RECORDINGS) cur_tab = TAB_DEBUG, press[5] = false, changed = true;   // (back)
@@ -5571,6 +5671,10 @@ void menu_tick() {
         if ((tab_left || tab_right) && cur_tab == TAB_SPEAKER) cur_tab = TAB_AUDIO;
         if ((tab_left || tab_right) && cur_tab == TAB_SIM_TURF) cur_tab = TAB_GRAPHICS;
         if (tab_left || tab_right) {   // (the tabs shown: the Mods tab only with mods)
+            if (drag_state.active()) {
+                if (!drag_state.deferred) save();
+                drag_state.cancel();
+            }
             do cur_tab = (cur_tab + (tab_left ? TAB_COUNT - 1 : 1)) % TAB_COUNT;
             while (!tab_shown(cur_tab));
             changed = true;
@@ -5636,6 +5740,7 @@ void menu_tick() {
             if (nfc_scan_moved()) changed = true;   // (a scan ends by itself: its line drawn again: gpu/vk/menu/nfc.cpp)
             if ((press[3] || press[4] || press[7]) && r.value) {   // (Enter, or A, as Right)
                 if (press[7]) press[4] = true;
+                row_sync(r);
                 set_row(r, *r.value + (press[4] ? r.step : -r.step), press[4] ? 1 : -1);
                 changed = true;
             }
@@ -5655,9 +5760,12 @@ void menu_tick() {
         const bool now_open = open_now.load();
         if (!now_open) {
             tune_mode = false;
-            if (drag_row >= 0) save();   // (a slider let go off the window: kept now)
+            if (drag_state.active()) {
+                if (!drag_state.deferred) save();   // (a non-deferred slider let go off the window: kept now)
+                drag_state.cancel();
+            }
             sim_turf_settings_flush();
-            hover_tab = -1, drag_row = -1, mouse_read = false;
+            hover_tab = -1, mouse_read = false;
             pending = nullptr;
             edit_end(false);   // (longshot: a text field being edited, its text as it was)
         }

@@ -196,7 +196,7 @@ versions.
 | `nx2/` | The lift pipeline and `make_game.py`, which the launcher and the builders run ([build](reference/build.md)) |
 | `host/` | The Horizon OS runtime and the native NVN2 layer (`nvn_native.c`); `host/posix/` has the Win32 calls on Linux |
 | `gpu/vk/` | The Vulkan renderer, with Eden's shader recompiler and sirit ([architecture](reference/architecture.md)) |
-| `gpu/render/`, `gpu/third_party/` | The op stream the host records and the renderer replays; suyu's texture decoders |
+| `gpu/render/`, `gpu/third_party/` | The op stream the host records and the renderer replays; suyu's headers, kept whole (none of its sources is compiled) |
 | `builder/` | The command-line Builder: the Windows `--cli` program and its setup, the Linux AppImage's `AppRun` |
 | `scripts/` | Development builds, test runs, profile readers, release tooling; `scripts/linux/` (dependencies, AppImage) |
 | `tests/` | The game-free checks ([developing](developing.md#run-the-checks)) |

@@ -8,7 +8,8 @@ are stubs, and the SRW locks are real. The checks are:
   multi-bit one, and a same-core mask change updates it without moving the thread;
 - a free and reallocation on another thread cannot land between the slot check and the
   store: the store holds the slot lock, so the free waits for it;
-- a raw nonzero mask with no bit inside the virtual cores stays pinned.
+- a raw nonzero mask with no bit inside the virtual cores stays pinned;
+- a thread that never had SetThreadCoreMask stays on its ideal core, as main pinned it.
 
 python -I -B tests/test_vcore_mask0.py [--cxx clang++]
 """
@@ -112,19 +113,41 @@ static void *hos_guest_range(uint64_t a, uint64_t n) { (void)a, (void)n; return 
 @STRUCT@
 static HosThread *cur;
 @CORE@
+static void pin_by_core(HosThread *t) { (void)t; }
+static void vc_set_affinity(HosThread *t, int ideal, uint64_t mask);
+static void vc_note_mask_change(HosThread *t);
+static void vc_note_mask_change_locked(HosThread *t);
+static int vc_mask_changed(uint64_t old_mask, uint64_t new_mask);
+@AFFINITY@
 static int hos_thread_wrapper_mask(HosThread *t, uint32_t *out) {
     (void)t;
     if (!wrapper_valid) return 0;
-    *out = (uint32_t)wrapper_mask;
+    if (out) *out = (uint32_t)wrapper_mask;
     return 1;
 }
 @VCORES@
+#ifdef HAVE_MASK_SET
+static void vc_note_mask_change(HosThread *t) {   /* (the fixture's direct calls; production calls the locked form) */
+    AcquireSRWLockExclusive(&vc_lock);
+    vc_note_mask_change_locked(t);
+    ReleaseSRWLockExclusive(&vc_lock);
+}
+#endif
 static int bad;
 static void check(int ok, const char *what) { if (!ok) { printf("FAIL: %s\n", what); bad = 1; } }
 static void thread(HosThread *t, const char *name, int prio, uint64_t mask) {
     memset(t, 0, sizeof *t);
     snprintf(t->name, sizeof t->name, "%s", name);
     t->priority = prio, t->core_mask = mask, t->ideal_core = -2;
+#ifdef HAVE_MASK_SET
+    t->mask_set = 1;   /* (this helper passes an explicit SetThreadCoreMask mask) */
+#endif
+}
+/* a thread hos_thread_create made and SetThreadCoreMask never touched: mask_set stays 0 */
+static void created(HosThread *t, const char *name, int prio, int ideal) {
+    memset(t, 0, sizeof *t);
+    snprintf(t->name, sizeof t->name, "%s", name);
+    t->priority = prio, t->ideal_core = ideal;
 }
 int main(void) {
     HosThread t, other;
@@ -134,6 +157,24 @@ int main(void) {
     check(vc_allowed(&t) == 3, "mask 0 allows both host cores");
     thread(&t, "mask1", 16, 1);
     check(vc_allowed(&t) == 1, "a one-core mask allows only that core");
+
+    /* a thread that never had a mask keeps its ideal core, as main pinned it */
+    created(&t, "never", 16, 1);
+    check(vc_allowed(&t) == 2, "a never-masked thread stays on its ideal core");
+    memset(vc_owner, 0, sizeof vc_owner);
+    check(vc_free_for(&t) == 1, "a never-masked thread takes its ideal core");
+    thread(&other, "holder", 16, 2);
+    vc_owner[1] = &other;
+    check(vc_free_for(&t) == -1, "a never-masked thread waits for its ideal core");
+    memset(vc_owner, 0, sizeof vc_owner);
+
+    /* the first SetThreadCoreMask(0) turns the never-set mask into the game's no-affinity */
+    created(&t, "first", 16, 1);
+    hos_thread_affinity(&t, -1, 0);
+#ifdef HAVE_MASK_SET
+    check(t.mask_set == 1, "the first SetThreadCoreMask marks the mask set");
+#endif
+    check(vc_allowed(&t) == 3, "the first explicit mask 0 floats");
 
     thread(&t, "mask0", 16, 0);
     wrapper_valid = 1, wrapper_mask = 0, alias_now = 0;
@@ -244,6 +285,7 @@ def main():
     end = src.index("\n#else", src.index("int hos_cv_sleep(void *cv, void *lk, unsigned ms) {", start))
     fixture = (HARNESS.replace("@STRUCT@", block(src, "struct HosThread {") + "\ntypedef struct HosThread HosThread;")
                .replace("@CORE@", block(src, "int hos_thread_core(HosThread *t) {"))
+               .replace("@AFFINITY@", block(src, "void hos_thread_affinity(HosThread *t, int ideal, uint64_t mask) {"))
                .replace("@VCORES@", src[start:end]))
     compiler = shutil.which(args.cxx)
     if not compiler:
@@ -253,6 +295,8 @@ def main():
         (folder / "fixture.cpp").write_text(fixture, encoding="utf-8")
         exe = folder / ("fixture.exe" if os.name == "nt" else "fixture")
         flags = ["-pthread"] if os.name != "nt" else []
+        if "mask_set" in src:
+            flags.append("-DHAVE_MASK_SET")   # (the helper's explicit masks; main has no mask_set field)
         # (env_on_or, the switches' rule HOS_VCORES is read by: gpu/vk/compat/longshot_env.h, as hos_thread.c has it)
         env_h = ROOT / "gpu/vk/compat/longshot_env.h"
         subprocess.run([compiler, "-std=c++17", "-O1", "-w", *flags, "-include", str(env_h), str(folder / "fixture.cpp"),

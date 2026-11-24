@@ -41,6 +41,9 @@ struct Settled { Settled() {} ~Settled() {} };   // (a scope, as the real one)
 uint64_t rec_end_pos[64];   // (vk_replay.cpp: each slot's end in the recorder's ring)
 uint64_t rec_ticket[64];    // (vk_replay.cpp, RX_VK_RECORDER_PARTS: each slot's last part handed to the recorder: none here)
 void logf(const char*,...) {}
+// (vk_draw.cpp, adaptive simulated turf: a recording's demand samples read back at the slot's next begin; none taken here)
+void invalidate_mapped(VmaAllocation,uint64_t) {}
+void sim_turf_observe(uint64_t,bool,uint32_t,uint64_t) { require(false,"a simulated-turf sample read back with none taken"); }
 bool create_buffer(uint64_t size,VkBufferUsageFlags,bool,VkBuffer& buffer,VmaAllocation& allocation,void** mapped,bool=false) {
     if(fail_buffer) return false;
     buffer=handle<VkBuffer>(); auto& a=buffers[buffer]; a.cpu.assign((size_t)size,0x9a); a.visible.assign((size_t)size,0xc3);

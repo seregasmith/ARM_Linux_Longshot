@@ -73,7 +73,11 @@ jobs:
             # (libstdc++ 13, from the toolchain PPA: C++20 <format>; linked in statically)
             # Launchpad metadata connections can hang past the entire job's hour. Give each retry a real chance;
             # terminate enrollment after three minutes, then kill it if termination itself stalls.
+            # The PPA from ppa.launchpad.net, not ppa.launchpadcontent.net (add-apt-repository's choice): the latter
+            # answered 503 for hours on 2026-11-23 and every nightly's appimage failed, while the former served the same
+            # archive. Plain http is safe here: apt checks the archive's signature with the key enrollment added.
             timeout --kill-after=5s 180s add-apt-repository -y --no-update ppa:ubuntu-toolchain-r/test &&
+              sed -i 's|https://ppa\.launchpadcontent\.net/|http://ppa.launchpad.net/|g' /etc/apt/sources.list.d/*.list &&
               apt-get update &&
               apt-get install -y --no-install-recommends g++-13 libstdc++-13-dev &&
               apt-get install -y --no-install-recommends git ca-certificates curl xz-utils zstd file unzip python3 \

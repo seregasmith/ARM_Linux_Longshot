@@ -81,7 +81,7 @@ def main():
         raise SystemExit("row_fixed does not ask a module's row's own locked() (module_locked)")
     if "rows[i].setting->shown()" not in function(menu, "bool row_shown(int i) {"):
         raise SystemExit("row_shown does not ask a module's row's own shown()")
-    for call in ("ur::step_engine(", "ur::step_render(", "ur::snap_render(", "row_fixed("):
+    for call in ("ur::step_engine(", "ur::step_fixed_render(", "ur::apply_fixed_stop(", "row_fixed("):
         if call not in function(menu, "void set_row("):
             raise SystemExit("set_row does not use %s (upscaler_rows.h)" % call)
     # a row for what this PC cannot run is hidden, not shown with a "Not available here" line: Reflex and Anti-Lag 2

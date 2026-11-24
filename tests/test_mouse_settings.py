@@ -19,7 +19,7 @@ def preset_exempt(menu, value):
     table = "Row module_rows[] = {" if "&opts.%s," % value in menu[menu.index("Row module_rows[] = {"):] else "Row rows[] = {"
     start = menu.index("&opts.%s," % value, menu.index(table))
     row = menu[start:menu.index("},", start)]
-    return row.rstrip().endswith(", true") and "if (!r.preset_exempt)" in menu
+    return row.rstrip().endswith(", true") and "if (!r.preset_exempt" in menu
 
 
 def read(*parts):

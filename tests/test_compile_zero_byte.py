@@ -46,8 +46,9 @@ class ZeroByteTests(unittest.TestCase):
         src = self.folder / 'code_009.c'
         src.write_bytes(text)
         obj = self.folder / 'code_009.o'
+        # (the headers' text is bytes, as renderer_deps gives it: compile_one checks it for DEPFILE_DEPS)
         return src, obj, self.env['compile_one']((sys.executable, str(src), str(obj),
-                                                  [str(self.compiler), str(self.ran)], 'authored deps'))
+                                                  [str(self.compiler), str(self.ran)], b'authored deps'))
 
     def test_a_zero_byte_is_refused_by_its_place(self):
         src, obj, (name, _, error) = self.compile(b'void f(void) {\n    g(c,\0_b+_o),x8_);\n}\n')

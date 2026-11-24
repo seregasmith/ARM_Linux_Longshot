@@ -61,6 +61,9 @@ struct OwnSlot { OwnSlot() {} ~OwnSlot() {} };   // (a scope, as the real one)
 }   // namespace rec
 uint64_t rec_end_pos[64];   // (vk_replay.cpp: each slot's end in the recorder's ring)
 void logf(const char*, ...) {}
+// (vk_draw.cpp, adaptive simulated turf: a recording's demand samples read back at the slot's next begin; none taken here)
+void invalidate_mapped(VmaAllocation, uint64_t) {}
+void sim_turf_observe(uint64_t, bool, uint32_t, uint64_t) { require(false, "a simulated-turf sample read back with none taken"); }
 bool create_buffer(uint64_t bytes, VkBufferUsageFlags, bool, VkBuffer& buffer, VmaAllocation& allocation, void** map, bool = false) {
     FakeLock lock(fake_mutex);
     ++allocation_calls; largest_request = std::max(largest_request, bytes);
@@ -171,6 +174,7 @@ void cleanup() {
         for (auto& s : r.streams) destroy_buffer(s.buffer, s.alloc);
         for (auto p : r.extra) vkDestroyDescriptorPool(dev.device, p, nullptr);
         if (r.pool) vkDestroyDescriptorPool(dev.device, r.pool, nullptr);
+        if (r.sim_turf_readback) destroy_buffer(r.sim_turf_readback, r.sim_turf_readback_mem);   // (made at the slot's first begin)
     }
     require(buffers.empty() && pools.empty() && sets.empty(), "owned resources leaked");
 }
@@ -192,7 +196,9 @@ int main(int argc, char** argv) {
         fail_buffer = mode == "initial-buffer"; fail_map = mode == "initial-map"; fail_stream_commit = mode == "initial-commit";
         begin();
         require(res[0].streams.empty() && !cur->stream && !cur->mapped && cur->size == 0, "incomplete initial stream published");
-        require(stream_alloc(16, 256) == UINT64_MAX && buffers.empty(), "missing initial stream authorizes write/leaks");
+        // (the slot's simulated-turf readback is no stream: made before them, it is kept when only the stream fails)
+        require(stream_alloc(16, 256) == UINT64_MAX && buffers.size() == (res[0].sim_turf_readback ? 1u : 0u) &&
+                (!res[0].sim_turf_readback || buffers.count(res[0].sim_turf_readback)), "missing initial stream authorizes write/leaks");
         fail_buffer = fail_map = fail_stream_commit = false; begin(0, 2); copied(31, 17);
         require(res[0].streams.size() == 1, "initial retry must create exactly one owned stream");
     } else if (mode == "pool-retry") {

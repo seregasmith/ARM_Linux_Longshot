@@ -602,6 +602,9 @@ class Copy(Case):
                 if left:
                     (aside,) = leftovers
                     self.assertIn("Copied, but could not delete %s: delete it by hand." % aside, out)
+                    # (the player's old save: what is left of it can still be read)
+                    for p in [aside, *aside.rglob("*")]:
+                        self.assertEqual(p.stat().st_mode & stat.S_IREAD, stat.S_IREAD, p)
                 else:
                     self.assertEqual(leftovers, [])
                     self.assertNotIn("could not delete", out)

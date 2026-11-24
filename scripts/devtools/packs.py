@@ -18,7 +18,9 @@ PC's shared bases through the queue; the Test Farm runs them on its own, so thei
         hot list stay the same, and without the renderer when the change cannot reach it (renderer_untouched:
         RX_GAME_ONLY); it reads the romfs where it is (pack_env; LONGSHOT_PACK_ROMFS=copy links it, for a change that
         writes into the romfs). The pack keeps a module when an object it is linked from differs from the base's
-        (module_changed), and every other file of the game folder that differs.
+        (module_changed), and every other file of the game folder that differs. A base and its packs build with the
+        upscalers the environment names (upscaler_args: LONGSHOT_NGX_SDK, LONGSHOT_FSR, LONGSHOT_FFX_SDK,
+        LONGSHOT_XESS_SDK), the same for both.
     dev.py packs rt DIR RUNTIME [PACK...]
         A game folder to run: the base's (romfs hard-linked, none for a --romfs-in-place base; the rest copied, as clones where the file system has them: the
         game writes its caches), the packs' files over it, the shaders prepared again when a pack changed the translator,
@@ -264,10 +266,13 @@ def renderer_untouched(paths, lift_files, environ):
 
 def build_scripts(root):
     """nx2/build.py and every Python module it imports (as make_game.lift_sources finds the lift's: a64-kit's folders, then nx2/),
-    and nx2/make_game.py, which sets build.py's environment (the hot order, the profile)"""
+    and nx2/make_game.py, which sets build.py's environment (the hot order, the profile). Of the modules it imports, only what
+    they import at their top: build.py takes chunks.py's cut, and not the functions of it that import the lift's oot_patches.py
+    and poll.py, nor nup.py's reading of a .nup"""
     kit = os.path.join(root, "third_party", "a64-kit")
     path = [os.path.join(kit, d) for d in ("rt", "hos", "tools", "lift")] + [os.path.join(root, "nx2")]
-    todo, seen = [os.path.join(root, "nx2", "build.py")], set()
+    build = os.path.join(root, "nx2", "build.py")
+    todo, seen = [build], set()
     while todo:
         f = todo.pop()
         if f in seen:
@@ -275,13 +280,16 @@ def build_scripts(root):
         seen.add(f)
         with open(f, "rb") as src:
             tree = ast.parse(src.read(), f)
-        for node in ast.walk(tree):
+        nodes = [tree]
+        while nodes:
+            node = nodes.pop()
+            names = []
             if isinstance(node, ast.Import):
                 names = [n.name for n in node.names]
             elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
                 names = [node.module]
-            else:
-                continue
+            elif f == build or not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                nodes += ast.iter_child_nodes(node)
             for name in names:
                 for d in path:
                     m = os.path.join(d, name.split(".")[0] + ".py")
@@ -470,14 +478,25 @@ def prepare(game, b, required=True):
     if b.get("romfs_in_place") and not os.path.isdir(os.path.join(game, "romfs")):   # (a --romfs-in-place base, its runtimes)
         cmd += ["--romfs", b["romfs"]]
     print("+ " + " ".join([GAME] + cmd[1:]), flush=True)
+    # (supervised, as make_game.py's own: a run that dies or hangs inside one shader's compile is started again without that
+    # shader, nx2/prepare_supervisor.py; a tree from before it runs the game once, as before)
+    supervisor = getattr(mg, "prepare_supervisor", None)
+    decision = None
+    env = mg.game_env()
     try:
-        code = subprocess.run(cmd, cwd=game, check=required, env=mg.game_env()).returncode
+        if supervisor:
+            code, decision = supervisor.supervise(
+                lambda extra: subprocess.run(cmd + extra, cwd=game, check=False, env=env).returncode, os.path.join(game, "cache"))
+        else:
+            code = subprocess.run(cmd, cwd=game, check=False, env=env).returncode
     except OSError as e:   # (the game could not start: a missing DLL, launch denied)
         if required:
             raise
         code, why = None, str(e)
+    if code and required:   # (a runtime: a failed preparation stops, as subprocess.run's check did)
+        raise subprocess.CalledProcessError(code, cmd)
     if code:
-        why = PREPARE_FAILED.get(code, "the game stopped with exit status %d" % code)
+        why = (decision and decision.why) or PREPARE_FAILED.get(code, "the game stopped with exit status %d" % code)
     if code != 0:
         print("the shaders were not prepared now (%s): the game prepares them at its first start" % why, flush=True)
         return why
@@ -504,9 +523,29 @@ def runtime_romfs(rt):
     return romfs if isinstance(romfs, str) and not os.path.isdir(os.path.join(rt, "romfs")) else None
 
 
+def upscaler_args(environ):
+    """make_game.py's upscaler options for a base's or a pack's build, from the environment, which make_game.py does not
+    take them from itself (the Test Farm builds with them when a tester accepted the vendor's license):
+    - LONGSHOT_FSR=1: AMD FSR 4 (--fsr: make_game.py clears the variable otherwise, and build.py reads it). A renderer-only
+      pack builds with build.py, which reads it as it is.
+    - LONGSHOT_FFX_SDK with LONGSHOT_FSR=1, LONGSHOT_XESS_SDK: AMD's FSR runtime and Intel's XeSS library, fetched into those
+      folders by scripts/fetch.py under the vendor's license, accepted then, go into the game folder (--fetch-*-runtime: each
+      file is there and checked, so nothing is downloaded).
+    NVIDIA DLSS needs nothing here: make_game.py and build.py read LONGSHOT_NGX_SDK, which run() passes on"""
+    args = []
+    if environ.get("LONGSHOT_FSR", "0") not in ("", "0"):
+        args.append("--fsr")
+        if environ.get("LONGSHOT_FFX_SDK"):
+            args += ["--fetch-fsr-runtime", "--accept-amd-license"]
+    if environ.get("LONGSHOT_XESS_SDK"):
+        args += ["--fetch-xess-runtime", "--accept-intel-license"]
+    return args
+
+
 def make_game(tree, b, work, game, env):
     run([sys.executable, "-I", "nx2/make_game.py", "--romfs", b["romfs"], "--exefs", b["exefs"], "--work", work, "--out", game,
-         "--language", b.get("language", "en-US")], tree, dict(env, LONGSHOT_KEEP_BUILD_FILES="1"))
+         "--language", b.get("language", "en-US")] + upscaler_args(dict(os.environ, **env)), tree,
+        dict(env, LONGSHOT_KEEP_BUILD_FILES="1"))
 
 
 def read_base(d):

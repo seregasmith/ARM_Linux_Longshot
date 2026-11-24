@@ -133,7 +133,22 @@ static BOOL ReadFile(HANDLE h, void *buf, DWORD n, DWORD *got, OVERLAPPED *ov) {
 }
 static BOOL CloseHandle(HANDLE h) { return fclose((FILE *)h) == 0; }
 #endif
-typedef struct { HANDLE h; int writable; char path[HOS_FS_PATH]; } Handle;
+/* (a staged save's: this romfs mount is never one (host_path answers 1, not 2), so OpenFile takes none of these;
+   tests/test_fs_save_commit.py checks them) */
+#ifndef _WIN32
+typedef struct { void *p; } SRWLOCK;
+static void AcquireSRWLockExclusive(SRWLOCK *l) { (void)l; }
+static void ReleaseSRWLockExclusive(SRWLOCK *l) { (void)l; }
+#endif
+#define R_OUT_OF_MEMORY 0xCA01
+typedef struct { int writers; } SaveNote;
+typedef struct { char work[HOS_FS_PATH]; int handles, writers; } Save;
+static SRWLOCK save_lock;
+static Save *save_for_path(const char *path, char *rel) { (void)path, (void)rel; return NULL; }
+static int save_relative(const char *p) { (void)p; return 0; }
+static int save_path(char *out, const char *root, const char *rel) { (void)out, (void)root, (void)rel; return 0; }
+static SaveNote *save_note(Save *s, const char *rel, char kind) { (void)s, (void)rel, (void)kind; return NULL; }
+typedef struct { HANDLE h; int writable; char path[HOS_FS_PATH]; Save *save; char relative[HOS_FS_PATH]; } Handle;
 static Handle *opened;
 static uint64_t new_handle(Handle *h) { opened = h; return 7; }
 static int writes_open;

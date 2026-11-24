@@ -166,7 +166,8 @@ int main(int argc, char** argv) {
     reset_area();
     assert(save_failed && can_reset_area() && config_text() == before_reset);
     assert(get<int>(market + 0x70) == 4 && get<float>(market + 0x6c) == 3.0f);
-    assert(std::filesystem::remove(blocked_temp));
+    // (the failed save removes its temp path: std::filesystem::remove takes the empty directory with it, DeleteFileW does not)
+    assert(!std::filesystem::exists(blocked_temp) || std::filesystem::remove(blocked_temp));
     reset_area();
     assert(!save_failed && !can_reset_area());
     assert(get<int>(market + 0x70) == 2 && get<uint8_t>(market + 0xb1) == 0);

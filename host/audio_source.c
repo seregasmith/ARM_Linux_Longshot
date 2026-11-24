@@ -238,29 +238,84 @@ int hos_audio_source_trace(void) {
     return on;
 }
 
-/* The class of the asset whose samples start at the guest address `data` (a wave buffer's), with its checksum in *crc.
-   -1 when no asset's samples start there (the buffer continues a streamed sound, or is no archive's): the voice keeps
-   the class it had. */
-int hos_audio_source_of(uint64_t data, uint32_t *crc) {
-    if (!hos_audio_source_ready() || !data) return -1;
-    size_t before = BWAV_MAX_BEFORE;   /* (as far as the game's memory is mapped before it) */
-    while (before >= BWAV_ALIGN * 2 && (data < before || !hos_mem_region(data - before, before))) before >>= 1;
-    if (before < BWAV_ALIGN * 2) return -1;
+/* How many of the `before` bytes just in front of `data` the host may read, from `data` back (committed, readable pages) */
+static size_t readable_before(uint64_t data, size_t before) {
 #ifdef _WIN32
-    /* Only scan committed, readable pages immediately preceding the samples. */
-    size_t readable = 0;
-    while (readable < before) {
+    size_t span_ok = 0;
+    while (span_ok < before) {
         MEMORY_BASIC_INFORMATION info;
-        const uintptr_t at = (uintptr_t)GP(data - readable) - 1;
+        const uintptr_t at = (uintptr_t)GP(data - span_ok) - 1;
         if (!VirtualQuery((const void *)at, &info, sizeof info) || info.State != MEM_COMMIT ||
             (info.Protect & (PAGE_NOACCESS | PAGE_GUARD)) || !(info.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
                 PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) break;
         const size_t span = at - (uintptr_t)info.BaseAddress + 1;
-        readable += span < before - readable ? span : before - readable;
+        span_ok += span < before - span_ok ? span : before - span_ok;
     }
-    before = readable;
+    return span_ok;
+#else
+    (void)data;
+    return before;
 #endif
-    if (before < BWAV_ALIGN * 2) return -1;
-    if (!audio_source_find((const uint8_t *)GP(data), before, crc)) return -1;
+}
+
+/* What the searches found, by the address of the samples. A wave's channel starts, taken from its header's own table when
+   one of its channels is found: its later channels lie behind the first one's samples, up to megabytes from the header,
+   and a sound plays from the same memory each time it plays. An entry is trusted only while the same wave's header (its
+   magic and checksum) is still in front of it: the memory may hold another wave by then. And (back 0) a place where the
+   whole search found no header: a streamed sound's buffers, which come round again in its ring. One caller at a time
+   (host/nn_audio.c's audio lock). */
+enum { KNOWN = 512 };
+static struct { uint64_t data; uint32_t back, crc; } known[KNOWN];
+static unsigned known_slot(uint64_t data) { return (unsigned)(((data >> 6) * 0x9E3779B97F4A7C15ull) >> 55) & (KNOWN - 1); }
+
+/* (a header found `back` bytes in front of `data`: every channel's start kept, by its table) */
+static void known_channels(uint64_t data, size_t back, uint32_t crc) {
+    const uint8_t *h = (const uint8_t *)GP(data - back);
+    const unsigned channels = audio_source_u16(h + BWAV_CHANNELS);
+    for (unsigned ch = 0; ch < channels; ch++) {
+        const uint32_t off = audio_source_u32(h + BWAV_HEADER + ch * BWAV_CHANNEL + BWAV_CHANNEL_DATA);
+        if (off < BWAV_ALIGN * 2) continue;
+        const uint64_t start = data - back + off;
+        const unsigned s = known_slot(start);
+        known[s].data = start, known[s].back = off, known[s].crc = crc;
+    }
+}
+
+/* The class of the asset whose samples start at the guest address `data` (a wave buffer's), with its checksum in *crc.
+   -1 when no asset's samples start there (the buffer continues a streamed sound, or is no archive's): the voice keeps
+   the class it had. Asked for every buffer the game queues, so it reads little: a place seen before, else the few spots
+   right behind a header where a wave's first channel starts (BWAV_FIRST_MAX); a place found by neither is searched as far
+   as a later channel's header can be (BWAV_MAX_BEFORE), once: a streamed sound's ring, which has no header, then costs a
+   look in the table each time it comes round. */
+int hos_audio_source_of(uint64_t data, uint32_t *crc) {
+    if (!hos_audio_source_ready() || !data) return -1;
+    const unsigned slot = known_slot(data);
+    const int no_header = known[slot].data == data && !known[slot].back;
+    if (known[slot].data == data && known[slot].back) {   /* (only its header is read: mapped and readable) */
+        const uint64_t at = data - known[slot].back;
+        if (data >= known[slot].back && hos_mem_region(at, BWAV_HEADER) &&
+            (at >> 12 == data >> 12 || readable_before(at + BWAV_HEADER, BWAV_HEADER) == BWAV_HEADER)) {
+            const uint8_t *h = (const uint8_t *)GP(at);
+            if (audio_source_is_bwav(h, known[slot].back) && audio_source_u32(h + BWAV_CRC) == known[slot].crc) {
+                *crc = known[slot].crc;
+                return audio_source_get(&as_table, *crc);
+            }
+        }
+        known[slot].data = 0;
+    }
+    /* (a wave's first channel: right behind its header; the samples' own page is readable, the game just queued them) */
+    size_t before = BWAV_FIRST_MAX;
+    while (before >= BWAV_ALIGN * 2 && (data < before || !hos_mem_region(data - before, before))) before -= BWAV_ALIGN;
+    if (before >= BWAV_ALIGN * 2 && (data - before) >> 12 != data >> 12) before = readable_before(data, before);
+    size_t back = before >= BWAV_ALIGN * 2 ? audio_source_find_back((const uint8_t *)GP(data), before, crc) : 0;
+    if (!back && !no_header) {   /* (a later channel's header, as far as it can be) */
+        before = BWAV_MAX_BEFORE;
+        while (before >= BWAV_ALIGN * 2 && (data < before || !hos_mem_region(data - before, before))) before >>= 1;
+        if (before >= BWAV_ALIGN * 2) before = readable_before(data, before);
+        if (before >= BWAV_ALIGN * 2) back = audio_source_find_back((const uint8_t *)GP(data), before, crc);
+        if (!back) known[slot].data = data, known[slot].back = 0;   /* (none here: not searched that far again) */
+    }
+    if (!back) return -1;
+    known_channels(data, back, *crc);
     return audio_source_get(&as_table, *crc);
 }

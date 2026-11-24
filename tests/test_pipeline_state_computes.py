@@ -255,6 +255,15 @@ def check_sent(tool):
             raise SystemExit("the sent lists' merge: %d records, programs %s" % (len(recs), tool.compute_keys(recs)))
 
 
+def first_argument(code, at):
+    """The text from at to the first comma outside brackets"""
+    end, depth = at, 0
+    while depth or code[end] not in ",)":
+        depth += (code[end] in "([{") - (code[end] in ")]}")
+        end += 1
+    return " ".join(code[at:end].split())
+
+
 def check_source(draw):
     """precompile_run keeps ready the plan's programs; a compute record is written by state_record_compute alone, at a dispatch"""
     def body_of(signature):
@@ -266,8 +275,16 @@ def check_source(draw):
                  "}, plan.all, true);"):
         if line not in pre:
             raise SystemExit("precompile_run does not take its compute programs from computes_plan: no `%s`" % line)
-    if draw.count('getenv("RX_VK_PRECOMPILE_COMPUTES")') != 1 or draw.count("computes_plan(precompile_computes_which(),") != 2:
-        raise SystemExit("a compute plan is made from something other than precompile_computes_which")
+    # (every call, however many: precompile_run's, the index's for a preparation left out, ...; and the warm plan's, which takes
+    # its "all" only when precompile_computes_which names nothing)
+    code = re.sub(r"//[^\n]*", "", draw)
+    asked = [first_argument(code, m.end()) for m in re.finditer(r"(?<![\w:])computes_plan\(", code)]
+    which = "precompile_computes_which()"
+    warm = body_of("const ComputePlan& compute_warm_plan() {")
+    if (draw.count('getenv("RX_VK_PRECOMPILE_COMPUTES")') != 1 or asked.count(which) < 2
+            or sorted(set(asked)) != sorted({"const char* which", 'which ? which : "all"', which})
+            or asked.count('which ? which : "all"') != 1 or "const char* which = %s;" % which not in warm):
+        raise SystemExit("a compute plan is made from something other than precompile_computes_which: %s" % asked)
     if "computes_read()" in pre or "state_record_compute(" in pre or "state_record_compute(" in body_of("void state_list_prepare("):
         raise SystemExit("precompile_run reads the learned list past the plan, or the prepare writes compute records")
     calls = [m.start() for m in re.finditer(r"(?<![\w:])state_record_compute\(", draw)]

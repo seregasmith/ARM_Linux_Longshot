@@ -6,11 +6,19 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
+#ifdef FSR4_MODELS_TEST
+bool fsr4_test_protect(void* slot, bool writable, uintptr_t* protection);
+#endif
 
 namespace mkwvk {
 namespace fsr4_models {
@@ -312,8 +320,98 @@ struct HookedProvider {
 
 HookedProvider g_hooked[kMaxHooked];
 std::atomic<int> g_hooked_count{0};
+std::atomic<bool> g_released{false};   // (release: AMD's own answers whatever is selected)
 std::atomic<int> g_model{SELECT_AUTO};
 std::atomic<int> g_native_model{MODEL_UNKNOWN};
+
+/// The libraries whose layout was read and run. FSR SDK v2.4.0's signed Vulkan upscaler (FSR 4.1.2, file version
+/// 4.1.2.4555): the SHA-256 scripts/fetch.py pins for Kits/FidelityFX/signedbin/amd_fidelityfx_upscaler_vk.dll.
+const KnownLibrary kKnown[] = {
+    {"4a7e895af6e0b615d40a84d59eb8c2b1054ad91cdd0c739567940270d51bdab7", "FSR SDK 2.4 (FSR 4.1.2)"},
+};
+
+/// What every hooked provider's IsSupported is: AMD's own answer with Auto (and after release), yes for the Lite provider
+/// alone with Lite. AMD's loader walks the providers in model order and takes the first yes, so the first yes of an Auto
+/// walk is the model AMD picks for this GPU.
+bool delegating_is_supported(void* self, void* device) {
+    void** vtable = self ? *static_cast<void***>(self) : nullptr;
+    const int n = g_hooked_count.load(std::memory_order_acquire);
+    for (int i = 0; i < n; i++) {
+        const HookedProvider& h = g_hooked[i];
+        if (h.vtable != vtable) continue;
+        if (g_model.load(std::memory_order_relaxed) == SELECT_LITE && !g_released.load(std::memory_order_relaxed))
+            return h.model == MODEL_LITE;
+        const bool yes = h.original(self, device);
+        if (yes) record_native_model(h.model);
+        return yes;
+    }
+    return false;
+}
+
+struct Sha256 {
+    uint32_t h[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+    uint8_t block[64] = {};
+    size_t fill = 0;
+    uint64_t bytes = 0;
+
+    static uint32_t rotr(uint32_t x, int n) { return (x >> n) | (x << (32 - n)); }
+
+    void compress(const uint8_t* p) {
+        static const uint32_t k[64] = {
+            0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+            0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+            0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+            0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+            0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+            0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+            0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+            0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
+        uint32_t w[64];
+        for (int i = 0; i < 16; i++)
+            w[i] = (uint32_t)p[i * 4] << 24 | (uint32_t)p[i * 4 + 1] << 16 | (uint32_t)p[i * 4 + 2] << 8 | p[i * 4 + 3];
+        for (int i = 16; i < 64; i++) {
+            const uint32_t s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
+            const uint32_t s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+        }
+        uint32_t v[8];
+        std::memcpy(v, h, sizeof v);
+        for (int i = 0; i < 64; i++) {
+            const uint32_t s1 = rotr(v[4], 6) ^ rotr(v[4], 11) ^ rotr(v[4], 25);
+            const uint32_t t1 = v[7] + s1 + ((v[4] & v[5]) ^ (~v[4] & v[6])) + k[i] + w[i];
+            const uint32_t s0 = rotr(v[0], 2) ^ rotr(v[0], 13) ^ rotr(v[0], 22);
+            const uint32_t t2 = s0 + ((v[0] & v[1]) ^ (v[0] & v[2]) ^ (v[1] & v[2]));
+            v[7] = v[6], v[6] = v[5], v[5] = v[4], v[4] = v[3] + t1, v[3] = v[2], v[2] = v[1], v[1] = v[0], v[0] = t1 + t2;
+        }
+        for (int i = 0; i < 8; i++) h[i] += v[i];
+    }
+
+    void add(const void* data, size_t size) {
+        const uint8_t* p = static_cast<const uint8_t*>(data);
+        bytes += size;
+        while (size) {
+            const size_t take = std::min(size, sizeof block - fill);
+            std::memcpy(block + fill, p, take);
+            fill += take, p += take, size -= take;
+            if (fill == sizeof block) compress(block), fill = 0;
+        }
+    }
+
+    std::string hex() {
+        const uint64_t bits = bytes * 8;
+        const uint8_t one = 0x80, zero = 0;
+        add(&one, 1);
+        while (fill != 56) add(&zero, 1);
+        uint8_t len[8];
+        for (int i = 0; i < 8; i++) len[i] = (uint8_t)(bits >> (56 - i * 8));
+        add(len, 8);
+        static const char* const digits = "0123456789abcdef";
+        std::string out;
+        for (uint32_t word : h)
+            for (int shift = 28; shift >= 0; shift -= 4) out += digits[(word >> shift) & 15];
+        return out;
+    }
+};
 
 }  // namespace
 
@@ -428,19 +526,162 @@ int parse_model_env(const char* value) {
     return -1;
 }
 
-/// Decline to patch an unverified private ABI.
-bool install(uintptr_t module_base, const ScanResult& result) {
-    (void)module_base;
-    (void)result;
-    // The shared vtable shape is not a fingerprint of the private ABI.
+const KnownLibrary* known_library(const char* sha256_hex) {
+    if (!sha256_hex || std::strlen(sha256_hex) != 64) return nullptr;
+    for (const KnownLibrary& k : kKnown) {
+        bool same = true;
+        for (int i = 0; i < 64 && same; i++) {
+            const char c = sha256_hex[i];
+            same = (c >= 'A' && c <= 'F' ? (char)(c - 'A' + 'a') : c) == k.sha256[i];
+        }
+        if (same) return &k;
+    }
+    return nullptr;
+}
+
+std::string sha256_hex(const void* data, size_t size) {
+    Sha256 s;
+    s.add(data, size);
+    return s.hex();
+}
+
+std::string sha256_file(const std::string& path) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return "";
+    Sha256 s;
+    std::vector<uint8_t> buf(1 << 16);
+    size_t n;
+    while ((n = std::fread(buf.data(), 1, buf.size(), f)) > 0) s.add(buf.data(), n);
+    const bool failed = std::ferror(f) != 0;
+    std::fclose(f);
+    return failed ? "" : s.hex();
+}
+
+KnownModule load_known(const std::string& dir) {
+    KnownModule out;
+#ifdef _WIN32
+    const char* const file = "amd_fidelityfx_upscaler_vk.dll";
+    const std::string path = dir + "\\" + file;
+    out.scan.name = file;
+    const std::string sha = sha256_file(path);
+    if (sha.empty()) {
+        out.note = std::string("no ") + file + " beside the loader: AMD's own choice of model";
+        return out;
+    }
+    const KnownLibrary* library = known_library(sha.c_str());
+    if (!library) {
+        out.note = std::string(file) + " is not a library whose layout is known (SHA-256 " + sha.substr(0, 16) +
+                   "...): not scanned, AMD's own choice of model";
+        return out;
+    }
+    // (a copy already loaded under this name is whatever the process loaded first, not necessarily this file: left alone)
+    if (GetModuleHandleA(file)) {
+        out.note = std::string(file) + " was loaded before its file was checked: AMD's own choice of model";
+        return out;
+    }
+    HMODULE m = LoadLibraryExA(path.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    if (!m) {
+        out.note = std::string(file) + " did not load (Windows error " + std::to_string((unsigned long)GetLastError()) +
+                   "): AMD's own choice of model";
+        return out;
+    }
+    // (the module loaded is the file hashed: its own path, and that file's SHA-256 again now that it is mapped)
+    char loaded[MAX_PATH] = {};
+    const DWORD len = GetModuleFileNameA(m, loaded, sizeof loaded);
+    HMODULE pinned = nullptr;
+    if (!len || len >= sizeof loaded || sha256_file(loaded) != sha ||
+        !GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_PIN, loaded, &pinned) || pinned != m) {
+        FreeLibrary(m);
+        out.note = std::string(file) + " could not be tied to the file that was checked: AMD's own choice of model";
+        return out;
+    }
+    const uintptr_t base = reinterpret_cast<uintptr_t>(m);
+    const uint32_t pe = read_u32(base + 0x3C);
+    out.scan.base = base;
+    out.scan.size = read_u32(base + pe + 24 + 56);   // (IMAGE_OPTIONAL_HEADER64::SizeOfImage)
+    out.scan.result = scan_image(m, out.scan.size);
+    out.library = library;
+    out.note = std::string(file) + " is " + library->what + "'s (SHA-256 checked), loaded from the loader's folder and pinned";
+#else
+    (void)dir;
+#endif
+    return out;
+}
+
+bool known_module_is_loaders(const KnownModule& known) {
+#ifdef _WIN32
+    if (known.library && known.scan.base &&
+        reinterpret_cast<uintptr_t>(GetModuleHandleA(known.scan.name.c_str())) == known.scan.base)
+        return true;
+#else
+    (void)known;
+#endif
+    release();
     return false;
 }
 
+bool install(uintptr_t module_base, const ScanResult& result, const KnownLibrary* library) {
+    // (the shared vtable shape is not a fingerprint of the private ABI: the file's SHA-256 is, and only the caller that
+    // hashed the file it loaded can name the library)
+    bool known = false;
+    for (const KnownLibrary& k : kKnown) known = known || library == &k;
+    if (!known || !module_base || !result.shape_ok || result.providers.empty()) return false;
+    if (result.providers.size() > kMaxHooked || g_hooked_count.load(std::memory_order_acquire) > 0) return false;
+    for (const Provider& p : result.providers)
+        if (!p.vtable || !p.is_supported || p.model == MODEL_UNKNOWN ||
+            reinterpret_cast<bool (*)(void*, void*)>(p.vtable[2]) != p.is_supported)
+            return false;   // (a vtable that changed under the scan: nothing written)
+    // Slots may share a page: restore in reverse order to recover its original protection.
+    uintptr_t before[kMaxHooked] = {};
+    auto protect = [](void* slot, bool writable, uintptr_t* saved) {
+#ifdef FSR4_MODELS_TEST
+        return fsr4_test_protect(slot, writable, saved);
+#elif defined(_WIN32)
+        DWORD old = 0;
+        const bool ok = VirtualProtect(slot, sizeof(void*), writable ? PAGE_READWRITE : (DWORD)*saved, &old) != 0;
+        if (writable && ok) *saved = old;
+        return ok;
+#else
+        (void)slot; (void)writable; (void)saved;
+        return true;
+#endif
+    };
+    size_t acquired = 0;
+    for (; acquired < result.providers.size(); acquired++)
+        if (!protect(&result.providers[acquired].vtable[2], true, &before[acquired])) break;
+    if (acquired != result.providers.size()) {
+        while (acquired > 0) {
+            --acquired;
+            protect(&result.providers[acquired].vtable[2], false, &before[acquired]);
+        }
+        return false;
+    }
+    for (size_t i = 0; i < result.providers.size(); i++) {
+        const Provider& p = result.providers[i];
+        g_hooked[i].vtable = p.vtable, g_hooked[i].original = p.is_supported, g_hooked[i].model = p.model;
+    }
+    g_hooked_count.store((int)result.providers.size(), std::memory_order_release);
+    for (const Provider& p : result.providers)
+        p.vtable[2] = reinterpret_cast<void*>(&delegating_is_supported);
+    bool restored = true;
+    while (acquired > 0) {
+        --acquired;
+        if (!protect(&result.providers[acquired].vtable[2], false, &before[acquired])) restored = false;
+    }
+    if (!restored) release();   // (the hooks remain valid, but only delegate to AMD)
+    return restored;
+}
+
+void release() {
+    g_released.store(true, std::memory_order_relaxed);
+}
+
 bool hook_installed() {
-    return g_hooked_count.load(std::memory_order_acquire) > 0;
+    return !g_released.load(std::memory_order_relaxed) && g_hooked_count.load(std::memory_order_acquire) > 0;
 }
 
 bool has_model(Model model) {
+    if (g_released.load(std::memory_order_relaxed)) return false;
     const int n = g_hooked_count.load(std::memory_order_acquire);
     for (int i = 0; i < n; i++)
         if (g_hooked[i].model == model) return true;

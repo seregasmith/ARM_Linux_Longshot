@@ -134,6 +134,17 @@ test('ReShade actions and user selector are accounted for', () => {
   assert.throws(() => readGraphicsSettings(page.replaceAll('with User selected', 'when selected'), menu), /no condition for User preset file/);
 });
 
+test('the registered Simulated turf page row takes its named help; another page row fails', () => {
+  const setting = readGraphicsSettings(page, menu).flatMap(group => group.settings).find(setting => setting.name === 'Simulated turf');
+  assert.match(setting.summary, /fluid simulation/);
+  assert.equal(setting.id, 'setting-simulated-turf');
+  // (gpu/vk/menu/sim_turf.cpp registers it: its key, a Page row with no option pointer, and the page it opens)
+  for (const [from, to] of [['.opens = "sim_turf_settings"', '.opens = "other_page"'], ['.key = "@Simulated turf"', '.key = "@Other turf"']]) {
+    assert(menu.includes(from), from);
+    assert.throws(() => readGraphicsSettings(page, menu.replace(from, to)), /coverage mismatch at Simulated turf/);
+  }
+});
+
 test('the menu table reader joins C strings, reads escapes and skips comments', () => {
   const rows = readMenuRows(`Row rows[] = {
     // {TAB_GRAPHICS, "Commented out", &opts.x},

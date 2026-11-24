@@ -72,6 +72,8 @@ def proc_start(pid):
     except (OSError, ValueError, IndexError):
         if sys.platform == "linux":
             return None
+    if os.name == "nt":   # (common.WINDOWS patched off: os.kill(pid, 0) here is a Ctrl+C to every process of the console)
+        return _win_start(pid)
     try:   # (no /proc: alive or not is all there is to say)
         os.kill(pid, 0)
     except PermissionError:

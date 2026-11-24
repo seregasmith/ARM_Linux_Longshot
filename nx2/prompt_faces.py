@@ -54,6 +54,12 @@ _DUALSENSE = _parts(1158, ((442, 334, 44), (716, 334, 44)), (312, 213, 45, 21), 
 # way to RB without a crossing
 _XBOX = _parts(1158, ((357, 202, 44), (695, 335, 44)), (462, 346, 41, 17), ((805, 146), (746, 205), (865, 206), (805, 260), 28),
                (516, 203, 18), (581, 116, 31), ((425, 39), (385, 69)))
+# the Steam Deck face's picture, drawn by hand (nx2/prompt_faces/steamdeck/Controller_Pro.png): its parts, and its lines
+# for ControllerGuide_Pro_02 to 04 were drawn to them (L2/R2 sit inward of View/Menu so their lines don't cross View/Menu)
+_STEAMDECK = _parts(1162, ((287, 241, 35), (874, 241, 35)), (206, 228, 20, 9),
+                    ((955, 200), (930, 225), (981, 225), (955, 250), 12), (255, 196, 8), (303, 409, 10),
+                    ((272, 162), (212, 162)), screen=(355, 197, 810, 482), ltrackpad=(231, 288, 326, 383),
+                    rtrackpad=(834, 288, 929, 383), more=(836, 399, 883, 418))
 
 FACES = {
     "xbox": dict(
@@ -96,9 +102,7 @@ FACES = {
             ("face", .935, .090, .036, "north"), ("face", .935, .270, .036, "south"), ("face", .900, .180, .036, "west"),
             ("face", .970, .180, .036, "east"), ("small", .125, .075, .024, "back"), ("small", .875, .075, .024, "start"),
             ("small", .150, .755, .030, "guide"), ("small", .850, .755, .030, None)]),
-        parts=_parts(1159, ((242, 230, 27), (917, 230, 27)), (157, 222, 25, 9), ((1009, 180), (974, 215), (1043, 215), (1009, 249), 16),
-                     (209, 174, 9), (234, 437, 12), ((115, 153), (165, 144)), screen=(294, 159, 866, 491),
-                     ltrackpad=(169, 290, 279, 394), rtrackpad=(880, 290, 990, 394), more=(908, 420, 942, 454)),
+        parts=_STEAMDECK,
         icons=dict(_DPAD, south="button_a", east="button_b", west="button_x", north="button_y", back="button_view",
                    start="button_options", lshoulder="button_l1", rshoulder="button_r1", ltrigger="button_l2",
                    rtrigger="button_r2")),

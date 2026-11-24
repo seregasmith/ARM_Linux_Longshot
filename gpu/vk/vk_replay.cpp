@@ -4367,6 +4367,8 @@ struct Frame {
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkFence done = VK_NULL_HANDLE;
+    VkSemaphore acquired = VK_NULL_HANDLE;
+    VkSemaphore retired_acquire = VK_NULL_HANDLE;
 };
 Frame frames[kPresentSlotsMax];   // (present_image uses present_slots_for of them)
 uint32_t frame_index = 0;
@@ -6235,6 +6237,9 @@ int present_slots_for(int framegen, bool two_sets) {
 // acquire_fence; a copy goes to the queue only once the image is free; an image not free in kImageFreeNs is held (frames are
 // not shown meanwhile, the game goes on) and looked at again, without waiting, at each present until it is
 static VkFence acquire_fence = VK_NULL_HANDLE;
+static VkSemaphore acquire_semaphore = VK_NULL_HANDLE;
+struct RetiredAcquire { VkFence fence; VkSemaphore semaphore; };
+static std::vector<RetiredAcquire> retired_acquires;
 struct HeldImage {
     bool held = false;
     uint32_t index = 0;
@@ -6327,6 +6332,12 @@ static std::vector<VkFence> fences_let_go;
 static void held_image_drop() {
     if (held_image.ahead) image_waits.ahead_dropped++;
     held_image.held = false, held_image.ahead = false;
+    if (acquire_semaphore) {
+        retired_acquires.push_back({acquire_fence, acquire_semaphore});
+        acquire_fence = VK_NULL_HANDLE;
+        acquire_semaphore = VK_NULL_HANDLE;
+        return;
+    }
     if (image_free(0)) return;
     if (fences_let_go.size() < 8) fences_let_go.push_back(acquire_fence);
     acquire_fence = VK_NULL_HANDLE;
@@ -6334,7 +6345,22 @@ static void held_image_drop() {
 /// Whether there is an unsignaled acquire fence to acquire with: when held_image_drop let the last one go, one it let go before
 /// and the engine has signaled since (reset here), else a new one
 static bool acquire_fence_ready() {
+#ifdef _WIN32
+    // Streamline's NVIDIA acquire hook forwards a signal semaphore even for a fence-only acquire.
+    if (dev.props.vendorID == 0x10de && !acquire_semaphore) {
+        VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+        if (vkCreateSemaphore(dev.device, &si, nullptr, &acquire_semaphore) != VK_SUCCESS) return false;
+    }
+#endif
     if (acquire_fence) return true;
+    for (auto& retired : retired_acquires) {
+        if (!retired.fence) continue;
+        if (vkWaitForFences(dev.device, 1, &retired.fence, VK_TRUE, 0) != VK_SUCCESS) continue;
+        if (vkResetFences(dev.device, 1, &retired.fence) != VK_SUCCESS) continue;
+        acquire_fence = retired.fence;
+        retired.fence = VK_NULL_HANDLE;   // (the fence signaled; the semaphore still needs its own wait)
+        return true;
+    }
     for (auto it = fences_let_go.begin(); it != fences_let_go.end(); ++it) {
         VkFence was = *it;
         VkResult r;
@@ -6353,6 +6379,26 @@ static bool acquire_fence_ready() {
     if (vkCreateFence(dev.device, &fi, nullptr, &made) != VK_SUCCESS) return false;
     acquire_fence = made;
     return true;
+}
+
+// A retired swapchain may never release its held image. Only consume the old signal after the CPU fence is ready,
+// and destroy the semaphore once the consuming copy's fence says its wait has completed.
+static VkSemaphore take_retired_acquire() {
+    if (retired_acquires.empty()) return VK_NULL_HANDLE;
+    // Probe at most one old acquire per copy, including when the window system never signals some of them.
+    static size_t next = 0;
+    next %= retired_acquires.size();
+    const auto it = retired_acquires.begin() + next;
+    if (it->fence) {
+        const VkResult ready = vkWaitForFences(dev.device, 1, &it->fence, VK_TRUE, 0);
+        if (ready == VK_ERROR_DEVICE_LOST) device_lost();
+        if (ready != VK_SUCCESS) { ++next; return VK_NULL_HANDLE; }
+        if (fences_let_go.size() < 8) fences_let_go.push_back(it->fence);
+        else vkDestroyFence(dev.device, it->fence, nullptr);
+    }
+    const VkSemaphore semaphore = it->semaphore;
+    retired_acquires.erase(it);
+    return semaphore;
 }
 
 void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view, bool source_srgb, bool allow_scale) {
@@ -6463,7 +6509,13 @@ void present_image_with_trial(VkImage src, uint32_t sw, uint32_t sh, const int c
     // before; with the presenter off or idle, nothing)
     present_thread_drain();
     const int64_t fence_t0 = fps_breakdown_on() ? fps_clock() : 0;   // (the FPS counter's Breakdown: this frame slot's last copy)
-    if (vkWaitForFences(dev.device, 1, &f.done, VK_TRUE, UINT64_MAX) == VK_ERROR_DEVICE_LOST) device_lost();
+    const VkResult copy_ready = vkWaitForFences(dev.device, 1, &f.done, VK_TRUE, UINT64_MAX);
+    if (copy_ready == VK_ERROR_DEVICE_LOST) device_lost();
+    if (copy_ready != VK_SUCCESS) return;
+    if (f.retired_acquire) {
+        vkDestroySemaphore(dev.device, f.retired_acquire, nullptr);
+        f.retired_acquire = VK_NULL_HANDLE;
+    }
     framelog_collect(log_slot);
     if (output_trial_skip_present(nullptr, trial.native_generation)) return;
     uint32_t index = 0;
@@ -6487,7 +6539,7 @@ void present_image_with_trial(VkImage src, uint32_t sw, uint32_t sh, const int c
     VkResult res = VK_SUCCESS;
     const bool image_count = acquire_ahead_counted();   // (image_waits: RX_VK_ACQUIRE_AHEAD set only, the default costs nothing)
     const int64_t image_t0 = image_count ? fps_clock() : 0;
-    if (!was_held) res = vkAcquireNextImageKHR(dev.device, dev.swapchain, acquire_timeout, VK_NULL_HANDLE, acquire_fence, &index);
+    if (!was_held) res = vkAcquireNextImageKHR(dev.device, dev.swapchain, acquire_timeout, acquire_semaphore, acquire_fence, &index);
     if (res == VK_ERROR_DEVICE_LOST) device_lost();
     if (acquire_t0) fps_wait(fps_stats::kPace, fps_clock() - acquire_t0);
     if (res == VK_ERROR_SURFACE_LOST_KHR) {
@@ -6673,8 +6725,19 @@ void present_image_with_trial(VkImage src, uint32_t sw, uint32_t sh, const int c
     if (trial.generation && preview_path && present_thread_on())
         make_output_trial_frame(trial, dev.swapchain_generation, OutputPath::FifoShown);
     if (vkEndCommandBuffer(f.cmd) == VK_ERROR_DEVICE_LOST) device_lost();
-    // (no wait: the image was free before the copy was recorded, image_free above. Not on the timeline either: one queue runs
-    // submits in order, and a wait for a value another thread had counted but not yet submitted blocked the queue for good)
+    // The CPU fence already proved the image is free. Consume the optional binary signal on this copy.
+    // The previous copy on this slot completed at f.done, so its semaphore can go back to the next acquire.
+    std::swap(f.acquired, acquire_semaphore);
+    VkSemaphoreSubmitInfo acquire_waits[2]{};
+    uint32_t acquire_wait_count = 0;
+    f.retired_acquire = take_retired_acquire();
+    for (VkSemaphore semaphore : {f.acquired, f.retired_acquire}) {
+        if (!semaphore) continue;
+        auto& wait = acquire_waits[acquire_wait_count++];
+        wait.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+        wait.semaphore = semaphore;
+        wait.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    }
     VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
     signal.semaphore = dev.swap_rendered[index];
     signal.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
@@ -6683,6 +6746,8 @@ void present_image_with_trial(VkImage src, uint32_t sw, uint32_t sh, const int c
     VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
     si.commandBufferInfoCount = 1;
     si.pCommandBufferInfos = &cb;
+    si.waitSemaphoreInfoCount = acquire_wait_count;
+    si.pWaitSemaphoreInfos = acquire_waits;
     si.signalSemaphoreInfoCount = 1;
     si.pSignalSemaphoreInfos = &signal;
     std::unique_lock qk(dev.present_mu);
@@ -6775,7 +6840,7 @@ static void acquire_ahead(VkSwapchainKHR sc, uint64_t generation) {
     VkResult res;
     {   // (the swapchain's lock, as the presenter's present takes it: RX_VK_FG_LATENCY_LOG's waits on the chain never beside it)
         std::lock_guard pq(dev.presenter_queue_mu);
-        res = vkAcquireNextImageKHR(dev.device, sc, 0, VK_NULL_HANDLE, acquire_fence, &index);
+        res = vkAcquireNextImageKHR(dev.device, sc, 0, acquire_semaphore, acquire_fence, &index);
         if (res == VK_ERROR_DEVICE_LOST) device_lost();
     }
     if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {   // (no image: the fence untouched, the next present acquires)
@@ -7539,8 +7604,9 @@ bool async_on() {
 }
 // (the recorder's half of the Threaded rendering row: with RX_VK_RECORDER unset, vk_recorder.h's mode_from_env asks the row
 // through this, set before anything runs; the checks that build vk_recorder.h alone leave it null, the recorder off. The
-// recorder thread's half (menu_recorder_thread: On, or Auto from 6 cores), not the render thread's: on 4 cores Auto has the
-// render thread alone, as the recorder thread beside it was the slowest there, 18 Nov)
+// recorder thread's half (menu_recorder_thread: On, Auto from 4 cores with mirrored pools, or Auto alone with 6 or more cores
+// when only buffer-pool mirrors are absent), not the render thread's: each reader keeps its own half so the rule alone
+// decides)
 [[maybe_unused]] const bool rec_setting_hooked = (rec::g_setting_thread = menu_recorder_thread, true);
 
 void readback_fell_back(int what) {

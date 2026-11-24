@@ -98,6 +98,10 @@ python -I scripts/dev.py packs warm ../base-main --run "<command that plays {run
   Windows sandbox, where the hard link is refused and becomes a 26 GB copy.
 - A pack that builds the game reads the romfs where it is, so its game folder has none and nothing of it is compared
   with the base. `LONGSHOT_PACK_ROMFS=copy` links it instead, for a change that writes into the romfs.
+- Upscalers come from the environment, the same for a base and its packs: `LONGSHOT_NGX_SDK` (NVIDIA DLSS, as
+  `make_game.py` reads it), `LONGSHOT_FSR=1` (AMD FSR 4: `--fsr`), and `LONGSHOT_FFX_SDK` or `LONGSHOT_XESS_SDK` (AMD's FSR
+  runtime or Intel's XeSS library, already fetched there by `scripts/fetch.py`, whose license was accepted then: copied into
+  the game folder, nothing downloaded). A base built without one makes packs without it too, so build a new base to change them.
 - `warm` plays a pack-less runtime and copies the caches it grew back into the base, so no runtime compiles pipelines
   for those scenes again.
 - One job at a time per base: `base`, `pack`, `rt` and `warm` hold `<dir>/dev_packs.busy` (`dev.py pack` and `rt` wait for the base instead).
@@ -163,8 +167,8 @@ screen, so a screenshot or a stream says which change it is (default: the job's 
 
 | Mode | For | Runs beside |
 |---|---|---|
-| `build` | `make_game.py`, `dev.py packs base` / `pack` | 2 at once; never a timed run |
-| `light` | Game-free checks, renderer-only builds, copies | 4 at once |
+| `build` | `make_game.py`, `dev.py packs base` / `pack`, the test suites (`mise run test`, `tests/run_all.py`) and any compile-and-run check | 2 at once; never a timed run |
+| `light` | Small game-free work: a copy, one quick check, `dev.py vk` | 4 at once; never a timed run |
 | `shared` | A game run that is not a number: screenshots, logs, checks | 3 at once, each with its own game and data folder |
 | `gpu` | The game alone on the GPU, not a measurement | Builds |
 | `timing` | fps, frame times, hitches | Nothing heavy; own CPUs; memory not swapped; not while you play |
@@ -172,6 +176,12 @@ screen, so a screenshot or a stream says which change it is (default: the job's 
 | `profile` | A profile recorded in the game | As `timing` |
 
 - **Measure with `timing`, run everything else with `shared`.** Keep each GPU job short: a long batch holds the queue.
+- **A timed run says when the PC was busy.** While it measures, the queue samples every 2 s what the run's own processes
+  stalled on (CPU, memory and disk: its job's cgroup), the other CPUs' use, builds outside the queue and jobs beside it.
+  The PC swapping is recorded but no noise by itself: a game holding 18 GB swaps the rest of a 32 GB PC out. A run past any
+  limit (`NOISY` in `scripts/devtools/jobqueue.py`) is marked NOISY in `dev.py queue history`, and `dev.py ab` adds a
+  **Noisy:** line naming it, judged on its measured stretch only (`--noise FILE` gives a caller the samples). Run a noisy
+  run again; its numbers are not the change's.
 - **Nothing on a RAM file system.** Builds, game folders, work folders and test output go on a disk, never in `/tmp` or
   another tmpfs. The queue moves a job's `TMPDIR` off tmpfs, and `dev.py`'s builds refuse such a folder.
 - **One base per commit of main**, shared in your development folder's `bases/` ([where dev data
@@ -189,8 +199,15 @@ mise run test                                   # every check, --strict (a missi
 python -I -B tests/run_all.py ub_               # only the checks whose path contains "ub_"
 mise run test-changed                           # only the checks that read a file your branch changed (before you push)
 mise run lint                                   # pre-commit and ruff on what the branch changed, and actionlint
+mise run test --container                       # Linux: the same in a container with CI's tools (Podman or Docker)
 mise run ci                                     # what CI checks: the pinned test tools, every check and the website
 ```
+
+A check whose tool this PC lacks (clang, spirv-val, glslang, .NET, a sanitizer) fails in `mise run test`. Install the tool,
+or use `--container`: `scripts/linux/checks.sh` builds an image with the tools and versions of CI's job (Ubuntu 24.04,
+~3 GB, once) and runs the checks in it as your user, with no network and only the checkout to write.
+With `--container`, a `--junit` report must be inside the checkout; relative paths are resolved from the directory
+where you invoked the command. Other destinations are rejected before the image is built.
 
 `tests/run_all.py` runs every `tests/test_*.py` and `nx2/test_*.py` in its own process, the C++ unit tests under
 `gpu/vk/tests` and a byte-compile of every tracked Python file. It keeps going after a failure and ends with a table and

@@ -67,14 +67,47 @@ struct ModuleScan {
     ScanResult result;
 };
 
-/// Live module scanning is disabled until the loader's provider and its private ABI can be verified.
+/// Live module scanning stays disabled: a module snapshot neither pins its images nor says which one the loader uses.
+/// The hook goes through load_known instead.
 std::vector<ModuleScan> scan_loaded_modules();
+
+/// An upscaler library whose private layout (the provider classes, their vtables, IsSupported at entry 2) was read and
+/// run: named by its file's SHA-256, the same one scripts/fetch.py pins for the file a build fetches.
+struct KnownLibrary {
+    const char* sha256;   // (lower-case hex)
+    const char* what;
+};
+/// The known library with this SHA-256 (64 hex digits, either case), or nullptr: any other file is left alone.
+const KnownLibrary* known_library(const char* sha256_hex);
+
+/// SHA-256 as 64 lower-case hex digits: of bytes, and of a file ("" when it cannot be read).
+std::string sha256_hex(const void* data, size_t size);
+std::string sha256_file(const std::string& path);
+
+struct KnownModule {
+    ModuleScan scan;                       // (base 0 when nothing was loaded)
+    const KnownLibrary* library = nullptr; // (set only when the file on disk is a known library and it is what was loaded)
+    std::string note;                      // (what the log says of it)
+};
+/// (Windows) dir's amd_fidelityfx_upscaler_vk.dll, when its SHA-256 is a known library's: loaded from that path before
+/// AMD's loader asks for it by name, pinned for the process's life, and scanned. A file with another SHA-256 is not
+/// loaded here and not scanned. Elsewhere: nothing (no Lite provider exists there).
+KnownModule load_known(const std::string& dir);
+/// (Windows) Whether the module AMD's loader uses under that name is the one load_known loaded; false turns the hook's
+/// answers back into AMD's own (release) so a second copy of the library is never answered for.
+bool known_module_is_loaders(const KnownModule& known);
 
 /// -1: unset or not one of auto|lite/0|1; SELECT_AUTO/SELECT_LITE otherwise
 int parse_model_env(const char* value);
 
-/// Refuses to install without a verified private ABI; no slots are patched.
-bool install(uintptr_t module_base, const ScanResult& result);
+/// Points each provider's IsSupported (vtable entry 2) at the delegating answer, in this process's copy only. Refused, with
+/// no slot written, unless `library` is one of the known libraries (known_library: the caller hashed the file it loaded),
+/// the scan has the 4.1.2 shape and every slot still holds what the scan read.
+bool install(uintptr_t module_base, const ScanResult& result, const KnownLibrary* library);
+
+/// The hooked answers are AMD's own again whatever is selected, and no model counts as hooked (the slots keep the
+/// delegating function: nothing is written twice).
+void release();
 
 /// Whether at least one provider vtable has the hook.
 bool hook_installed();

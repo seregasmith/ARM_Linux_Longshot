@@ -42,9 +42,9 @@ Switch buttons: `a b x y ls rs l r zl zr plus minus left up right down`.
 
 An image of the wrong size stops the build with its name. A leader line of yours is written only where it has any of
 itself: draw it on black, the lines that stay are kept under it. `ControllerGuide_Pro_0<2 3 4>.png` of yours is written
-whole over the game's, with the game's labels' bars kept under it: draw only the lines (`nx2/prompt_faces/ps5/`'s and
-`xbox/`'s were drawn with the router's `guide_line` and `guide_frame` to the face's `parts`, from the game's rows: ZR 333, L
-and R 446, the d-pad 1016).
+whole over the game's, with the game's labels' bars kept under it: draw only the lines (`nx2/prompt_faces/ps5/`'s,
+`xbox/`'s and `steamdeck/`'s were drawn with the router's `guide_line` and `guide_frame` to the face's `parts`, from
+the game's rows: ZR 333, L and R 446, the d-pad 1016).
 
 When a face's picture changes, its `parts` must follow it (the lines end on them): the pictures' pixels, `(x, y, r)` for each
 control, see `_parts` in `nx2/prompt_faces.py`. Lines of yours in `ControllerGuide_Pro_0<2 3 4>.png` must follow too.

@@ -18,6 +18,7 @@ How each part is implemented.
 |---|---|
 | [Architecture](reference/architecture.md) | the lifter, host and renderer, the frame pipeline, memory, device policy, and the rules |
 | [The build](reference/build.md) | the build's steps, compile levels, build switches, the compiler memory gate, build times |
+| [Shader preparation](reference/shader-preparation.md) | what a build's `--prepare-shaders` run does, its journal, the supervisor that starts it again past a shader the driver dies or hangs in |
 | [Switches](reference/switches.md) | how the game reads switches, the options file, and the switches developers use |
 | [Profiling](reference/profiling.md) | the profiling mode, frame trace, Tracy's zones, draw and performance statistics, the readers |
 | [Control bridge](reference/control-bridge.md) | driving a running game from tools and tests: the protocol and `longshot_ctl.py` |

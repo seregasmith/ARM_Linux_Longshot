@@ -59,8 +59,9 @@ previous resolution. Other mode changes apply after a restart.
   Anti-Lag 2** cut the added delay.
 - **DLSS and DLAA look softer** than the game's own upscaler: set **Sharpness** to around 80% with them.
 - **Ultrawide and 4:3:** leave **Aspect ratio** on your monitor's shape (the default). The 3D fills the screen while the
-  HUD keeps its 16:9 size with its corners at the screen's edges (or in the middle, with **HUD layout**); movies stay in
-  the middle. **Ultrawide menus** at Extended does the same for the menus: they keep their own size, and what sits at
+  HUD keeps its 16:9 size with its corners at the screen's edges (or in the middle, with **HUD layout**). Movies keep
+  their 16:9 shape, with bars at the sides on wider screens and above and below on narrower screens like 16:10 and 4:3.
+  **Ultrawide menus** at Extended does the same for the menus: they keep their own size, and what sits at
   their sides (the pause menu's panels, its pages, the item and map screens' side panes) moves out to the screen's edges.
 - **HDR:** turn on **HDR** (Expanded or Native), then set **HDR peak brightness** to your monitor's.
 
@@ -78,11 +79,13 @@ after a restart, only on some GPUs or builds, only while HDR is on, or set for y
 | | Profile | Docked, Handheld (after a restart) | Handheld |
 | | Upscaler | Game's own, NVIDIA DLSS (only in builds with NVIDIA's DLSS SDK, on NVIDIA RTX GPUs), AMD FSR 3.1 (every build, on GPUs it runs on), AMD FSR 4 (only in builds with FSR 4, on GPUs AMD's files cover), Off (no upscaling), Intel XeSS (Windows, with Intel's `libxess.dll` beside the game). NVIDIA DLAA, AMD FSR 4 Native AA and Intel XeSS Native AA are DLSS's, FSR 4's and XeSS's Native, chosen on the Render resolution row | Off |
 | | DLSS model | Transformer (K) (CNN (E) in its place on cards with less than 7 GB of video memory), Transformer 2 (M), Transformer 2 (L), NVIDIA default, CNN (E), CNN (F) (shown where DLSS runs, with DLSS or DLAA chosen as the Upscaler) | Transformer (K); CNN (E) under 7 GB |
-| | FSR 4 model | Auto (AMD's), Lite (INT8) (shown where FSR 4 runs, only in builds with FSR 4's Lite provider). Forcing Lite requires a supported Windows runtime with a verified provider; currently forcing is disabled. Linux retains a saved Lite value but uses Auto. | Auto (AMD's) |
+| | FSR 4 model | Auto (AMD's), Lite (INT8). Shown on Windows with an AMD GPU that runs FSR 4 and FSR SDK 2.4's upscaler DLL (the one the build fetches, checked by its SHA-256). On a GPU AMD lists no FSR 4 model for, Lite stands in and the row is not shown. Linux retains a saved Lite value but uses Auto. | Auto (AMD's) |
 | | DLAA before the bloom | Off, On: where NVIDIA DLAA smooths the picture, after the game's bloom and tone map or before them (shown with NVIDIA DLSS; changeable with Render resolution Native (DLAA) only; changes at once; `RX_VK_DLSS_PRE_BLOOM` over it for one run) | Off |
-| | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS or FSR 4: Auto, Native (DLAA or FSR 4 Native AA: the 3D at full size), 92%, 83%, 75%, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With Intel XeSS the same stops, named by the XeSS mode each runs under: Native (XeSS Native AA), Ultra Quality Plus (92%, 83%), 75%, Ultra Quality (67%), Balanced (58%, 50%), Ultra Performance (33%). With FSR 3.1: Auto, 100% (its native AA), then the same as DLSS from 92%. With Off: Auto, 100%, 75%, 67%, 50%, 33% | 100% |
+| | Dynamic resolution | Off, On. When On, the game can lower the 3D resolution when the GPU is busy. | Off |
+| | Render resolution | This slider is available when Dynamic resolution is Off. Game's own has 50%, 67%, 75%, and 100%. DLSS and FSR 4 have Ultra Performance (33%), Performance (50%), Balanced (58%), Quality (67%), 75%, 83%, 92%, and Native (DLAA or FSR 4 Native AA). Intel XeSS has the same scales with XeSS mode names. FSR 3.1 has the same scales through 92%, plus 100% for native AA. Off has 33%, 50%, 67%, 75%, and 100%. | 100% |
 | | Sharpness | 0 to 100%, in steps of 10 | 0%; a quality preset sets it |
-| | Frame generation | Off, Auto (it shows who makes its frames: FSR 3.1 FG or Built-in FG), 2x to 8x; with DLSS FG up to what NVIDIA's runtime makes on the GPU (6x on an RTX 50, 2x on an RTX 40) | Off |
+| | Frame generation | Off, Auto (it shows who makes its frames: FSR 3.1 FG or Built-in FG), Fixed | Off |
+| | Frame generation multiplier | Stepped slider from 2x to 8x (shown while Frame generation is Fixed); with DLSS FG up to what NVIDIA's runtime makes on the GPU (6x on an RTX 50, 2x on an RTX 40) | 2x |
 | | Frame generation by | Shown while Frame generation is on. DLSS FG (NVIDIA DLSS Frame Generation: RTX 40 and newer, with a temporal Upscaler), FSR 3.1 FG (AMD FSR 3.1's frame interpolation, from the scene's depth and motion: any GPU), Built-in FG. DLSS FG is offered only where it runs; elsewhere the row has FSR 3.1 FG and Built-in FG, and its line at FSR 3.1 FG says why not DLSS FG (the log has NVIDIA's answer). At DLSS FG, FSR 3.1 makes the frames DLSS FG does not (Frame generation's Auto). At DLSS FG, the game's own menus, movies and loading screens show only the game's own frames (they have no Upscaler picture to make frames from): the row's line and the FPS counter say DLSS FG paused. With an Upscaler that is not temporal, the built-in one makes the frames and the line says why. `RX_VK_DLSS_FG=1` fixes the row at DLSS FG for a run. Changes at once | DLSS FG where it runs, else FSR 3.1 FG (an options file's Auto from before is this default) |
 | | Game frame rate cap | 30, 60 (the console's), 90, 120, 144, 165, 240, Uncapped (changes at once) | 60 |
 | | NVIDIA Reflex | Off, On, On + Boost (shown only on NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
@@ -177,7 +180,7 @@ after a restart, only on some GPUs or builds, only while HDR is on, or set for y
 | | Player: Damage taken | Half, Normal, Double, Quadruple (live, while Debug tools is on; Half rounds damage up to a quarter heart; Heart protection wins) | Normal |
 | | Developer: Save my pipeline list | Saves a zip of the pipelines your play built into Downloads ([send your pipeline list](reporting-and-contributing.md#send-your-pipeline-list)) | |
 | | Developer: Frame pacing | Off, On | Off; a quality preset turns it on |
-| | Developer: Threaded rendering | Auto, On, Off (after a restart). Auto is On with 6 or more processor cores for the game, and the render thread alone with 4 or 5 | Auto |
+| | Developer: Threaded rendering | Auto, On, Off (after a restart). Auto is On with 4 or more processor cores for the game, Off with fewer or where it is not safe (recorder thread alone with 6 or more when buffer pools have no mirrors) | Auto |
 | | Developer: Descriptor reuse | Off, On (changes at once) | On |
 | | Developer: Sampler cache | Off, On (changes at once) | Off |
 | | Developer: Robust buffers | Auto, Off, On (after a restart) | Auto |
@@ -221,7 +224,8 @@ helper asks you to.
   with the GPU busy, or raises it while the cap holds with the GPU under half busy: at most two steps. It chooses again
   when the card or the screen changes; `longshot_log.txt`'s `Auto (this PC)` lines say what it chose and why.
 - **The scaling rows**, in the picture's order: **Output resolution** is the size of the whole frame, HUD included. The
-  **Upscaler** fills it from the 3D, whose share is the **Render resolution**. **Off** is no upscaler at all, not even
+  **Upscaler** fills it from the 3D. Turn **Dynamic resolution** off to select a fixed **Render resolution**.
+  **Off** is no upscaler at all, not even
   the game's own: the fastest choice, with jagged edges. The **Window scaling filter** then scales the frame to your
   window, and **Sharpness** sharpens it. For the sharpest picture, set the Output resolution to your screen's size: the
   filter row then shows "Not needed (window = output)". NVIDIA DLSS, AMD FSR 4 and Intel XeSS need files of their
@@ -262,8 +266,11 @@ helper asks you to.
   remembered as that card, not its place in the list.
 - **Threaded rendering:** On draws the picture on threads of its own (a render thread and a recorder thread) while the
   game goes on to its next frame, for a higher frame rate on a processor with cores to spare; it can still show
-  flashes. Auto counts the processor's cores for the game: both threads with 6 or more, the render thread alone with 4
-  or 5, Off with fewer. It applies after a restart.
+  flashes. Auto counts the processor's cores for the game: both threads with 4 or more, Off with fewer or where it is
+  not safe. On integrated GPUs (whose buffer pools are not mirrored by default), Auto keeps the render thread off and
+  runs the recorder thread alone with 6 or more cores, staying Off with fewer (such as a 4-core Steam Deck). The count is
+  of the cores the game may run on: a launcher or tool that limits the game to some logical processors limits it too (two
+  cores' four threads count as 2). Where the cores can't be read, it counts logical processors. It applies after a restart.
 - **Robust buffers** drops a read past a buffer's end instead of stopping the GPU: Auto is on, on every card.
   **ASTC as RGBA8** is the [AMD texture workaround](common-issues.md#amd-blocky-textures-solid-rectangles-in-the-sky-or-dark-courtyard-surfaces).
   **Intel shader compiles** (Intel graphics on Windows): One at a time is the safe choice; Side by side builds faster
@@ -285,13 +292,13 @@ helper asks you to.
   ears. **Microphone** is what the game hears when its own microphone option is on; **Test microphone**
   shows its level.
 - **Controller speaker** (a page on the Audio tab) plays chosen kinds of the game's sounds on a DualSense's own speaker:
-  Navi's voice and her flight, Z-targeting, the ocarina, pick-ups, items, fairies, the menus' sounds, the Stone of Agony,
+  the companion's voice and flight, Z-targeting, the instrument, pick-ups, items, fairies, the menus' sounds, the Stone of Agony,
   the low-health alarm, fishing and bottles, each Off, Controller only (no longer on the TV) or Controller + TV, with a
   volume for the speaker. **Controller sync** lines the two up: below 0 the TV's copy of the Controller + TV sounds waits
   for a controller that plays later, above 0 the controller waits for a TV that plays later. With headphones in the
   controller's jack, **Headphones on the controller** decides: All sound (as on the console) plays the whole game on them
   and the TV is silent, Controller sounds sends them only what would play on the speaker, Off leaves them out; they have
-  their own volume. While an ocarina sound plays on the speaker the vibration is at half, as the motors would shake it into
+  their own volume. While an instrument's sound plays on the speaker the vibration is at half, as the motors would shake it into
   crackling. With **DualSense HD Haptics** on, its taps play on the speaker together with these sounds; off, the speaker
   plays these sounds alone. On Windows, the controller must be on a USB cable and Windows must identify its sound card as
   belonging to it. The speaker is unavailable when the two cannot be matched, including on Linux for now; the vibration
@@ -351,6 +358,10 @@ picture and the time.
 Use a controller, or the keyboard and mouse. On the keyboard, <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> move
 (hold <kbd>Caps Lock</kbd> to walk), the arrow keys (or <kbd>I</kbd> <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd>) turn the
 camera, and <kbd>E</kbd> is A (it selects **New Game** on the title screen).
+
+**Plus (the game's pause) is <kbd>Tab</kbd>**, and the pad's Start is Plus. <kbd>Enter</kbd> does not pause any more:
+Enter is the key Steam Input's Desktop layout sends for a pad's A when the game is started outside Steam, so it used to
+open the pause menu on every A press (#1992). A controls file that chose Enter for Plus on purpose keeps it.
 
 **Toggle HUD** starts unbound. Assign a key or controller input on the **Controls** page to hide or show the gameplay HUD
 during the current session. The dungeon's small-key count follows the minimap's placement and visibility. The full map

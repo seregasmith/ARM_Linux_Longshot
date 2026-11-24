@@ -264,6 +264,7 @@ public:
     std::vector<ImageDefinition> images;
 
     Id workgroup_id{};
+    Id num_workgroups{};
     Id local_invocation_id{};
     Id invocation_id{};
     Id patch_vertices_in{};
@@ -482,17 +483,23 @@ public:
     bool uses_nonuniform_uniform_texel_buffer{};
     bool uses_nonuniform_storage_texel_buffer{};
 
-    // (longshot, AMD RDNA 3/3.5/4) Fused WMMA 16x16x16 N-pair state: pairs two HMMA_nx2 sharing A into one 16x16 [B0|B1] call.
+    // (longshot, AMD RDNA 3/3.5/4) Fused WMMA 16x16x16 N-pair, zero-C, quad-A, and K-chain state.
     struct Wmma16Step {
-        enum class Kind : u8 { Skip, Single, Pair };
+        enum class Kind : u8 { Skip, Single, Pair, PairZeroC, QuadZeroC, PairK2ZeroC };
         Kind kind{Kind::Single};
         IR::Inst* m0{};
         IR::Inst* m1{};
+        IR::Inst* m2{};
+        IR::Inst* m3{};
         std::vector<IR::Inst*> deferred_extracts;
     };
     struct Wmma16FusedState {
         bool active{};
         Id pair_fn{};
+        Id pair_zero_c_fn{};
+        Id quad_zero_c_fn{};
+        Id quad_ret_type{};
+        Id pair_k2_zero_c_fn{};
         std::unordered_map<const IR::Inst*, Wmma16Step> steps;
         std::unordered_set<const IR::Inst*> skip_insts;
     };

@@ -17,7 +17,7 @@
 # 2. linux, windows: Longshot-<v>-x86_64.AppImage and LongshotBuilder-<v>-windows-x64.zip (build-linux.yml, build-windows.yml).
 # 3. publish: SHA256SUMS over the files and tools.lock, SHA256SUMS.sig (the release key), the notes (git-cliff, cliff.toml),
 #    then a draft release with every file, published last: until then no launcher sees it. A nightly also prunes the
-#    nightlies past the newest 5. Nothing is committed back to the repository.
+#    nightlies past the newest 20 that are 5 days old or more. Nothing is committed back to the repository.
 #
 # Secret (docs/dev/reference/releases.md, One-time setup): RELEASE_SIGNING_KEY_SEALED (the release key's private PEM, sealed:
 # scripts/ci_secret.sh). version and publish run only on the runner kept for them (runs-on: deploy), which alone has the
@@ -236,4 +236,4 @@ jobs:
         run: python3 -I "$RELEASE_PY" publish "$TAG" --target "$REF" --notes notes.md files/*
       - name: Prune the nightlies
         if: startsWith(needs.version.outputs.tag, 'nightly-')
-        run: python3 -I "$RELEASE_PY" prune --keep 5
+        run: python3 -I "$RELEASE_PY" prune --keep 20 --keep-days 5

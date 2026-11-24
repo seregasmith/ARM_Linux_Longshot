@@ -211,8 +211,8 @@ int main() {
 
 def switch(cxx, folder):
     """software_unroll_wanted: RADV and AMD RDNA 4 on AMD's proprietary driver by default, RX_VK_MMA_UNROLL over it"""
-    policy_h = (VK / "device_policy.h").read_text(encoding="utf-8")
-    rdna4_fn = block(policy_h, "inline bool is_rdna4(")
+    arch_h = (VK / "gpu_arch.h").read_text(encoding="utf-8")
+    rdna4_fn = block(arch_h, "inline bool is_rdna4(")
     auto_profile = block((VK / "vk_main.cpp").read_text(encoding="utf-8"), "void auto_profile(")
     auto_profile = re.sub(r"//[^\n]*", "", re.sub(r"/\*.*?\*/", "", auto_profile, flags=re.S))   # (code only)
     if not re.search(r"^\s*hw\.rdna4 = is_rdna4\(p\.vendorID, p\.deviceID, p\.deviceName\);", auto_profile, re.M):

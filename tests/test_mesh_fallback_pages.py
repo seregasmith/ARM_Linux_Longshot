@@ -5,7 +5,7 @@ and each global load's storage buffer search, inlined at every load, filled them
 12.3 ms a frame, 5.7 ms through the table). This checks the switch (Intel's Mesa driver, RX_VK_MESH_PAGES over it), the program
 cache's stamp, that only the fallback's task and mesh stages take the table, and that its lookup is the page table the renderer
 writes: the same two windows, the same page numbering, 0 where a page is not mapped. And RX_VK_GP_TABLE, which sends the vertex,
-fragment and compute stages' loads through the same table: its rule, its stamp bits and the stages it reaches
+fragment, compute and native task and mesh stages' loads through the same table: its rule, its stamp bits and the stages it reaches
 (tests/global_load_16_ir.cpp emits and inspects its modules).
 """
 import argparse
@@ -209,16 +209,36 @@ def table_loads(cxx):
     if not stages:
         raise SystemExit("DefineGlobalMemoryFunctions has no table_stage condition")
     c = " ".join(stages.group(1).split())
-    for needed in ("graphics_stage", "stage == Stage::Compute", "mesh_fallback && (stage == Stage::Task || stage == Stage::Mesh)"):
+    for needed in ("graphics_stage", "stage == Stage::Compute", "stage == Stage::Task", "stage == Stage::Mesh"):
         if needed not in c:
             raise SystemExit(f"table_stage leaves out {needed}")
+    # (a native task or mesh stage's push block holds the table's address only where the constructor asked for its member, before
+    # any block is made: RX_VK_MESH_FIRST's task block is made in the constructor too)
+    ctor = emit[emit.index("EmitContext::EmitContext("):emit.index("EmitContext::~EmitContext()")]   # (an initializer list: no block())
+    native = re.search(r"if \(\(stage == Stage::Task \|\| stage == Stage::Mesh\) && !runtime_info\.mesh_fallback && graphics_table_loads != 0 &&"
+                       r"([^{]+)\{\s*wants_guest_pages = true;", ctor)
+    if not native:
+        raise SystemExit("the constructor does not ask for the page table's member for native task and mesh stages")
+    for needed in ("program.info.uses_global_memory", "profile.support_int64", "profile.unified_descriptor_binding",
+                   "profile.supported_spirv >= 0x00010400"):
+        if needed not in native.group(1):
+            raise SystemExit(f"the native task and mesh stages' page table member does not need {needed}")
+    if ctor.index("wants_guest_pages = true;", native.start()) > ctor.index('env_on("RX_VK_MESH_FIRST")'):
+        raise SystemExit("the native task and mesh stages' page table member is asked for after RX_VK_MESH_FIRST's block is made")
+    if "follow_pointers || native_mesh_table" not in fn:
+        raise SystemExit("a native task or mesh stage that reads the table gets no push block or device addresses")
     table = " ".join(re.search(r"const bool graphics_table\{([^;]+)\};", fn).group(1).split())
     for needed in ("wants_guest_pages", "rescaling_push_constants.value != 0", "profile.supported_spirv >= 0x00010400"):
         if needed not in table:
             raise SystemExit(f"graphics_table does not need {needed}")
     check = " ".join(re.search(r"const bool table_check\{([^;]+)\};", fn).group(1).split())
-    if "stage != Stage::Task" not in check or "stage != Stage::Mesh" not in check:
-        raise SystemExit("RX_VK_GP_TABLE=2 reaches the task and mesh stages, which have no miss buffer")
+    if "!(mesh_fallback && (stage == Stage::Task || stage == Stage::Mesh))" not in check:
+        raise SystemExit("RX_VK_GP_TABLE=2 reaches the mesh fallback's task and mesh stages, which have no miss buffer")
+    translate = (ROOT / "gpu/vk/eden/shader_recompiler/frontend/maxwell/translate_program.cpp").read_text(encoding="utf-8")
+    checked = " ".join(re.search(r"const bool graphics\{([^;]+)\};", translate).group(1).split())
+    for needed in ("Stage::VertexB", "Stage::Fragment", "Stage::Compute", "Stage::Task", "Stage::Mesh"):
+        if needed not in checked:
+            raise SystemExit(f"RX_VK_GP_TABLE=2 gives no check buffer to {needed} (translate_program.cpp)")
     load = block(fn, "const auto define_load{")
     if "if (fallback_pages || table_alone)" not in load:
         raise SystemExit("define_load does not return the table's answer alone for RX_VK_GP_TABLE=1")

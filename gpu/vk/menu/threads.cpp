@@ -19,12 +19,13 @@ const char* threaded_env() {
     return nullptr;
 }
 /// (Auto's line says what Auto is: the CPU's rule with threaded::kAutoEnabled on, Off everywhere were it off. Its tiers are
-/// threaded::kAutoRenderCores and kAutoRecorderCores, 4 and 6 cores: tests/test_threaded_rendering.py holds the text to them)
+/// threaded::kAutoCores (4 cores) and kAutoRecorderOnlyCores (6 cores without mirrors): tests/test_threaded_rendering.py holds
+/// the text to them)
 const char* hn_threaded(int v, int variant) {
     static const char* const t[] = {
         threaded::kAutoEnabled
-            ? "On with 6 or more processor cores for the game, the render thread alone with 4 or 5, Off with fewer or where "
-              "ruled out."
+            ? "On with 4 or more processor cores for the game, Off with fewer or where ruled out ("
+              "recorder thread alone with 6 or more when buffer pools have no mirrors)."
             : "The same as Off, on every PC.",
         "The picture is drawn on threads of its own while the game goes on to its next frame. Still being tested: it "
         "can show flashes.",

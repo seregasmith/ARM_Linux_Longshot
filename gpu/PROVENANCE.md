@@ -30,8 +30,8 @@ The renderer the game uses is no longer this one but the Vulkan back end in `vk/
 the Windows fallback in builds made with wgpu-native until 2026-11-14, when it stopped being built and its sources
 (`render/*.cpp`, `rx_internal.h`, `rx_web_mt.h`, `rx_bcn.h`, `rx_wgpu_names.h`, `renderdoc_app.h`) were removed: the
 paths above name them as they were. `render/` keeps the headers the host and the Vulkan back end use (`rx.h`,
-`rx_nvn.h`, `nvn_api.h`); `third_party/suyu/` is kept whole (the Vulkan back end compiles its texture decoders; the
-rest, the WGSL recompiler among it, is no longer compiled). mkw-recomp's earlier Vulkan stand-in
+`rx_nvn.h`, `nvn_api.h`); `third_party/suyu/` is kept whole (the Vulkan back end's include path still reaches its headers, but none of its sources is
+compiled now: its texture decoders gave way to `vk/texdecode/`, and the rest, the WGSL recompiler among it, went earlier). mkw-recomp's earlier Vulkan stand-in
 (`mkw_gpu.cpp`, `build-gpu.bat`) did not come over.
 
 The Vulkan back end in `vk/` is mkw-recomp's. Its design follows totk-pc-recomp's NVN-on-Vulkan runtime (MIT; pools

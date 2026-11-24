@@ -81,7 +81,6 @@ bool framegen_by_dlss_offered() { return false; }
 int dlss_fg_most() { return 0; }
 int framegen_capped(int v, int) { return v; }
 void sync_transition_autosave() {}
-std::atomic<int> grass_distance_now{0};   // (vk_menu.cpp: the Grass distance the game reads, set_row's)
 bool row_fixed(const int*) { return false; }
 int upscaler() { return 0; }
 namespace ur {

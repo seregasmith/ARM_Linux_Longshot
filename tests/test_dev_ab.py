@@ -314,6 +314,23 @@ class WriteUp(unittest.TestCase):
         self.assertIn("FAILED: boom", ab.run_line({"side": "B", "k": 2, "error": "boom"}))
         self.assertNotIn("CPU (% of a core", text)
 
+    def test_noisy_runs_said_to_run_again(self):
+        # (the queue's samples of the measured stretch only: a busy boot before it is no noise)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "noise.jsonl")
+            with open(path, "w", encoding="utf-8") as f:
+                for t, memory in ((5, 9.0), (10, 0.0), (12, 3.6), (14, 0.0), (30, 9.0)):
+                    f.write(json.dumps({"t": t, "cpu": 2.0, "memory": memory, "io": 0.0, "swap_pages": 7, "strays": 0,
+                                        "beside": []}) + "\n")
+            self.assertEqual(ab.measured_noise(path, 10, 14)["memory_stall_max"], 3.6)
+            self.assertEqual(ab.measured_noise(path, 14, 20)["memory_stall_max"], 0.0)
+            self.assertEqual(ab.measured_noise(os.path.join(d, "none"), 10, 14), {})
+        r = {"side": "B", "k": 2, "seconds": 60, "warm": True, "cold": 0, "stats": ab.frame_stats([10.0] * 100),
+             "noisy": ["memory stalls 3.6%"]}
+        self.assertIn("(NOISY: memory stalls 3.6%)", ab.run_line(r))
+        self.assertIn("B2 (memory stalls 3.6%)", ab.noisy_line([r, dict(r, side="A", noisy=[])]))
+        self.assertIsNone(ab.noisy_line([dict(r, noisy=[])]))
+
     def write_up(self, p, version="v0.9.1-12-g7afe6ae1"):
         runs = []
         for side, fps in (("A", 60.0), ("B", 66.0), ("A", 61.0), ("B", 67.0)):

@@ -102,6 +102,9 @@ test('feed validation rejects unsafe URLs, duplicate IDs and malformed records',
   assert.throws(() => validateFeed({ ...feed(), items: [{}] }));
 });
 
+// A pull request as the issues endpoint lists it: its merge date and draft flag are in pull_request.
+const pull = (n, meta = {}, extra = {}) => raw(n, { pull_request: { merged: false, merged_at: null, draft: false, html_url: `${ROOT}/pulls/${n}`, ...meta }, ...extra });
+
 test('collector paginates open items, stops old closed history and keeps PRs separate', async () => {
   const calls = [];
   const fetcher = async (url, options) => {
@@ -112,15 +115,30 @@ test('collector paginates open items, stops old closed history and keeps PRs sep
     if (u.pathname.endsWith('/releases/latest')) return response(release);
     if (u.pathname.endsWith('/releases')) return response([{ ...release, id: 101, draft: true }, release]);
     const page = Number(u.searchParams.get('page') || 1);
-    if (u.searchParams.get('state') === 'closed') return response([raw(999, { state: 'closed', updated_at: '2020-01-01T00:00:00Z' })]);
-    if (u.pathname.endsWith('/pulls')) return response([raw(500, { merged_at: null })]);
+    const pulls = u.searchParams.get('type') === 'pulls';
+    if (u.searchParams.get('state') === 'closed') {
+      assert.equal(u.searchParams.get('since'), '2026-08-13T12:00:00.000Z');
+      const old = { state: 'closed', updated_at: '2020-01-01T00:00:00Z' };
+      return response(pulls ? [pull(600, { merged: true, merged_at: time }, { state: 'closed' }), pull(999, {}, old)] : [raw(999, old)]);
+    }
+    assert.equal(u.searchParams.has('since'), false);
+    if (pulls) return response([pull(500), pull(501, { draft: true })]);
     if (page === 1) return response(Array.from({ length: 100 }, (_, i) => raw(i + 1, { body: body('v2.1.0'), ...(i === 0 ? { pull_request: {} } : {}) })), 200,
       { link: '<https://git.magicbean.dev/api/v1/repos/MagicBeanDev/Longshot/issues?state=open&page=2>; rel="next"' });
     return response([raw(123, { html_url: 'https://evil.invalid', user: { login: 'not-published' }, body: 'not-published' })]);
   };
   const data = await collectFeed({ fetcher, token: 'test-only', now: Date.parse(time) });
-  assert.equal(data.items.length, 102);
+  assert.equal(data.items.length, 104);
   assert(!data.items.some(i => i.id === 'issue:1' || i.number === 999 || i.id === 'release:101'));
+  const byId = Object.fromEntries(data.items.map(i => [i.id, i]));
+  assert.equal(byId['pull:600'].status, 'merged');
+  assert.equal(byId['pull:600'].mergedAt, time);
+  assert.equal(byId['pull:600'].url, `${ROOT}/pulls/600`);
+  assert.equal(byId['pull:501'].status, 'draft');
+  assert.equal(byId['pull:500'].status, 'proposed');
+  assert.equal(byId['pull:500'].mergedAt, null);
+  // /pulls runs git for each pull request on the forge; the collector never asks it.
+  assert(!calls.some(u => u.pathname.endsWith('/pulls')));
   assert.equal(data.stableRelease.tag, 'v2.1.0');
   assert(!JSON.stringify(data).includes('not-published'));
   assert(!JSON.stringify(data).includes('test-only'));
@@ -164,14 +182,27 @@ test('Forgejo collection uses its query contract and supports no published relea
     const u = new URL(url);
     if (u.pathname === `/api/v1/repos/${REPOSITORY}`) return response(repository);
     if (u.pathname.endsWith('/latest')) return response({}, 404);
-    assert.equal(u.searchParams.get('limit'), '100');
     assert.equal(u.searchParams.has('per_page'), false);
-    if (!u.pathname.endsWith('/releases')) assert.equal(u.searchParams.get('sort'), 'recentupdate');
-    if (u.pathname.endsWith('/issues')) assert.equal(u.searchParams.get('type'), 'issues');
+    if (u.pathname.endsWith('/releases')) assert.equal(u.searchParams.get('limit'), '100');
+    else {
+      assert(u.pathname.endsWith('/issues'));
+      assert.equal(u.searchParams.get('limit'), '50');
+      assert.equal(u.searchParams.get('sort'), 'recentupdate');
+      assert(['issues', 'pulls'].includes(u.searchParams.get('type')));
+    }
     return response([]);
   } });
   assert.equal(data.stableRelease, null);
   assert.deepEqual(data.items, []);
+});
+
+test('a pull request listed without its pull_request field fails the collection', async () => {
+  await assert.rejects(collectFeed({ now: Date.parse(time), fetcher: async url => {
+    const u = new URL(url);
+    if (u.pathname === `/api/v1/repos/${REPOSITORY}`) return response(repository);
+    if (u.pathname.endsWith('/latest')) return response({}, 404);
+    return response(u.searchParams.get('type') === 'pulls' && u.searchParams.get('state') === 'open' ? [raw(500)] : []);
+  } }), /Unexpected Forgejo pull request/);
 });
 
 test('pagination rejects another endpoint even on the trusted Forgejo host', async () => {

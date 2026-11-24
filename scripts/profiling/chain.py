@@ -28,7 +28,8 @@ def load(path):
             line = f.readline().decode("utf-8", "replace").split()
             try:
                 if line[0] == "thread":
-                    names[int(line[1])] = line[2]
+                    # (a thread the game never named is written as "thread <n> ": one word short)
+                    names[int(line[1])] = line[2] if len(line) > 2 else "thread-%s" % line[1]
                 elif line[0] == "records":
                     n = int(line[1])
                     if n < 0:

@@ -7,12 +7,21 @@ import tempfile
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
-from srccut import block   # noqa: E402
+from srccut import block, between   # noqa: E402
 
 # (env_on, the switches' rule, before the code cut out of the sources: gpu/vk/compat/longshot_env.h)
 ENV_ON_H = str(Path(__file__).resolve().parents[1] / "gpu" / "vk" / "compat" / "longshot_env.h")
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def sim_turf_cut(draw):
+    """The adaptive simulated turf's per-recording demand readback (#2093), as RecordingRes and draw_begin_recording use it:
+    the sample, the readback's size, the recording's ready flag and RX_VK_SIM_TURF_ADAPTIVE (on, as by default)"""
+    return "\n".join([block(draw, "struct SimTurfSample {") + ";",
+                      "constexpr size_t " + between(draw, "kSimTurfSamplesPerRecording =", ";") + ";",
+                      between(draw, "thread_local bool sim_turf_monitor_ready", ";") + ";",
+                      block(draw, "bool sim_turf_adaptive() {")])
 
 
 def main():
@@ -24,7 +33,7 @@ def main():
     replay = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
     internal = (ROOT / "gpu/vk/vk_internal.h").read_text(encoding="utf-8")
     fixture = (ROOT / "tests/fsr_uniform_ownership_test.cpp").read_text(encoding="utf-8")
-    fixture = fixture.replace("/* RES */", block(draw, "struct RecordingRes {") + ";")
+    fixture = fixture.replace("/* RES */", sim_turf_cut(draw) + "\n" + block(draw, "struct RecordingRes {") + ";")
     fixture = fixture.replace("/* BUFFER_TYPES */", block(internal, "struct BufferRef {") + ";\n" + block(internal, "struct UniformUpload {") + ";")
     actual = "\n".join(block(draw, m) for m in ["bool stream_insert(", "bool stream_next(", "bool stream_reserve(", "uint64_t stream_alloc(", "UniformUpload uniform_upload("])
     fixture = fixture.replace("/* STREAM */", actual).replace("/* BEGIN */", block(draw, "void draw_begin_recording("))

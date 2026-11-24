@@ -35,8 +35,11 @@ whether each started, and why not.
   beside the game yourself: AMD publishes none for Linux.
   **FSR 4 model** (`fsr4_model=0` or `1`; `RX_VK_FSR4_MODEL=auto` or `lite` for one run) chooses AMD's network: **Auto**
   keeps AMD's own pick for the GPU (FP8 on RDNA 4, full INT8 on RDNA 3 and Strix Halo, the RDNA 2 model on RX 6000, Lite
-  on Strix Point and Van Gogh). Forcing **Lite (INT8)** requires a supported Windows runtime with a verified Lite provider;
-  the current build leaves forcing disabled until the provider ABI is verified. Linux can retain the saved Lite value but
+  on Strix Point and Van Gogh). **Lite (INT8)** forces the Lite network, on Windows with an AMD GPU and the
+  `amd_fidelityfx_upscaler_vk.dll` the build fetches (FSR SDK 2.4's: the game checks the file's SHA-256 before it looks
+  inside, and leaves any other file to AMD's own pick, with the row hidden). On a GPU AMD's library lists no FSR 4 model
+  for (an NVIDIA or Intel GPU, a Radeon AMD names for none) the Lite network stands in, so FSR 4 is offered there too,
+  with nothing to choose; `RX_VK_FSR4_STANDIN=0` leaves FSR 4 off there. Linux can retain the saved Lite value but
   cannot force it, so Auto is used.
 - **Intel XeSS** (Windows): put Intel's `libxess.dll`, from the `bin` folder of a recent
   [Intel XeSS SDK](https://github.com/intel/xess/releases) release, beside `bin\longshot.exe` or in the game folder. It

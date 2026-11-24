@@ -57,6 +57,9 @@ class MenuI18nTests(unittest.TestCase):
         for name in ("fx_runtime.cpp", "fx_preset.cpp"):
             runtime.update(c_strings((VK / "reshade" / name).read_text(encoding="utf-8")))
         self.menu.update(text for text in RESHADE_STATUS if text in runtime)
+        # (the prompt bar's key caps, which vk_ui.h's prompt draws through i18n::tr: Clear's "Del" since #2126)
+        ui = (VK / "vk_ui.h").read_text(encoding="utf-8")
+        self.menu.update(re.findall(r'\bkey\(p\.x[^,()]*, "((?:[^"\\\n]|\\.)+)"\)', ui))
 
     def test_languages(self):
         self.assertEqual(self.langs[0], ("en", "English", "nullptr", "0"))

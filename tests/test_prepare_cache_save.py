@@ -126,7 +126,10 @@ with tempfile.TemporaryDirectory(prefix='prepare-cache-') as tmp:
     subprocess.run([a.cxx,'-std=c++20','-include',str(a.source/'gpu'/'vk'/'compat'/'longshot_env.h'),'-I',str(a.source/'gpu'/'vk'),str(src),'-o',str(exe)],check=True)   # (env_on: the switches' rule, gpu/vk/compat/longshot_env.h)
     env={k:v for k,v in os.environ.items() if k not in ('RX_VK_SEED_CHECK','RX_VK_PREPARE_AGAIN')}
     # (Most: the prediction's part of the bar goes after a fresh seed too, out of the total (0.600 at half the noted pipelines).
-    # Left in, the step to the noted pipelines counted it done at its guess: the bar jumped by the prediction's share, 0.714)
+    # Left in, the step to the noted pipelines counted it done at its guess: the bar jumped by the prediction's share, 0.714.
+    # Since #1618 it is out of the total from the start on Most, so an already prepared seed's state-list import is counted
+    # against the programs and the noted pipelines alone: 1 and 4 of the import's 4 out of 6, then half the noted pipelines,
+    # 6 of 8. On All the prediction's guess stays in until the prediction runs: 1 and 4 of 8, then 6 of 8)
     records={
         'missing':None, 'zero':struct.pack('<QQ',42,0), 'nonzero':struct.pack('<QQQQ',42,2,7,9),
         'empty':b'', 'header':struct.pack('<Q',42), 'wrong-stamp':struct.pack('<QQ',43,0),

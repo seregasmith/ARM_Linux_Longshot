@@ -77,12 +77,14 @@ using VkCommandPool = uint64_t;
 constexpr uint64_t VK_NULL_HANDLE = 0;
 constexpr VkResult VK_SUCCESS = 0, VK_NOT_READY = 1, VK_TIMEOUT = 2, VK_ERROR_DEVICE_LOST = -4,
     VK_ERROR_SURFACE_LOST_KHR = -1000000000, VK_SUBOPTIMAL_KHR = 1000001003, VK_ERROR_OUT_OF_DATE_KHR = -1000001004;
-constexpr int VK_TRUE = 1, VK_STRUCTURE_TYPE_FENCE_CREATE_INFO = 8, VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO = 1000314005,
+constexpr int VK_TRUE = 1, VK_STRUCTURE_TYPE_FENCE_CREATE_INFO = 8, VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO = 9,
+    VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO = 1000314005,
     VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO = 1000314006, VK_STRUCTURE_TYPE_SUBMIT_INFO_2 = 1000314004;
 using VkPresentModeKHR = int;
 constexpr VkPresentModeKHR VK_PRESENT_MODE_IMMEDIATE_KHR = 0, VK_PRESENT_MODE_MAILBOX_KHR = 1, VK_PRESENT_MODE_FIFO_KHR = 2;
 constexpr uint64_t VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT = 0x10000;
 struct VkFenceCreateInfo { int sType; const void* pNext = nullptr; int flags = 0; };
+struct VkSemaphoreCreateInfo { int sType; };
 struct VkSemaphoreSubmitInfo { int sType; const void* pNext = nullptr; VkSemaphore semaphore = 0; uint64_t value = 0;
     uint64_t stageMask = 0; uint32_t deviceIndex = 0; };
 struct VkCommandBufferSubmitInfo { int sType; const void* pNext = nullptr; VkCommandBuffer commandBuffer = 0; uint32_t deviceMask = 0; };
@@ -106,9 +108,10 @@ struct Policy {   // (device_policy.h's acquire_ahead: the PC's default, RX_VK_A
     bool set(Sw) const { return by_switch; }
 };
 struct Device { int device = 1; VkSwapchainKHR swapchain = 1; uint64_t swapchain_generation = 0; Extent swap_extent;
+    struct { uint32_t vendorID = 0; } props;
     std::vector<VkSemaphore> swap_rendered{901, 902, 903, 904}; QueueLock present_mu, presenter_queue_mu;
     VkPresentModeKHR swap_mode = VK_PRESENT_MODE_IMMEDIATE_KHR; Policy policy; } dev;
-struct Frame { VkCommandPool pool = 11; VkCommandBuffer cmd = 12; VkFence done = 13; };
+struct Frame { VkCommandPool pool = 11; VkCommandBuffer cmd = 12; VkFence done = 13; VkSemaphore acquired = 0, retired_acquire = 0; };
 namespace fps_stats { enum { kGpuWait, kPace }; }
 namespace gpu_wait_stats { struct Exclude { Exclude() {} }; }
 void fps_wait(int, int64_t) {}
@@ -146,15 +149,20 @@ bool out_of_date = false;     // (every acquire answers VK_ERROR_OUT_OF_DATE_KHR
 bool remake_kills = true;     // (a swapchain made again: its images out never given back (true), or their fences still signaled)
 struct FenceState { VkFence fence; int64_t at; };   // (handed to an acquire and not reset: signaled once now >= at)
 std::vector<FenceState> fences;
-struct Out { VkSwapchainKHR sc; int image; VkFence fence; bool given_back; };   // (acquired, not presented)
-std::vector<Out> out;
+struct Out { VkSwapchainKHR sc; int image; VkFence fence; bool given_back; VkSemaphore semaphore; };
+bool model_nvidia = false;
+std::vector<VkSemaphore> unconsumed_acquires;
+std::vector<VkSemaphore> copy_waits;
+std::vector<Out> out, retired;
 int next_image = 0, acquires = 0, ahead_acquires = 0, presents = 0, submits = 0, copied_into = -1, ahead_out_of_date = 0;
 int fences_made = 0;
+int retired_semaphores_destroyed = 0;
 bool ahead_waited = false, resize_asked = false, presenter_presented = false;
 VkResult next_present_result = VK_SUCCESS;
 FenceState* fence_of(VkFence f) { for (auto& s : fences) if (s.fence == f) return &s; return nullptr; }
 void remake() {   // (the swapchain made again)
     if (remake_kills) for (const Out& o : out) if (FenceState* s = fence_of(o.fence)) s->at = kNever;
+    if (model_nvidia) retired.insert(retired.end(), out.begin(), out.end());
     out.clear();
     dev.swapchain_generation++, dev.swapchain++, next_image = 0, out_of_date = false;
 }
@@ -166,8 +174,9 @@ void hide() {   // (the window hidden: what is out and not given back yet stays 
 }
 std::unique_lock<std::mutex>* presenter_lk = nullptr;   // (set while the model's presenter thread runs: presenter_run)
 bool presenter_busy();
-VkResult vkAcquireNextImageKHR(int, VkSwapchainKHR sc, uint64_t timeout, VkSemaphore, VkFence fence, uint32_t* index) {
+VkResult vkAcquireNextImageKHR(int, VkSwapchainKHR sc, uint64_t timeout, VkSemaphore semaphore, VkFence fence, uint32_t* index) {
     const bool ahead = presenter_lk != nullptr;   // (on the presenter thread: the ahead acquire)
+    if (model_nvidia != (semaphore != 0)) problem("incorrect acquire semaphore for the selected device");
     if (ahead) {
         if (!presenter_lk->owns_lock()) problem("the ahead acquire without presenter.mu held: a drain that gave up may go on beside it");
         if (!dev.presenter_queue_mu.held) problem("the ahead acquire without the swapchain's lock (presenter_queue_mu)");
@@ -192,12 +201,21 @@ VkResult vkAcquireNextImageKHR(int, VkSwapchainKHR sc, uint64_t timeout, VkSemap
     if (ahead) ++ahead_acquires;
     *index = (uint32_t)next_image;
     fences.push_back({fence, give_at_once ? (shown ? now_ns + delay_ns : kNever) : now_ns});
-    out.push_back({sc, next_image, fence, false});
+    if (semaphore) {
+        if (std::find(unconsumed_acquires.begin(), unconsumed_acquires.end(), semaphore) != unconsumed_acquires.end())
+            problem("an acquire semaphore reused before its signal was consumed");
+        unconsumed_acquires.push_back(semaphore);
+    }
+    out.push_back({sc, next_image, fence, false, semaphore});
     next_image = (next_image + 1) % kImages;
     return VK_SUCCESS;
 }
 VkResult vkWaitForFences(int, uint32_t, const VkFence* f, int, uint64_t timeout) {
-    if (*f == 13) return VK_SUCCESS;   // (the frame slot's own: done)
+    if (*f == 13) {
+        for (VkSemaphore semaphore : copy_waits) std::erase(unconsumed_acquires, semaphore);
+        copy_waits.clear();
+        return VK_SUCCESS;
+    }
     if (!presenter_lk && presenter_busy() && *f != 13) problem("the image's fence looked at on the render thread while the presenter owns it");
     FenceState* s = fence_of(*f);
     if (!s) {
@@ -205,8 +223,11 @@ VkResult vkWaitForFences(int, uint32_t, const VkFence* f, int, uint64_t timeout)
         else now_ns += (int64_t)timeout;
         return VK_TIMEOUT;
     }
-    if (s->at <= now_ns) return VK_SUCCESS;
-    if (s->at != kNever && (uint64_t)(s->at - now_ns) <= timeout) { now_ns = s->at; return VK_SUCCESS; }
+    if (s->at <= now_ns || (s->at != kNever && (uint64_t)(s->at - now_ns) <= timeout)) {
+        now_ns = std::max(now_ns, s->at);
+        for (Out& o : retired) if (o.fence == *f) o.given_back = true;
+        return VK_SUCCESS;
+    }
     if (timeout == UINT64_MAX) { problem("a wait without end on an image never given back"); return VK_TIMEOUT; }
     now_ns += (int64_t)timeout;
     return VK_TIMEOUT;
@@ -217,6 +238,7 @@ VkResult vkResetFences(int, uint32_t, const VkFence* f) {
         if (fences[i].fence != *f) continue;
         if (fences[i].at > now_ns) problem("a fence reset while the presentation engine may still signal it");
         for (Out& o : out) if (o.fence == *f) o.given_back = true;
+        for (Out& o : retired) if (o.fence == *f) o.given_back = true;
         fences.erase(fences.begin() + (long)i);
         break;
     }
@@ -224,6 +246,18 @@ VkResult vkResetFences(int, uint32_t, const VkFence* f) {
 }
 uint64_t next_fence = 500;
 VkResult vkCreateFence(int, const VkFenceCreateInfo*, void*, VkFence* made) { *made = ++next_fence, ++fences_made; return VK_SUCCESS; }
+uint64_t next_semaphore = 6000;
+VkResult vkCreateSemaphore(int, const VkSemaphoreCreateInfo*, void*, VkSemaphore* made) { *made = ++next_semaphore; return VK_SUCCESS; }
+void vkDestroyFence(int, VkFence fence, void*) {
+    for (Out& o : retired) if (o.fence == fence) o.given_back = true;
+    if (!fence_of(fence) || fence_of(fence)->at > now_ns) problem("a retired acquire fence destroyed before it signaled");
+    std::erase_if(fences, [fence](const FenceState& s) { return s.fence == fence; });
+}
+void vkDestroySemaphore(int, VkSemaphore semaphore, void*) {
+    if (std::find(unconsumed_acquires.begin(), unconsumed_acquires.end(), semaphore) != unconsumed_acquires.end())
+        problem("retired acquire semaphore destroyed before the copy consumed it");
+    retired_semaphores_destroyed += (int)std::erase_if(retired, [semaphore](const Out& o) { return o.semaphore == semaphore; });
+}
 VkResult vkEndCommandBuffer(VkCommandBuffer) { return VK_SUCCESS; }
 VkFence present_copy_done = VK_NULL_HANDLE;
 bool present_acquire_ahead = false;
@@ -297,12 +331,23 @@ void present(Frame& f, bool game = true) {
 @@ACQUIRE@@
 @@SUBMIT@@
     ++submits, copied_into = (int)index;
-    if (si.waitSemaphoreInfoCount)
-        problem("the copy waits on the GPU, on the replay's queue, for the window's image: whatever holds the image holds the "
-                "game's work too, and the GPU hang watch ends the game (#1376)");
-    for (const Out& o : out)
-        if (o.image == (int)index && o.sc == dev.swapchain && !o.given_back)
+    if ((!model_nvidia && si.waitSemaphoreInfoCount) || (model_nvidia && !si.waitSemaphoreInfoCount))
+        problem("incorrect acquire semaphore wait count in the copy submission");
+    for (const Out& o : out) {
+        if (o.image != (int)index || o.sc != dev.swapchain) continue;
+        if (!o.given_back)
             problem("a copy submitted into an image the system has not given back");
+        if (si.waitSemaphoreInfoCount && si.pWaitSemaphoreInfos->semaphore == o.semaphore)
+            copy_waits.push_back(o.semaphore);
+        else if (o.semaphore)
+            problem("the copy does not consume its image's acquire semaphore");
+    }
+    for (uint32_t i = 1; i < si.waitSemaphoreInfoCount; ++i) {
+        const VkSemaphore semaphore = si.pWaitSemaphoreInfos[i].semaphore;
+        if (std::none_of(retired.begin(), retired.end(), [semaphore](const Out& o) { return o.semaphore == semaphore && o.given_back; }))
+            problem("a wait on a retired acquire before its image fence was ready");
+        copy_waits.push_back(semaphore);
+    }
     std::unique_lock qk(dev.present_mu);
 @@TAIL@@
 }
@@ -322,6 +367,8 @@ const std::string* last_log(const char* start) {
 }
 
 int main() {
+    model_nvidia = std::getenv("MODEL_NVIDIA") != nullptr;
+    if (model_nvidia) dev.props.vendorID = 0x10de;
     {   // (the mode: the driver's default, then the switch over it by device_policy_env's rule, for the values the check sets)
         const char* d = std::getenv("MODEL_DEFAULT_ON");
         dev.policy.acquire_ahead = d && std::strcmp(d, "1") == 0;
@@ -555,6 +602,8 @@ int main() {
         step(10 * kMs);
         if (submits != s2 + 2) problem("no copies after the out-of-date swapchain was made again");
     }
+    if (model_nvidia && !retired_semaphores_destroyed)
+        problem("no completed retired acquire semaphore reclaimed");
     if (problems) return 1;
     std::printf("PASS (%s, %s): %s%s; late, hidden and given back, swapchain made again, fences let go, presenter late and stuck, "
                 "gates, NVIDIA-like, device lost, out of date\n", PLATFORM, MODE,
@@ -607,8 +656,8 @@ BROKEN = [
      "const int why = framegen_on() ? 1",
      "const int why = false ? 1"),
     ("the ahead acquire with a timeout",
-     "res = vkAcquireNextImageKHR(dev.device, sc, 0, VK_NULL_HANDLE, acquire_fence, &index);",
-     "res = vkAcquireNextImageKHR(dev.device, sc, 1000000000ull, VK_NULL_HANDLE, acquire_fence, &index);"),
+     "res = vkAcquireNextImageKHR(dev.device, sc, 0, acquire_semaphore, acquire_fence, &index);",
+     "res = vkAcquireNextImageKHR(dev.device, sc, 1000000000ull, acquire_semaphore, acquire_fence, &index);"),
     ("an out-of-date answer to the ahead acquire taken as an image",
      "    if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {   // (no image: the fence untouched, the next present acquires)",
      "    if (res == VK_NOT_READY || res == VK_TIMEOUT) {   // (no image: the fence untouched, the next present acquires)"),
@@ -686,7 +735,7 @@ def fixture(replay, windows, mode):
 MODES = [(False, None), (False, "0"), (False, "1"), (True, None), (True, "0"), (True, "1")]
 
 
-def build_and_run(cxx, replay, windows, temp, name, modes, quiet=False):
+def build_and_run(cxx, replay, windows, temp, name, modes, quiet=False, nvidia=False):
     """Compiles the fixture and runs it in each of modes (the driver's default, RX_VK_ACQUIRE_AHEAD): whether every run passed
     (None: the fixture did not compile, said)"""
     cpp, exe = Path(temp) / (name + ".cpp"), Path(temp) / (name + ".exe")
@@ -703,6 +752,9 @@ def build_and_run(cxx, replay, windows, temp, name, modes, quiet=False):
             return None
         env = dict(os.environ)
         env.pop("RX_VK_ACQUIRE_AHEAD", None)
+        env.pop("MODEL_NVIDIA", None)
+        if nvidia:
+            env["MODEL_NVIDIA"] = "1"
         env["MODEL_DEFAULT_ON"] = "1" if default_on else "0"
         if value is not None:
             env["RX_VK_ACQUIRE_AHEAD"] = value
@@ -721,6 +773,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="present-acquire-ahead-") as temp:
         for windows in (True, False):
             failed |= not build_and_run(a.cxx, replay, windows, temp, "Windows" if windows else "Linux", MODES)
+        failed |= not build_and_run(a.cxx, replay, True, temp, "Windows-NVIDIA", ((True, None),), nvidia=True)
         for what, old, new, *modes in BROKEN:
             if replay.count(old) != 1:
                 print("FAIL: the broken variant '%s' finds its place %d times, not once (the source changed?)" % (what, replay.count(old)))

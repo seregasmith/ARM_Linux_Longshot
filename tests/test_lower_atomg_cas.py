@@ -6,6 +6,7 @@ else is copied to R250/R251 first. The Maxwell frontend's ATOM_cas makes it Glob
 python -I -B tests/test_lower_atomg_cas.py [--cxx clang++]
 """
 import argparse
+import re
 import shutil
 import subprocess
 import tempfile
@@ -82,9 +83,14 @@ def main():
         raise SystemExit("ATOM_cas is still a not-implemented stub")
     opcodes = (EDEN / "frontend" / "ir" / "opcodes.inc").read_text(encoding="utf-8")
     count = sum(1 for line in opcodes.splitlines() if line.startswith("OPCODE("))
+    # (the tables are sized by a number written out, or by NUM_OPCODES: Opcode::Count, the enum's entry after opcodes.inc's)
+    header = (EDEN / "frontend" / "ir" / "opcodes.h").read_text(encoding="utf-8")
+    counted = ("inline constexpr size_t NUM_OPCODES = static_cast<size_t>(Opcode::Count);" in header and
+               re.search(r"enum class Opcode \{\s*#define OPCODE\(name, \.\.\.\) name,\s*#include \"opcodes\.inc\"\s*"
+                         r"#undef OPCODE\s*Count,\s*\};", header))
     for f in ("opcodes.cpp", "opcodes.h"):
         text = (EDEN / "frontend" / "ir" / f).read_text(encoding="utf-8")
-        if f"META_TABLE[{count}]" not in text or f"NUM_ARGS[{count}]" not in text:
+        if not all(f"{t}[{count}]" in text or (counted and f"{t}[NUM_OPCODES]" in text) for t in ("META_TABLE", "NUM_ARGS")):
             raise SystemExit(f"frontend/ir/{f}: the opcode tables are not sized for the {count} opcodes")
     storage = (EDEN / "ir_opt" / "global_memory_to_storage_buffer_pass.cpp").read_text(encoding="utf-8")
     if "return IR::Opcode::StorageAtomicCompareExchange32;" not in storage:

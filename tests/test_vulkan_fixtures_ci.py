@@ -107,7 +107,7 @@ class Output(unittest.TestCase):
             with self.assertRaises(ValueError):
                 runner.check_identity(text, "llvmpipe")
 
-    def test_main_keeps_failure_and_runs_all_three_with_explicit_selection(self):
+    def test_main_keeps_failure_and_runs_every_fixture_with_explicit_selection(self):
         with tempfile.TemporaryDirectory() as tmp:
             icd, summary = Path(tmp, "lvp_icd.json"), Path(tmp, "summary")
             icd.write_text("{}", encoding="utf-8")
@@ -117,13 +117,13 @@ class Output(unittest.TestCase):
             with patch.dict(os.environ, env), patch.object(sys, "argv", ["runner", "--headers", tmp, "--device", "llvmpipe"]), \
                     patch.object(runner, "run", side_effect=responses) as run, contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(runner.main(), 1)
-            self.assertEqual(run.call_count, 4)
+            self.assertEqual(run.call_count, 5)
             for call, fixture in zip(run.call_args_list[1:], runner.FIXTURES):
                 command, used_env = call.args
                 self.assertEqual(command[-len(fixture[1]) - 1:], [*fixture[1], "llvmpipe"])
                 self.assertEqual(used_env["VK_INSTANCE_LAYERS"], runner.LAYER)
                 self.assertEqual(used_env["VK_LOADER_DEBUG"], "layer")
-            self.assertIn("2 passed, 1 failed, 0 skipped", summary.read_text(encoding="utf-8"))
+            self.assertIn("3 passed, 1 failed, 0 skipped", summary.read_text(encoding="utf-8"))
 
 
 class Workflow(unittest.TestCase):

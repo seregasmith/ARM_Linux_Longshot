@@ -8,6 +8,7 @@
 #include "menu_module.h"
 
 #include "upscaler_rows.h"
+#include "vk_menu_hit.h"
 
 #ifndef MENU_LAYOUT_ONLY
 #include "menu/output.h"     // (game_size: the 3D's size at a share of the output)
@@ -66,7 +67,44 @@ const char* tx_resolution(int v) {
 #endif
 
 namespace {
+int dyn_res_ui = 1;            // (UI-only mirror of dynamic_resolution_on; unsaved, synced from opts.resolution)
+MODULE_HINTS(hn_dynamic_resolution, 0,
+             "Fixed render resolution: choose a steady scale on the Render resolution slider below.",
+             "Automatic: the game adjusts the 3D resolution dynamically to maintain frame rate.")
 #ifndef MENU_LAYOUT_ONLY
+int last_fixed_resolution = 3; // (remembered fixed resolution ID across Dynamic resolution On/Off; default 67% Quality)
+/// Format a fixed Render resolution stop ID (for the stepped slider and drag preview, independent of full_scale(upscaler())).
+std::string tx_resolution_stop(int stop_v) {
+    char b[64];
+    const int up = upscaler(), e = ur::engine(up);
+    if (stop_v == ur::kNativeStop) {
+        const int nat = ur::native_of(e);
+        uint32_t w, h;
+        game_size(1.0f, w, h);
+        snprintf(b, sizeof b, "Native (%s, %ux%u)", nat == ur::DLAA ? "DLAA" : nat == ur::FSR4_AA ? "FSR 4" : "XeSS", w, h);
+        return b;
+    }
+    const int v = ur::snap_render(e, stop_v);
+    if (!ur::percent(v)) return "Auto (dynamic)";
+    uint32_t w, h;
+    game_size(ur::percent(v) / 100.0f, w, h);
+    if (const char* mode = e == ur::XESS ? ur::xess_mode_name(v) : ur::scales_by_mode(e) ? ur::dlss_mode_name(v) : nullptr) {
+        snprintf(b, sizeof b, "%s %d%% (%ux%u)", mode, ur::percent(v), w, h);
+        return b;
+    }
+    snprintf(b, sizeof b, "%d%% (%ux%u)", ur::percent(v), w, h);
+    return b;
+}
+int resolution_slider_permille(int stop_v) {
+    int n = 0;
+    const int* stops = ur::fixed_steps(upscaler(), n);
+    return menu_hit::slider_stop_permille(menu_hit::slider_find_stop(stop_v, stops, n), n);
+}
+int resolution_slider_value(int permille) {
+    int n = 0;
+    const int* stops = ur::fixed_steps(upscaler(), n);
+    return menu_hit::slider_stop_value(permille, stops, n);
+}
 /// The Upscaler: the one shown (what runs, upscaler()), and with the game's own, why DLSS, FSR and XeSS are not offered.
 /// Variants (every one): each value, then the game's own with each of DLSS's reasons, then with each of FSR's, then XeSS's
 const char* hn_upscaler(int v, int variant) {
@@ -316,14 +354,40 @@ MENU_MODULE(upscaler) {
                   return fixed_by_line(ur::pre_bloom_fixed(upscaler(), pre_bloom_env()), hn_dlss_pre_bloom(opts.dlss_pre_bloom, -1));
               }),
               .hint = MENU_HOOK(hn_dlss_pre_bloom)}, menu::after("handheld_profile").order(30))
+        .row({.key = "dynamic_resolution",
+              .label = "Dynamic resolution",
+              .help = "Lets the game lower the 3D resolution automatically when the GPU is busy.",
+              .kind = menu::Kind::Toggle,
+              .value = &dyn_res_ui,
+              .lo = 0, .hi = 1,
+              .shown = MENU_HOOK([] { return !ur::render_fixed(upscaler()); }),
+              .hint = hn_dynamic_resolution,
+              .on_change = MENU_HOOK([](int v) {
+                  int next_up = upscaler();
+                  opts.resolution = ur::toggle_dynamic_resolution(upscaler(), opts.resolution, v != 0, &last_fixed_resolution, &next_up);
+                  if (next_up != upscaler()) opts.dlss = next_up;
+              }),
+              .unsaved = true,
+              .sync = MENU_HOOK([] { return ur::dynamic_resolution_on(upscaler(), opts.resolution) ? 1 : 0; })},
+             menu::after("handheld_profile").order(35))
         .row({.key = "resolution",
               .label = "Render resolution",
               .help = "The share of the output the 3D is drawn at; the Upscaler fills in the rest.",
+              .kind = menu::Kind::Slider,
               .value = &opts.resolution,
               .lo = 0, .hi = ur::kValues - 1,
+              .shown = MENU_HOOK([] { return !ur::dynamic_resolution_on(upscaler(), opts.resolution); }),
               .locked = MENU_HOOK([] { return fixed_by_line(ur::render_fixed(upscaler()), hn_resolution(opts.resolution, -1)); }),
               .text = MENU_HOOK([](int v) { return std::string(tx_resolution(v)); }),
-              .hint = MENU_HOOK(hn_resolution)}, menu::after("handheld_profile").order(40))
+              .hint = MENU_HOOK(hn_resolution),
+              .on_change = MENU_HOOK([](int v) {
+                  if (ur::percent(v)) last_fixed_resolution = v;
+              }),
+              .commit_on_release = true,
+              .slider_current = MENU_HOOK([] { return ur::active_fixed_stop(upscaler(), opts.resolution); }),
+              .slider_permille = MENU_HOOK(resolution_slider_permille),
+              .slider_value = MENU_HOOK(resolution_slider_value),
+              .slider_text = MENU_HOOK(tx_resolution_stop)}, menu::after("handheld_profile").order(40))
         .row({.key = "sharpness",
               .label = "Sharpness",
               .help = "Sharpens the picture as it goes to the window, with any filter. Too much shows halos around edges.",

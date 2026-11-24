@@ -2,8 +2,9 @@
 // Copyright (c) 2026 the totk-pc-recomp authors): the cache keyed by storage address plus descriptor, uploads on first
 // use and when page write generations show the storage written, the GPU-owned rule (an image the GPU wrote is the
 // content), every image in GENERAL layout, deferred destruction. The GPU ASTC decode is Eden's
-// (video_core/host_shaders/astc_decoder.comp and renderer_vulkan/vk_compute_pass.cpp ASTCDecoderPass, GPL), the CPU
-// unswizzle suyu's (video_core/textures/decoders.cpp, with the Switch 2 GOB swizzle).
+// (video_core/host_shaders/astc_decoder.comp and renderer_vulkan/vk_compute_pass.cpp ASTCDecoderPass, GPL). The CPU
+// block-linear (Switch 2 GOB) swizzle and unswizzle and the CPU ASTC decoder, which runs when the GPU one declines or with
+// RX_VK_ASTC_CPU=1, are texdecode's (gpu/vk/texdecode/: ported code, PROVENANCE.md there).
 //
 // Formats share images by class: an image is made in the format first asked for (sRGB as its UNORM twin), with
 // MUTABLE_FORMAT, so that a texture rendered as RGBA8 and sampled as RGBA8_SRGB, or written as R32UI and read as
@@ -55,8 +56,7 @@
 
 #include <span>
 
-#include "video_core/textures/astc.h"
-#include "video_core/textures/decoders.h"
+#include "texdecode/texdecode.h"
 
 #include "vk_builtin_spv.h"   // (RX_VK_SHADER_DIR)
 #include "host_shaders/astc_decoder_comp_spv.h"
@@ -730,7 +730,13 @@ Staging staging(uint64_t n, uint64_t align = 256) {
 struct AstcPush {
     uint32_t block_dims[2], layer_stride, block_size, x_shift, block_height, block_height_mask, native_tiling;
     uint32_t blocks_x, blocks_y;
+    uint32_t srgb;   // 1: the sRGB decode mode (an sRGB NVN format), endpoints widened as (v << 8) | 0x80 rather than v * 257
 };
+/// The NVN ASTC formats' sRGB half (0x87 to 0x94, as view_format_of reads them): decoded in the specification's sRGB mode, which
+/// is what their R8G8B8A8_SRGB view samples
+bool astc_nvn_srgb(int nvn) {
+    return nvn >= 0x87 && nvn <= 0x94;
+}
 VkDescriptorSetLayout astc_set = VK_NULL_HANDLE;
 VkPipelineLayout astc_layout = VK_NULL_HANDLE;
 VkPipeline astc_pipe = VK_NULL_HANDLE;
@@ -877,12 +883,12 @@ uint32_t bc_layers() {
 /// them (Hyrule Field's entry on an RX 9070 XT: 51 ms an array at one layer a run, 15 ms at 8; #1720). 36 MB (32 for the
 /// image, 4 more of the output buffer), beside the 2048 x 2048 scratch's 20; on a card of small VRAM
 /// (low_vram_texture_mips) it is kBcTinyDim a side; not made where it would land in system memory. Its layers: 8 on
-/// RADV and NVIDIA's driver, 1 (no small scratch, every run one layer, and no groups of levels) on every other
-/// (device_policy.h bc_small_runs); RX_VK_BC_SMALL_LAYERS=<n> over that. One layer a run (ec89f92e) was for grid lines
-/// on the far ground, layers after a run's first wrong at the small levels on an RX 6600, and they came back with this
-/// scratch on AMD's Windows driver (#2006); they stayed with the copy out of the encoder's buffer giving the layers'
-/// pitch (#2015, bc_encode_into; #2107). The cause is still not found.
-/// Runs still never hold a repacked level (upload_astc_gpu)
+/// RADV, NVIDIA's driver and AMD's Windows driver, 1 (no small scratch, every run one layer, and no groups of levels) on
+/// every other (device_policy.h bc_small_runs); RX_VK_BC_SMALL_LAYERS=<n> over that. On AMD's Windows driver (diagnosed
+/// on RDNA 2: RX 6700 XT, RX 6600), a multi-layer VkBufferImageCopy into a non-4-aligned compressed mip tail (e.g. 5x5
+/// mip 8) truncates to floor(w/4) x floor(h/4) blocks, leaving edge blocks zeroed (Hyrule Field's grid lines: ec89f92e,
+/// #2006, #2107, #2110); dev.policy.bc_copy_per_layer splits those copies into one region per layer in bc_encode_into so
+/// 8-layer runs stay clean across AMD's Windows driver. Runs still never hold a repacked level (upload_astc_gpu)
 constexpr uint32_t kBcSmallDim = 1024;
 /// (longshot) The small scratch on a card of small VRAM (low_vram_texture_mips), where the 1024 x 1024 one (36 MB) was not
 /// made at all: 256 x 256 and bc_small_layers() layers, 2 MB with its share of the output buffer. Such a card keeps all its large ASTC
@@ -906,6 +912,9 @@ bool bc7_enabled() {
 VkImage bc_scratch = VK_NULL_HANDLE;
 VmaAllocation bc_scratch_alloc = nullptr;
 VkImageView bc_scratch_view = VK_NULL_HANDLE;
+// (the three scratch views' R8G8B8A8_UINT twins, which the ASTC decoder writes: it stores the bytes as integers, an integer format
+// keeping the bits as they are. The scratch images are MUTABLE_FORMAT; the BC encoders read the UNORM views)
+VkImageView bc_scratch_uview = VK_NULL_HANDLE, bc_small_uview = VK_NULL_HANDLE;
 VkBuffer bc_out = VK_NULL_HANDLE;
 VmaAllocation bc_out_alloc = nullptr;
 VkImage bc_small = VK_NULL_HANDLE;   // (the small scratch, made and given back with the first; none at RX_VK_BC_SMALL_LAYERS=1)
@@ -914,6 +923,7 @@ VkImageView bc_small_view = VK_NULL_HANDLE;
 // (a view of each of the small scratch's layers: a single-layer texture's levels are decoded one into each. RX_VK_BC_LEVELS=0:
 // none, each level a run of its own, and no small scratch on a card of small VRAM, as before)
 VkImageView bc_small_layer[8] = {};
+VkImageView bc_small_layer_u[8] = {};   // (and their UINT twins)
 bool bc_levels_on() {
     static const bool on = !getenv("RX_VK_BC_LEVELS") || atoi(getenv("RX_VK_BC_LEVELS")) != 0;
     return on;
@@ -952,6 +962,7 @@ bool bc_scratch_make() {   // (bc_mu held)
     ii.arrayLayers = bc_layers();
     ii.samples = VK_SAMPLE_COUNT_1_BIT;
     ii.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    ii.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;   // (written through a UINT view, read through a UNORM one)
     static const bool pool = env_on("RX_VK_BC_POOL");
     if (!create_image(ii, bc_scratch, bc_scratch_alloc, !pool)) return false;
     VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -959,6 +970,13 @@ bool bc_scratch_make() {   // (bc_mu held)
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
     vi.format = VK_FORMAT_R8G8B8A8_UNORM;
     vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, bc_layers()};
+    // (the same view as R8G8B8A8_UINT)
+    const auto uview = [](VkImageViewCreateInfo v, VkImageView& out) {
+        v.format = VK_FORMAT_R8G8B8A8_UINT;
+        if (vkCreateImageView(dev.device, &v, nullptr, &out) == VK_SUCCESS) return true;
+        out = VK_NULL_HANDLE;
+        return false;
+    };
     const bool tiny = low_vram_texture_mips() && bc_levels_on();   // (a card of small VRAM: the 256 x 256 one)
     if (bc_small_layers() > 1 && (!low_vram_texture_mips() || tiny)) {   // (not made: its levels go through the first scratch, one layer a run)
         bc_small_px = tiny ? kBcTinyDim : kBcSmallDim;
@@ -972,26 +990,29 @@ bool bc_scratch_make() {   // (bc_mu held)
             VkImageViewCreateInfo sv = vi;
             sv.image = bc_small;
             sv.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, bc_small_layers()};
-            if (vkCreateImageView(dev.device, &sv, nullptr, &bc_small_view) != VK_SUCCESS) why = "has no view";
+            if (vkCreateImageView(dev.device, &sv, nullptr, &bc_small_view) != VK_SUCCESS || !uview(sv, bc_small_uview)) why = "has no view";
             for (uint32_t l = 0; !why && bc_levels_on() && l < bc_small_layers(); l++) {   // (a view a layer: a group's levels)
                 sv.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, l, 1};
-                if (vkCreateImageView(dev.device, &sv, nullptr, &bc_small_layer[l]) != VK_SUCCESS) {
-                    for (VkImageView& v : bc_small_layer) {
-                        if (v) vkDestroyImageView(dev.device, v, nullptr);
-                        v = VK_NULL_HANDLE;
+                if (vkCreateImageView(dev.device, &sv, nullptr, &bc_small_layer[l]) != VK_SUCCESS || !uview(sv, bc_small_layer_u[l])) {
+                    for (uint32_t k = 0; k < 8; k++) {
+                        if (bc_small_layer[k]) vkDestroyImageView(dev.device, bc_small_layer[k], nullptr);
+                        if (bc_small_layer_u[k]) vkDestroyImageView(dev.device, bc_small_layer_u[k], nullptr);
+                        bc_small_layer[k] = bc_small_layer_u[k] = VK_NULL_HANDLE;
                     }
                     break;
                 }
             }
         }
         if (why) {
-            for (VkImageView& v : bc_small_layer) {
-                if (v) vkDestroyImageView(dev.device, v, nullptr);
-                v = VK_NULL_HANDLE;
+            for (uint32_t k = 0; k < 8; k++) {
+                if (bc_small_layer[k]) vkDestroyImageView(dev.device, bc_small_layer[k], nullptr);
+                if (bc_small_layer_u[k]) vkDestroyImageView(dev.device, bc_small_layer_u[k], nullptr);
+                bc_small_layer[k] = bc_small_layer_u[k] = VK_NULL_HANDLE;
             }
             if (bc_small_view) vkDestroyImageView(dev.device, bc_small_view, nullptr);
+            if (bc_small_uview) vkDestroyImageView(dev.device, bc_small_uview, nullptr);
             if (bc_small) destroy_image(bc_small, bc_small_alloc);
-            bc_small = VK_NULL_HANDLE, bc_small_alloc = nullptr, bc_small_view = VK_NULL_HANDLE;
+            bc_small = VK_NULL_HANDLE, bc_small_alloc = nullptr, bc_small_view = VK_NULL_HANDLE, bc_small_uview = VK_NULL_HANDLE;
             static std::atomic<int> told{0};
             if (told++ < 2) logf("vk: the small BC3 scratch %s: its levels go one layer a run", why);
         } else {
@@ -1015,17 +1036,20 @@ bool bc_scratch_make() {   // (bc_mu held)
         if (told++ < 4) logf("vk: VRAM full: the BC3 scratch's output buffer (%llu MB) in system memory", (unsigned long long)(out >> 20));
         return true;
     };
-    if (vkCreateImageView(dev.device, &vi, nullptr, &bc_scratch_view) != VK_SUCCESS || !make_out()) {
+    if (vkCreateImageView(dev.device, &vi, nullptr, &bc_scratch_view) != VK_SUCCESS || !uview(vi, bc_scratch_uview) || !make_out()) {
         if (bc_scratch_view) vkDestroyImageView(dev.device, bc_scratch_view, nullptr);
+        if (bc_scratch_uview) vkDestroyImageView(dev.device, bc_scratch_uview, nullptr);
         destroy_image(bc_scratch, bc_scratch_alloc);
-        bc_scratch = VK_NULL_HANDLE, bc_scratch_view = VK_NULL_HANDLE;
-        for (VkImageView& v : bc_small_layer) {
-            if (v) vkDestroyImageView(dev.device, v, nullptr);
-            v = VK_NULL_HANDLE;
+        bc_scratch = VK_NULL_HANDLE, bc_scratch_view = VK_NULL_HANDLE, bc_scratch_uview = VK_NULL_HANDLE;
+        for (uint32_t k = 0; k < 8; k++) {
+            if (bc_small_layer[k]) vkDestroyImageView(dev.device, bc_small_layer[k], nullptr);
+            if (bc_small_layer_u[k]) vkDestroyImageView(dev.device, bc_small_layer_u[k], nullptr);
+            bc_small_layer[k] = bc_small_layer_u[k] = VK_NULL_HANDLE;
         }
         if (bc_small_view) vkDestroyImageView(dev.device, bc_small_view, nullptr);
+        if (bc_small_uview) vkDestroyImageView(dev.device, bc_small_uview, nullptr);
         if (bc_small) destroy_image(bc_small, bc_small_alloc);
-        bc_small = VK_NULL_HANDLE, bc_small_alloc = nullptr, bc_small_view = VK_NULL_HANDLE;
+        bc_small = VK_NULL_HANDLE, bc_small_alloc = nullptr, bc_small_view = VK_NULL_HANDLE, bc_small_uview = VK_NULL_HANDLE;
         return false;
     }
     bc_scratch_fresh = true;
@@ -1145,11 +1169,27 @@ void bc_encode_into(VkCommandBuffer cmd, uint32_t w, uint32_t h, uint32_t n, Tex
     vkCmdDispatch(cmd, (pc.blocks_x + 7) / 8, (pc.blocks_y + 7) / 8, n);
     full_barrier(cmd);
     // (the buffer's rows and layers given in whole blocks, as the encoder wrote them: blocks_x * blocks_y blocks a layer.
-    // Left at 0, the driver worked the layers' pitch out from the extent, and a level not a multiple of 4 leaves that to
-    // its rounding: the terrain's material arrays are 1365 x 1365, and on AMD's Windows driver (an RX 6700 XT; an RX 6600
-    // before, ec89f92e) every layer after a run's first came out wrong, Hyrule Field's ground in a grid of dark lines, #2006)
-    const VkBufferImageCopy c{0, pc.blocks_x * 4, pc.blocks_y * 4, {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, n}, {dx, dy, 0}, {w, h, 1}};
-    vkCmdCopyBufferToImage(cmd, bc_out, dst.image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+    // On AMD's Windows driver (diagnosed on RDNA 2: RX 6700 XT, RX 6600; #2006, #2015), a single multi-layer
+    // VkBufferImageCopy (layerCount > 1) into a compressed mip-tail level whose extent is not a multiple of 4 (e.g. 5x5
+    // mip 8 on the 1365 x 1365 x 90 terrain arrays) truncates the copy to floor(w/4) x floor(h/4) blocks per layer, leaving
+    // the right and bottom edge blocks zeroed (pure black). When dev.policy.bc_copy_per_layer is on (AMD's Windows driver),
+    // emit one single-layer region per layer in the same vkCmdCopyBufferToImage call, keeping 8-layer decode/encode runs
+    // intact and leaving every other driver on the single-region path.)
+    if (dev.policy.bc_copy_per_layer && n > 1 && ((w & 3) || (h & 3))) {
+        const uint64_t layer_bytes = (uint64_t)pc.blocks_x * pc.blocks_y * 16;
+        for (uint32_t i0 = 0; i0 < n;) {
+            VkBufferImageCopy regions[8];
+            const uint32_t m = n - i0 < 8 ? n - i0 : 8;
+            for (uint32_t j = 0; j < m; ++j)
+                regions[j] = {(uint64_t)(i0 + j) * layer_bytes, pc.blocks_x * 4, pc.blocks_y * 4,
+                              {VK_IMAGE_ASPECT_COLOR_BIT, level, layer + i0 + j, 1}, {dx, dy, 0}, {w, h, 1}};
+            vkCmdCopyBufferToImage(cmd, bc_out, dst.image, VK_IMAGE_LAYOUT_GENERAL, m, regions);
+            i0 += m;
+        }
+    } else {
+        const VkBufferImageCopy c{0, pc.blocks_x * 4, pc.blocks_y * 4, {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, n}, {dx, dy, 0}, {w, h, 1}};
+        vkCmdCopyBufferToImage(cmd, bc_out, dst.image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+    }
     full_barrier(cmd);   // (the scratch and the buffer are the next part's)
 }
 
@@ -1216,20 +1256,22 @@ void bc_scratch_idle() {
     std::lock_guard lk(bc_mu);
     if (!bc_have || std::chrono::steady_clock::now() - bc_used_at < std::chrono::seconds(bc_idle_s())) return;
     uint64_t freed = allocation_size(bc_scratch_alloc) + allocation_size(bc_out_alloc);
-    Dead d{bc_last_value, bc_scratch, bc_scratch_alloc, {bc_scratch_view}, {}};
+    Dead d{bc_last_value, bc_scratch, bc_scratch_alloc, {bc_scratch_view, bc_scratch_uview}, {}};
     d.buffer = bc_out, d.buffer_alloc = bc_out_alloc;
     dead.push_back(std::move(d));
-    bc_scratch = VK_NULL_HANDLE, bc_scratch_alloc = nullptr, bc_scratch_view = VK_NULL_HANDLE, bc_out = VK_NULL_HANDLE, bc_out_alloc = nullptr;
+    bc_scratch = VK_NULL_HANDLE, bc_scratch_alloc = nullptr, bc_scratch_view = VK_NULL_HANDLE, bc_scratch_uview = VK_NULL_HANDLE,
+    bc_out = VK_NULL_HANDLE, bc_out_alloc = nullptr;
     bc_have = false, bc_scratch_fresh = false;
     if (bc_small) {
         freed += allocation_size(bc_small_alloc);
-        Dead ds{bc_last_value, bc_small, bc_small_alloc, {bc_small_view}, {}};
-        for (VkImageView& v : bc_small_layer) {
-            if (v) ds.views.push_back(v);
-            v = VK_NULL_HANDLE;
+        Dead ds{bc_last_value, bc_small, bc_small_alloc, {bc_small_view, bc_small_uview}, {}};
+        for (uint32_t k = 0; k < 8; k++) {
+            if (bc_small_layer[k]) ds.views.push_back(bc_small_layer[k]);
+            if (bc_small_layer_u[k]) ds.views.push_back(bc_small_layer_u[k]);
+            bc_small_layer[k] = bc_small_layer_u[k] = VK_NULL_HANDLE;
         }
         dead.push_back(std::move(ds));
-        bc_small = VK_NULL_HANDLE, bc_small_alloc = nullptr, bc_small_view = VK_NULL_HANDLE;
+        bc_small = VK_NULL_HANDLE, bc_small_alloc = nullptr, bc_small_view = VK_NULL_HANDLE, bc_small_uview = VK_NULL_HANDLE;
     }
     const bool second = bc_scratch2 != VK_NULL_HANDLE;
     if (second) {   // (longshot-amd: the second scratch, 16 MB a layer, with it)
@@ -1240,11 +1282,13 @@ void bc_scratch_idle() {
     logf("vk: the BC3 scratch (%u MB%s) unused for %u s: given back", (unsigned)(freed >> 20), second ? ", both" : "", bc_idle_s());
 }
 
-/// The storage view of one level (every layer) the ASTC decoder writes
+/// The storage view of one level (every layer) the ASTC decoder writes: R8G8B8A8_UINT, through which it stores its bytes as they are
+/// (a UNORM store of n / 255 is exact only where the GPU rounds to nearest, which Vulkan recommends but does not require). The
+/// decoded textures are MUTABLE_FORMAT, and storage use of this format is mandatory
 VkImageView astc_target_view(Texture* tex, uint32_t level) {
     const uint64_t key = mix(0xA57C, level);
     return cached_image_view(tex, key, [&](VkResult* result) {
-        return make_view(tex, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT,
+        return make_view(tex, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_FORMAT_R8G8B8A8_UINT, VK_IMAGE_ASPECT_COLOR_BIT,
                          level, 1, 0, tex->layers, {}, VK_IMAGE_USAGE_STORAGE_BIT, result);
     });
 }
@@ -1336,12 +1380,12 @@ bool overlaps(const Ranges* dirty, uint64_t a, uint64_t b) {
     return false;
 }
 
-/// The view of one level the ASTC decoder writes: every layer, or one (layer)
+/// The view of one level the ASTC decoder writes: every layer, or one (layer); R8G8B8A8_UINT as astc_target_view's
 VkImageView astc_level_view(Texture* tex, uint32_t level, uint32_t layer) {
     if (layer == ~0u) return astc_target_view(tex, level);
     const uint64_t key = mix(mix(0xA57D, level), layer);
     return cached_image_view(tex, key, [&](VkResult* result) {
-        return make_view(tex, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT,
+        return make_view(tex, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_FORMAT_R8G8B8A8_UINT, VK_IMAGE_ASPECT_COLOR_BIT,
                          level, 1, layer, 1, {}, VK_IMAGE_USAGE_STORAGE_BIT, result);
     });
 }
@@ -1543,6 +1587,7 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
         pc.block_height = g.tile_h;
         pc.block_height_mask = (1u << g.tile_h) - 1;
         pc.native_tiling = 1;
+        pc.srgb = astc_nvn_srgb(tex.nvn_format) ? 1u : 0u;
         for (size_t k0 = 0; k0 < layers.size();) {
             const uint32_t run = tex.bc ? bc_run : all ? tex.layers : 1;
             size_t k1 = k0 + 1;
@@ -1569,14 +1614,17 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
                 if ((!small && group_big) || (!group.empty() && group_off + need > group_cap)) group_flush();
             }
             const int64_t view_t0 = step_now();
+            // (a BC texture's scratch: the decoder writes it through its UINT view, `target`; the encoder reads its UNORM one, `view`)
             VkImageView view = in_group ? (small ? bc_small_layer[group_small] : bc_scratch_view)
                                : tex.bc ? (small ? bc_small_view : bc_scratch_view)
                                : astc_level_view(&tex, level, n == tex.layers ? ~0u : layers[k0]);
+            VkImageView target = in_group ? (small ? bc_small_layer_u[group_small] : bc_scratch_uview)
+                                 : tex.bc ? (small ? bc_small_uview : bc_scratch_uview) : view;
             if (view_t0) {
                 const int64_t d = step_now() - view_t0;
                 step_ns[4].fetch_add(d, std::memory_order_relaxed), record_out += d;
             }
-            if (!view) {
+            if (!view || !target) {
                 astc_fail = "no view of a level";
                 return false;
             }
@@ -1599,9 +1647,12 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
                 span.emplace(cmd, span_label);
                 up_astc_texels = 0;
             }
-            if (in_group) view = small ? bc_small_layer[group_small] : bc_scratch_view;   // (the hand-over above emptied the group)
+            if (in_group) {   // (the hand-over above emptied the group)
+                view = small ? bc_small_layer[group_small] : bc_scratch_view;
+                target = small ? bc_small_layer_u[group_small] : bc_scratch_uview;
+            }
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, astc_pipe);
-            VkDescriptorImageInfo ii{VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
+            VkDescriptorImageInfo ii{VK_NULL_HANDLE, target, VK_IMAGE_LAYOUT_GENERAL};
             VkWriteDescriptorSet w[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
             w[0].dstBinding = 0, w[0].descriptorCount = 1, w[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             w[0].pBufferInfo = &bi;
@@ -2028,18 +2079,51 @@ void reuse_released(const nvn_tex* t) {
         x->freed_listed = true;
     }
 }
-/// A new decoded ASTC texture's blocks hashed (its first upload, whole), and the image of a finalized one with the same blocks
-/// and shape copied into it: true when it was. One uploaded again keeps no hash, and is not listed when finalized
-bool reuse_upload(Texture& tex, uint64_t total) {
-    const auto t0 = std::chrono::steady_clock::now();
-    const StepTimer step_timed(1, step_enabled() ? std::chrono::duration_cast<std::chrono::nanoseconds>(t0.time_since_epoch()).count() : 0);
+// (RX_VK_HASH_MEMO) The hash remembered by the storage and the shape, with the memory generation it was taken at: the same
+// texture made again over storage no page of which was written since takes it without reading the storage again (a turn in
+// Kokiri hashed ~1.8 ms of it a frame, under the helpers' lock). The generation is taken before the hash, so a write during
+// it makes the memo older than the bytes, never newer. RX_VK_HASH_MEMO=0: off
+struct HashMemo { uint64_t hash, gen; };
+std::mutex hash_memo_mu;
+std::unordered_map<uint64_t, HashMemo> hash_memo;   // (hash_memo_mu)
+std::atomic<int64_t> hash_memo_hits{0}, hash_memo_hit_bytes{0}, hash_memo_misses{0};
+uint64_t blocks_hash_memoized(const Texture& tex, uint64_t total) {   // (the storage the CPU route reads, as submitted)
+    static const bool memo_on = [] { const char* e = getenv("RX_VK_HASH_MEMO"); return !(e && env_value_off(e)); }();
+    const uint64_t guest = memo_on && tex.gpu < (1ull << 40) ? tex.gpu : 0;
+    uint64_t key = 0, gen0 = 0;
+    if (guest) {
+        key = guest * 0x9E3779B97F4A7C15ull ^ total * 0xC2B2AE3D27D4EB4Full ^ ((uint64_t)tex.nvn_format << 48) ^
+              ((uint64_t)tex.width << 32) ^ ((uint64_t)tex.height << 16) ^ ((uint64_t)tex.layers << 8) ^ tex.levels;
+        gen0 = memory_generation();
+        std::lock_guard lk(hash_memo_mu);
+        auto it = hash_memo.find(key);
+        if (it != hash_memo.end() && !memory_written_since(guest, total, it->second.gen)) {
+            hash_memo_hits.fetch_add(1, std::memory_order_relaxed);
+            hash_memo_hit_bytes.fetch_add((int64_t)total, std::memory_order_relaxed);
+            return it->second.hash;
+        }
+    }
     static thread_local std::vector<uint8_t> scratch;
     astc_reuse::Hasher h;
     for (uint64_t at = 0; at < total; at += 64ull << 20) {
         const uint64_t n = std::min<uint64_t>(64ull << 20, total - at);
         h.add(guest_bytes(tex.gpu + at, n, scratch), n);
     }
-    tex.blocks_hash = h.h | 1;
+    const uint64_t v = h.h | 1;
+    if (guest) {
+        hash_memo_misses.fetch_add(1, std::memory_order_relaxed);
+        std::lock_guard lk(hash_memo_mu);
+        if (hash_memo.size() > 200000) hash_memo.clear();   // (a bound)
+        hash_memo[key] = {v, gen0};
+    }
+    return v;
+}
+/// A new decoded ASTC texture's blocks hashed (its first upload, whole), and the image of a finalized one with the same blocks
+/// and shape copied into it: true when it was. One uploaded again keeps no hash, and is not listed when finalized
+bool reuse_upload(Texture& tex, uint64_t total) {
+    const auto t0 = std::chrono::steady_clock::now();
+    const StepTimer step_timed(1, step_enabled() ? std::chrono::duration_cast<std::chrono::nanoseconds>(t0.time_since_epoch()).count() : 0);
+    tex.blocks_hash = blocks_hash_memoized(tex, total);   // (the same bytes, the same Hasher, | 1: from the memo when it holds)
     st_reuse_hash_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
     st_reuse_hash_bytes += (int64_t)total;
     if (tex.sparse || tex.type != VK_IMAGE_TYPE_2D || !tex.image) return false;
@@ -2078,7 +2162,8 @@ bool reuse_upload(Texture& tex, uint64_t total) {
 /// bits are 0 in every format this path takes (not ASTC or BC, not one widened on the way), so the clear is what the unswizzle
 /// would have made. The game's shadow map (12288 x 12288 D16, 288 MB, its storage fresh and zero) took 73 ms of the replay
 /// thread at a scene change; the check reads the storage once, on several threads, and stops at the first byte that is not 0
-bool upload_all_zero(Texture& tex, uint64_t total, const Ranges* dirty, bool widened_format) {
+bool upload_all_zero(Texture& tex, uint64_t total, const Ranges* dirty, bool widened_format, bool& checked) {
+    checked = false;
     if (total < (32ull << 20) || tex.astc || tex.bc || tex.sparse || widened_format || !tex.image ||
         tex.type == VK_IMAGE_TYPE_3D || is_bc(tex.format) || is_astc(tex.format))
         return false;
@@ -2092,6 +2177,7 @@ bool upload_all_zero(Texture& tex, uint64_t total, const Ranges* dirty, bool wid
     uint64_t avail = 0;
     const uint8_t* p = host->gpu_ptr(tex.gpu, &avail);
     if (!p || avail < total) return false;
+    checked = true;
     const auto t0 = std::chrono::steady_clock::now();
     // (longshot) only the parts of the storage that hold pages: a page of the guest window's memfd nothing wrote is a hole, zero,
     // and reading it made the kernel give it a page (guest_holes.h). The 12288 x 12288 D16 shadow map, 284 of its 288 MB outside
@@ -2175,11 +2261,31 @@ bool upload_all_zero(Texture& tex, uint64_t total, const Ranges* dirty, bool wid
              tex.nvn_format, (unsigned long long)(total >> 20), ms, what);
     return true;
 }
+/// texdecode refused a call (an argument out of range, or a span shorter than the level needs: no caller here makes either, and
+/// nothing falls back to another decoder): said at most 5 times. What the caller does is in `then`
+void texdecode_refused(const char* what, const char* then) {
+    static std::atomic<int> told{0};
+    if (told.fetch_add(1) < 5) logf("vk: texdecode refused its arguments for the %s (%s)", what, then);
+}
 void unswizzle_upload(std::span<uint8_t> dest, std::span<const uint8_t> src, uint32_t bpb,
                       uint32_t width, uint32_t height, uint32_t depth, uint32_t tile_h, uint32_t tile_d) {
     if (depth == 1 && !tile_d && texture_tiles::unswizzle(dest, src, uint64_t(width) * bpb, height, tile_h)) return;
     // level_geo counts GOB columns from width * bpb, including for odd-width RGB textures.
-    Tegra::Texture::UnswizzleTexture(dest, src, bpb, width, height, depth, tile_h, tile_d, 0);
+    if (!texdecode::deswizzle(dest, src, bpb, width, height, depth, tile_h, tile_d)) {
+        std::memset(dest.data(), 0, dest.size());   // (never what the staging memory held before)
+        texdecode_refused("unswizzle", "the texels are zero");
+    }
+}
+/// An ASTC texture's blocks the specification calls illegal (the decoder wrote transparent black for each, as main's decoder and the GPU shader do): its count, said once per
+/// texture and for the first 16 textures only. Counts only, never texel values
+void astc_error_blocks_told(const Texture& tex, uint64_t blocks) {
+    static std::mutex mu;
+    static std::vector<uint32_t> told;
+    std::lock_guard lk(mu);
+    if (told.size() >= 16 || std::find(told.begin(), told.end(), tex.id) != told.end()) return;
+    told.push_back(tex.id);
+    logf("vk: ASTC texture #%u %ux%u NVN %#x: %llu illegal blocks decoded as transparent black%s", tex.id, tex.width, tex.height,
+         tex.nvn_format, (unsigned long long)blocks, told.size() == 16 ? " (no more such lines)" : "");
 }
 
 /// An image no upload takes, whatever memory there is: its upload fails every time, and it is not tried again
@@ -2224,7 +2330,45 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
     int widen_from = 0;
     const VkFormat src_vf = tex.d.format ? vk_format(tex.nvn_format).format : tex.format;
     widened(src_vf, &widen_from);
-    if (upload_all_zero(tex, total, dirty, widen_from != 0)) return true;
+    bool large_zero_checked = false;
+    if (upload_all_zero(tex, total, dirty, widen_from != 0, large_zero_checked)) return true;
+    {   // (RX_VK_DEPTH_ZERO) a depth buffer read before the GPU drew it, its storage all zero: cleared on the GPU, not
+        // unswizzled on the CPU (upload_all_zero takes only storage 32 MB and more; these are 1-9 MB in a virtual pool).
+        // In Kokiri 15 of 25 such reads were of zero storage: the shadow maps the game draws at one size (816 x 816) and
+        // samples at another (812, 813) over the same memory. The bytes checked are guest_bytes', as the CPU route reads
+        // them; a depth image cleared to 0 is what unswizzling zero storage makes. RX_VK_DEPTH_ZERO=0: off
+        static const bool dz_on = [] { const char* e = getenv("RX_VK_DEPTH_ZERO"); return !(e && env_value_off(e)); }();
+        static std::atomic<int64_t> dz_n{0}, dz_bytes{0}, dz_not{0};
+        if (dz_on && !large_zero_checked && !dirty && (tex.aspect & VK_IMAGE_ASPECT_DEPTH_BIT) && tex.image && !tex.sparse && tex.type != VK_IMAGE_TYPE_3D) {
+            static thread_local std::vector<uint8_t> zs;
+            bool zero = true;
+            for (uint64_t at = 0; at < total && zero; at += 16ull << 20) {
+                const uint64_t n = std::min<uint64_t>(16ull << 20, total - at);
+                const uint8_t* q = guest_bytes(tex.gpu + at, n, zs);
+                uint64_t acc = 0, i = 0;
+                for (; i + 8 <= n && !acc; i += 8) {
+                    uint64_t w;
+                    std::memcpy(&w, q + i, 8);
+                    acc |= w;
+                }
+                for (; i < n && !acc; i++) acc |= q[i];
+                zero = !acc;
+            }
+            if (zero) {
+                checkpoint_mark(upload_cmd(), tex.gpu, 'u');
+                const VkImageSubresourceRange range{tex.aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
+                const VkClearDepthStencilValue z{0.0f, 0};
+                vkCmdClearDepthStencilImage(upload_cmd(), tex.image, VK_IMAGE_LAYOUT_GENERAL, &z, 1, &range);
+                const int64_t k = ++dz_n;
+                dz_bytes += (int64_t)total;
+                if (k <= 4 || k % 200 == 0)
+                    logf("vk: depth buffer %ux%u NVN %#x (%.1f MB) all zero: cleared on the GPU (%lld so far, %.0f MB; %lld were not zero)",
+                         tex.width, tex.height, tex.nvn_format, total / 1048576.0, (long long)k, dz_bytes.load() / 1048576.0, (long long)dz_not.load());
+                return true;
+            }
+            dz_not++;
+        }
+    }
     const int src_bpb = tex.bpb;
     const int out_bpb = tex.astc ? 4 : widen_from ? (widen_from == 3 ? 4 : widen_from == 6 ? 8 : 16) : src_bpb;
     const uint32_t copy_layers = tex.type == VK_IMAGE_TYPE_3D ? 1 : tex.layers;
@@ -2232,6 +2376,7 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
     std::vector<VkBufferImageCopy> copies;
     std::vector<uint8_t> scratch, lin;
     VkBuffer buffer = VK_NULL_HANDLE;
+    uint64_t astc_bad_blocks = 0;   // (illegal ASTC blocks decoded here, over every level and layer)
     for (uint32_t level = 0; level < tex.levels; level++) {
         const LevelGeo g = level_geo(tex, level);
         for (uint32_t layer = 0; layer < copy_layers; layer++) {
@@ -2292,8 +2437,8 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                     const uint8_t* src = guest_bytes(tex.gpu + src_off, (uint64_t)stride * (g.th - 1) + row, scratch);
                     for (uint32_t y = 0; y < g.th; y++) std::memcpy(blocks + y * row, src + (uint64_t)y * stride, row);
                 } else {
-                    // (suyu's unswizzle reads the whole swizzled span without bounds checks: a span the storage
-                    // ends in is read from a zero-padded copy)
+                    // (texdecode's deswizzle refuses a span that ends before the last GOB a texel is in, and reads only
+                    // the GOBs the texels are in: a span the storage ends in is read from a zero-padded copy)
                     const uint64_t from = src_off + (uint64_t)row0 * row_bytes;
                     const uint64_t need = runs.size() == 1 && row0 == 0 && nrow == nrows ? span : (uint64_t)nrow * row_bytes;
                     // (a big 2D level: its GOB-block rows unswizzled on several threads, each row on its own. The
@@ -2341,32 +2486,39 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                                 }
                                 unswizzle_upload(
                                     std::span<uint8_t>(blocks + a * out_row, (uint64_t)g.tw * h * src_bpb),
-                                    std::span<const uint8_t>(rows, rows_n), (u32)src_bpb, g.tw, h, 1, g.tile_h, 0);
+                                    std::span<const uint8_t>(rows, rows_n), (uint32_t)src_bpb, g.tw, h, 1, g.tile_h, 0);
                             }
                         };
                         ::mkwvk::cxx_escape::fork_join("texture unswizzle", nthreads, part, helper_thread_start);
                         static const bool check = env_on("RX_VK_UNSWIZZLE_CHECK");   // (against one thread)
                         if (check && src) {
                             std::vector<uint8_t> ref(block_bytes);
-                            Tegra::Texture::UnswizzleTexture(std::span<uint8_t>(ref.data(), block_bytes),
-                                                             std::span<const uint8_t>(src, need), (u32)src_bpb, g.tw,
-                                                             th, g.td, g.tile_h, g.tile_d, 0);
-                            const bool same = !std::memcmp(ref.data(), blocks, block_bytes);
+                            const bool same =
+                                texdecode::deswizzle(std::span<uint8_t>(ref.data(), block_bytes), std::span<const uint8_t>(src, need),
+                                                     (uint32_t)src_bpb, g.tw, th, g.td, g.tile_h, g.tile_d) &&
+                                !std::memcmp(ref.data(), blocks, block_bytes);
                             logf("vk: unswizzle check %#llx level %u rows %u+%u: %s", (unsigned long long)tex.gpu,
                                  level, row0, nrow, same ? "same" : "DIFFERENT");
                         }
                     } else {
                         unswizzle_upload(std::span<uint8_t>(blocks, block_bytes), std::span<const uint8_t>(src, need),
-                                         (u32)src_bpb, g.tw, th, g.td, g.tile_h, g.tile_d);
+                                         (uint32_t)src_bpb, g.tw, th, g.td, g.tile_h, g.tile_d);
                     }
                     st_unswizzle_bytes += (int64_t)block_bytes;
                     st_unswizzle_ns +=
                         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - u0).count();
                 }
                 if (tex.astc) {
-                    Tegra::Texture::ASTC::DecompressSerial(std::span<const uint8_t>(blocks, block_bytes), g.w, px_h, g.d,
-                                                           (u32)tex.block_w, (u32)tex.block_h,
-                                                           std::span<uint8_t>(out, (size_t)g.w * px_h * g.d * 4));
+                    const int64_t bad = texdecode::astc_decode(std::span<const uint8_t>(blocks, block_bytes), g.w, px_h, g.d,
+                                                               (uint32_t)tex.block_w, (uint32_t)tex.block_h, astc_nvn_srgb(tex.nvn_format),
+                                                               std::span<uint8_t>(out, out_bytes),
+                                                               texdecode::Rgba8{0, 0, 0, 0});   // (as suyu's decoder and the GPU shader write an illegal block: an all-zero block is one, and storage the game has not written yet is decoded)
+                    if (bad < 0) {
+                        std::memset(out, 0, out_bytes);   // (never what the staging memory held before)
+                        texdecode_refused("ASTC decode", "the texels are zero");
+                    } else {
+                        astc_bad_blocks += (uint64_t)bad;
+                    }
                 } else if (widen_from) {
                     widen_rows(out, blocks, (size_t)g.tw * th * g.td, src_bpb, out_bpb, widen_alpha(src_vf));
                 }
@@ -2430,6 +2582,7 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
             }
         }
     }
+    if (astc_bad_blocks) astc_error_blocks_told(tex, astc_bad_blocks);
     if (!copies.empty()) {
         texture_resident_flush(&tex);
         checkpoint_mark(upload_cmd(), tex.gpu, 'u');
@@ -2532,13 +2685,25 @@ bool texture_dirty(Texture& tex, uint64_t gen, Ranges& out) {
 }
 
 uint64_t destroy_gen = 1;   // (bumped when textures go: what was resolved to them goes stale)
+// (RX_VK_EXACT_STALE) Which texture went at each generation: its creation number (Texture::id), or kGoneAll where every
+// resolved view is stale. A handle resolved to another texture stands (texture_still_resolved): one counter for all made
+// every draw of the next frame look its textures up again and build its descriptors again whenever any texture went, 11 ms
+// of lookups and 12 ms of descriptors in the frame after the pause menu's own targets went, with the render thread 30-40 ms
+// behind for the frames after it. The slot is written before the generation that names it is, so a reader that saw the
+// generation sees the slot.
+constexpr uint32_t kGoneLog = 16384, kGoneAll = 0xFFFFFFFFu;   // (a power of two; a sweep takes ~1,400 at once at most)
+std::atomic<uint32_t> gone_log[kGoneLog];
+void gone_note(uint32_t id) {
+    gone_log[(destroy_gen + 1) & (kGoneLog - 1)].store(id, std::memory_order_release);
+    destroy_gen++;
+}
 
 /// (`completed`: the newest submission the GPU has finished. A render target's image it is done with goes to the pool now, not
 /// at the next present: the next frame is recorded between the two, and its target of the same shape made a new image while
 /// this one waited, to be destroyed unused 120 presents later (first seen in Hookshot-old's 7bba12ad). One the GPU may still
 /// read, a timed-out write-back's source, waits in the dead list as before)
 void destroy_later(Texture& tex, uint64_t completed) {
-    destroy_gen++;
+    gone_note(tex.id);
     Dead d{tex.last_value, tex.image, tex.allocation, {}, {}};
     if (tex.pool_key && tex.allocation && tex.sparse_chunks.empty() && pool_cap()) {   // (a render target's: to the pool, its views too)
         d.pool_key = tex.pool_key, d.view_map = std::move(tex.views), d.bytes = tex.bytes + tex.pad;
@@ -3304,6 +3469,14 @@ Texture* texture_get(const nvn_tex* t, bool for_sampling) {
 
 uint64_t texture_destroy_generation() {
     return destroy_gen;
+}
+bool texture_still_resolved(uint32_t id, uint64_t since, uint64_t now) {   // (RX_VK_EXACT_STALE; the log by gone_note)
+    if (!id || now - since >= kGoneLog / 2) return false;   // (nothing resolved; or further back than the log holds)
+    for (uint64_t g = since + 1; g <= now; g++) {
+        const uint32_t went = gone_log[g & (kGoneLog - 1)].load(std::memory_order_acquire);
+        if (went == id || went == kGoneAll) return false;
+    }
+    return true;
 }
 
 bool texture_alive(uint64_t gpu, const Texture* t, VkImage image) {
@@ -4407,9 +4580,15 @@ bool flush_finish(Flush& f, bool gpu_ok) {
             // (what is there: the padding between texels kept)
             if (f.only_untouched) std::memcpy(sw.data(), was.data() + (at - t.gpu), (size_t)span);
             else host->gpu_read(at, sw.data(), span);
-            Tegra::Texture::SwizzleTexture(std::span<uint8_t>(sw.data(), sw.size()),
-                                           std::span<const uint8_t>((const uint8_t*)map + p.at, p.n), (u32)t.bpb, p.g.tw,
-                                           p.g.th, p.g.td, p.g.tile_h, p.g.tile_d, 1);
+            // (a refusal writes nothing: this part is not written back, and `ok` says so; zeroing `sw` instead would overwrite the
+            // guest's bytes)
+            if (!texdecode::swizzle(std::span<uint8_t>(sw.data(), sw.size()),
+                                    std::span<const uint8_t>((const uint8_t*)map + p.at, p.n), (uint32_t)t.bpb, p.g.tw, p.g.th,
+                                    p.g.td, p.g.tile_h, p.g.tile_d)) {
+                texdecode_refused("swizzle", "this part is not written back");
+                ok = false;
+                continue;
+            }
             if (!write_back(at, sw.data(), span)) ok = false;   // (marks the pages written: textures over them upload)
         }
         publish();
@@ -5256,6 +5435,7 @@ void compact_step(uint64_t completed) {
         for (auto& kv : t->views)
             if (kv.second) compact.old_views.push_back(kv.second);
         t->views.clear();   // (made again when next asked for)
+        gone_note(t->id);   // (what was resolved to this texture's views is stale)
         t->image = image;
         t->last_value = std::max(t->last_value, rec_value);   // (its end, if it goes now, waits for the copy too)
         compact.moved++, compact.moved_bytes += t->bytes + t->pad;
@@ -5275,8 +5455,7 @@ void compact_step(uint64_t completed) {
         }
         return;
     }
-    full_barrier(cmd, "compaction: after the copies");
-    destroy_gen++;   // (what was resolved to the moved textures' views is stale)
+    full_barrier(cmd, "compaction: after the copies");   // (gone_note named each moved texture as it went: no whole-pass bump)
     compact.in_pass = true, compact.value = rec_value;
 }
 
@@ -5584,7 +5763,7 @@ void texture_frame(uint64_t completed) {
     if (const int64_t d = st_deferred_frame.exchange(0, std::memory_order_relaxed)) {
         // (the views and descriptor sets resolved to the placeholder this frame go stale, as when textures go: the next frame
         // looks those textures up again, and uploads them)
-        destroy_gen++;
+        gone_note(kGoneAll);   // (every view resolved to a placeholder goes stale)
         static int told;
         if (told++ < 40 || st_deferred.load(std::memory_order_relaxed) % 2000 < d)
             logf("vk: %lld new ASTC textures left for a later frame (this frame's uploads took their budget; %lld so far)", (long long)d,
@@ -6114,9 +6293,11 @@ void texture_frame(uint64_t completed) {
              baked_n, (unsigned long long)(baked_b >> 10), (unsigned long long)(other_b >> 20),
              (unsigned long long)(recent_b >> 20));
         logf("vk: decoded ASTC used again: %lld textures (%lld MB) copied from ones the game finalized, not decoded; %lld of "
-             "those retired, %zu listed; %lld MB of blocks hashed in %lld ms", (long long)st_reused.load(),
+             "those retired, %zu listed; %lld MB of blocks hashed in %lld ms; %lld MB of it not read again (%lld textures), "
+             "%lld hashed", (long long)st_reused.load(),
              (long long)(st_reused_bytes.load() >> 20), (long long)st_reuse_retired.load(), freed.size(),
-             (long long)(st_reuse_hash_bytes.load() >> 20), (long long)(st_reuse_hash_ns.load() / 1000000));
+             (long long)(st_reuse_hash_bytes.load() >> 20), (long long)(st_reuse_hash_ns.load() / 1000000),
+             (long long)(hash_memo_hit_bytes.load() >> 20), (long long)hash_memo_hits.load(), (long long)hash_memo_misses.load());
         for (size_t i = 0; i < big.size() && i < 8; i++)
             logf("vk:   %llu MB: %#llx %ux%ux%u x%u levels %u NVN %#x%s%s, last used %llu presents ago",
                  (unsigned long long)(big[i]->bytes >> 20), (unsigned long long)big[i]->gpu, big[i]->width, big[i]->height,

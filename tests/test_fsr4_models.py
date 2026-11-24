@@ -27,7 +27,7 @@ def main():
 
     with tempfile.TemporaryDirectory() as td:
         exe = Path(td) / ("fsr4_models_test.exe" if os.name == "nt" else "fsr4_models_test")
-        cmd = [args.cxx, "-std=c++20", "-O2", "-I", str(VK), str(VK / "fsr4_models.cpp"), str(HARNESS), "-o", str(exe)]
+        cmd = [args.cxx, "-std=c++20", "-O2", "-DFSR4_MODELS_TEST", "-I", str(VK), str(VK / "fsr4_models.cpp"), str(HARNESS), "-o", str(exe)]
         if os.name == "nt":
             cmd.append("-static")
         built = subprocess.run(cmd, capture_output=True, text=True)

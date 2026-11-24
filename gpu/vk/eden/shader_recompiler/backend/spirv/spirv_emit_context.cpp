@@ -576,6 +576,14 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
     DefineCommonConstants();
     PlanSharedWarp(program);   // (longshot: before the inputs, which a stage on the shared warp declares none of the subgroup's)
     DefineInterfaces(program);
+    // (longshot, mma_layout.h graphics_table_loads) a native task or mesh stage's global loads read the guest page table, as the
+    // other stages' do (DefineGlobalMemoryFunctions table_stage): its push block holds the table's address, so the member is
+    // wanted before any block is made (RX_VK_MESH_FIRST's below makes one)
+    if ((stage == Stage::Task || stage == Stage::Mesh) && !runtime_info.mesh_fallback && graphics_table_loads != 0 &&
+        program.info.uses_global_memory && profile.support_int64 && profile.unified_descriptor_binding &&
+        profile.supported_spirv >= 0x00010400) {
+        wants_guest_pages = true;
+    }
     // (RX_VK_MESH_FIRST=1, with RX_VK_MESH_ARGS=1: off, one task program with it hung or ended the game at its first draw)
     if (stage == Stage::Task && !runtime_info.mesh_fallback && env_on("RX_VK_MESH_FIRST") &&
         profile.unified_descriptor_binding && profile.support_int64) {
@@ -1135,8 +1143,12 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
     // and the menus' text stays. Not where the stage has the render area's push block: a stage has one push block)
     const bool graphics_stage{stage == Stage::VertexB || stage == Stage::Fragment};
     const bool follow_pointers{stage == Stage::Compute || (graphics_stage && !info.uses_render_area)};
+    // (longshot) a native task or mesh stage with the page table's member wanted (the constructor): addresses, and the push block
+    // that holds the table's, for its loads through the table (table_stage below). Its searches are left as they were: no
+    // follow_pointers fallback for its stores
+    const bool native_mesh_table{(stage == Stage::Task || stage == Stage::Mesh) && !mesh_fallback && wants_guest_pages};
     Id ptr_u64{};
-    if (follow_pointers) {
+    if (follow_pointers || native_mesh_table) {
         wants_guest_pages = true;
         if (profile.unified_descriptor_binding && rescaling_push_constants.value == 0) DefineRescalingInputPushConstant();   // (the table's address is in it)
         AddCapability(spv::Capability::PhysicalStorageBufferAddresses);
@@ -1174,15 +1186,17 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
     // and must end that block (a return). Falls through after it)
     // (RX_VK_FOLLOW_STORES=1: writes and atomics through the table too; off by default, see the storage buffer pass)
     static const bool follow_stores{env_on("RX_VK_FOLLOW_STORES")};
-    // (longshot, mma_layout.h graphics_table_loads) a vertex, fragment or compute stage that has the table, and the mesh fallback's
-    // task and mesh stages: its loads through it alone (1), or the search kept and checked against it (2, not the task and mesh
-    // stages: the miss log's buffer is not theirs). Not where the render area's push block leaves no table (follow_pointers)
-    const bool table_stage{graphics_stage || stage == Stage::Compute ||
-                           (mesh_fallback && (stage == Stage::Task || stage == Stage::Mesh))};
+    // (longshot, mma_layout.h graphics_table_loads) a vertex, fragment or compute stage that has the table, the task and mesh
+    // stages, native and the mesh fallback's: its loads through it alone (1), or the search kept and checked against it (2, not
+    // the fallback's task and mesh stages: the miss log's buffer is not theirs). Not where the render area's push block leaves
+    // no table (follow_pointers). A native task or mesh stage inlines its load helpers (#994, define_load): with the search,
+    // every bound storage buffer's range tested at every load
+    const bool table_stage{graphics_stage || stage == Stage::Compute || stage == Stage::Task || stage == Stage::Mesh};
     const bool graphics_table{graphics_table_loads != 0 && table_stage && wants_guest_pages &&
                               rescaling_push_constants.value != 0 && profile.supported_spirv >= 0x00010400};
     const bool table_alone{graphics_table && graphics_table_loads == 1};
-    const bool table_check{graphics_table && graphics_table_loads == 2 && stage != Stage::Task && stage != Stage::Mesh};
+    const bool table_check{graphics_table && graphics_table_loads == 2 &&
+                           !(mesh_fallback && (stage == Stage::Task || stage == Stage::Mesh))};
     // (longshot) size: the access's bytes. An access that runs past its 4 KB page is left to the miss path: the table maps pages one
     // by one, the next page may be another allocation's or none, and a 16-byte read at a page's end faulted the device (the culling
     // passes 53caac5f, b6122162 at a save's load)
@@ -2231,6 +2245,12 @@ void EmitContext::DefineInputs(const IR::Program& program) {
 
     if (info.uses_workgroup_id) {
         workgroup_id = DefineInput(*this, U32[3], false, spv::BuiltIn::WorkgroupId);
+    }
+    if (stage == Stage::Mesh && !runtime_info.mesh_fallback && profile.need_mesh_num_workgroups) {
+        // (longshot, #1285, as Lichii #1203) RADV before Mesa 26.2.5 (!45092) miscounted the mesh grid-size registers and
+        // emitted an invalid SET_SH_REG packet (reg_count == 0, RING_GFP_TIMEOUT on RDNA 3/4) when a native mesh shader
+        // did not read gl_NumWorkGroups
+        num_workgroups = DefineInput(*this, U32[3], false, spv::BuiltIn::NumWorkgroups);
     }
     if (info.uses_local_invocation_id) {
         local_invocation_id = DefineInput(*this, U32[3], false, spv::BuiltIn::LocalInvocationId);

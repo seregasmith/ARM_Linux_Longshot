@@ -36,12 +36,16 @@ export async function collectFeed({ fetcher = fetch, token = '', curation = {}, 
   if (latest && (latest.draft !== false || latest.prerelease !== false)) throw new Error('Invalid latest stable release.');
   const latestItem = latest ? normalizeItem(latest, 'release', curation) : null;
   if (latest && !latestItem) throw new Error('Invalid latest stable release.');
-  async function list(endpoint, state) {
+  // Pull requests are listed through the issues endpoint too: /pulls runs git for every pull request in a page (its
+  // diff stats and mergeability), seconds a page on the forge, while an issue object carries what the feed needs of a
+  // pull request in its pull_request field. Forgejo caps a page at 50 items (MAX_RESPONSE_ITEMS), so the limit asks
+  // for that. `since` (on updated_at) has the server drop closed items older than the window; open lists stay whole.
+  async function list(type, state) {
     const result = [];
     let next;
     const visited = new Set();
     for (let n = 1; n <= maxPages; n++) {
-      const batch = await page(endpoint, { state, sort: 'recentupdate', limit: '100', page: '1', ...(endpoint === 'issues' ? { type: 'issues' } : {}) }, next);
+      const batch = await page('issues', { type, state, sort: 'recentupdate', limit: '50', page: '1', ...(state === 'closed' ? { since: closedSince } : {}) }, next);
       const { data } = batch;
       if (data.some(i => !Number.isFinite(Date.parse(i.updated_at)))) throw new Error('Missing Forgejo update date.');
       result.push(...data.filter(i => state === 'open' || Date.parse(i.updated_at) >= Date.parse(closedSince)));
@@ -55,11 +59,15 @@ export async function collectFeed({ fetcher = fetch, token = '', curation = {}, 
   // Sequential pagination limits burst traffic. Do not publish any part until every list succeeds.
   const items = new Map();
   if (latestItem) items.set(latestItem.id, latestItem);
-  for (const [endpoint, kind] of [['issues', 'issue'], ['pulls', 'pull']]) {
+  for (const [type, kind] of [['issues', 'issue'], ['pulls', 'pull']]) {
     for (const state of ['closed', 'open']) {
-      for (const raw of await list(endpoint, state)) {
+      for (const raw of await list(type, state)) {
         if (kind === 'issue' && raw.pull_request) continue;
-        const item = normalizeItem(raw, kind, curation);
+        if (kind === 'pull' && (!raw.pull_request || typeof raw.pull_request !== 'object')) throw new Error('Unexpected Forgejo pull request.');
+        // An issue object holds a pull request's merge date and draft flag in pull_request, where /pulls has them at
+        // the top level.
+        const pr = kind === 'pull' ? { ...raw, merged_at: raw.pull_request.merged_at || null, draft: raw.pull_request.draft === true } : raw;
+        const item = normalizeItem(pr, kind, curation);
         items.set(item.id, item);
       }
     }

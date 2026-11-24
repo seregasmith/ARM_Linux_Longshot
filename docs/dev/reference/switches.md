@@ -112,7 +112,7 @@ Keys whose numbers are not obvious from the row:
 | `hud_health_x/y/scale`, `hud_buttons_x/y/scale`, `hud_minimap_x/y/scale` | Custom HUD placement, with horizontal and vertical offsets in percent of the picture and scale in percent of the usual size |
 | `key_toggle_hud`, `pad_toggle_hud` | Session HUD shortcut, unbound by default. Uses the Controls page's normal binding format |
 | `walk_mode` | 0 Hold, 1 Toggle |
-| `threaded_rendering` | The Debug tab's Threaded rendering row (`gpu/vk/threaded_rendering.h`): 0 Auto (default), 1 On (`RX_VK_ASYNC=1` and `RX_VK_RECORDER=thread`), 2 Off. Auto goes by the physical cores the process may run on (`usable_cores` in `gpu/vk/vk_progcache.cpp`): 6 or more cores, the render thread and the recorder thread, as On; 4 or 5, the render thread alone; fewer, Off. Auto is also Off, whatever the cores, where the mode is not safe on the run (the capture off, pools without mirrors, `RX_VK_LOW_SPEC`, a frame dump). `threaded::kAutoEnabled` turned off makes Auto Off on every PC |
+| `threaded_rendering` | The Debug tab's Threaded rendering row (`gpu/vk/threaded_rendering.h`): 0 Auto (default), 1 On (`RX_VK_ASYNC=1` and `RX_VK_RECORDER=thread`), 2 Off. Auto goes by the physical cores the process may run on (`usable_cores` in `gpu/vk/vk_progcache.cpp`): 4 or more cores, the render thread and the recorder thread, as On; fewer, Off. Where only buffer-pool mirrors are absent (integrated GPUs where `!f.discrete()`, or `RX_VK_MIRROR=0`), Auto keeps the render thread off and runs the recorder thread alone with 6 or more physical cores (`kAutoRecorderOnlyCores`), and Off with fewer. Auto is also Off, whatever the cores, where the mode is not safe on the run (the capture off, `RX_VK_LOW_SPEC`, a frame dump, a benchmark replay). `threaded::kAutoEnabled` turned off makes Auto Off on every PC |
 
 A new row on the Graphics, Audio, Gameplay, Controls or NFC tab needs its line in the settings table of
 [docs/user/graphics-and-controls.md](../../user/graphics-and-controls.md#every-setting), in the menu's order
@@ -168,6 +168,7 @@ These override a menu row for the run only (kind `player`).
 | `RX_VK_PACE=0/1`, `RX_VK_UPSCALE=0..2` | Frame pacing, upscaling filter |
 | `RX_VK_DLSS=0/1/2`, `RX_VK_FSR4=0/1/2`, `RX_VK_XESS=0/1/2`, `RX_VK_FSR=0/1` | Upscaler: `0` never, `1` the upscaler, `2` its native AA |
 | `RX_VK_FSR4_MODEL=auto\|lite` | The FSR 4 network for one run: Auto lets AMD pick, Lite forces the INT8 Lite provider |
+| `RX_VK_FSR4_STANDIN=0` | No FSR 4 on a GPU AMD's library lists no FSR 4 model for (by default the INT8 Lite provider stands in there) |
 | `RX_VK_FRAMEGEN=0`, `RX_VK_FRAMEGEN_MULT=2..8`, `RX_VK_DLSS_FG=0/1`, `RX_VK_FSR_FG=0/1` | Frame generation (`RX_VK_FRAMEGEN=0` keeps it off whatever the menu says) |
 | `RX_VK_ASYNC=0/1`, `RX_VK_RECORDER=sync\|defer\|thread` | Threaded rendering: the render thread, the recorder (the parallel replay is gone: [threads.md](threads.md)) |
 | `RX_VK_COMPILE_SHADERS=most\|all` | Compile shaders |
@@ -319,6 +320,7 @@ The memory budget and its `vk: budget:` lines are in [architecture](architecture
 |---|---|
 | `RX_VK_MOVIE_UPSCALE=linear` | The movies' neural upscale always replaced by a linear one (by default only where the networks can't run or measure too slow). `RX_VK_NETWORK_KEEP=all` wins over it |
 | `HOS_VIDEO_NO_CATCHUP=1` | Never skip pictures that are behind the movie's sound (by default they are, decoding ahead at most a picture's time in a frame, and not while the decoder is slower than the movie) |
+| `HOS_VIDEO_NO_HOLD=1` | Hand a movie's next picture out whenever the game asks for it, even when it is ahead of the movie's clock (by default one more than 25 ms early waits, and the last picture is shown again: issue 1964) |
 | `HOS_VIDEO_ACQUIRE_TRIES=1` | Wait for a picture by 50 sleeps of 2 ms (about 250 ms, as sleeps overrun) instead of about 100 ms by the clock. Either way there is no wait after a stop or flush with nothing submitted since |
 | `HOS_DAV1D_THREADS=<n>` | The decoder's threads (one per logical core; 2 with 4 or fewer) |
 | `HOS_VIDEO_LOG=1` | `video:` lines: how long each picture took to decode |

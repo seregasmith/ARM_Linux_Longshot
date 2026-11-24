@@ -191,6 +191,7 @@ void samplers_changed() {}
 void temporal_reset_failure() {}
 void prompts_at_once(const Row&) {}
 /* STOPS */
+/* ROW_SYNC */
 void apply_auto();
 /* PRESET */
 /* APPLY_AUTO */
@@ -314,8 +315,8 @@ int main(int argc, char** argv) {
     CHECK(menu_setting(1, &shown) == 1 && shown.value == 5);
     CHECK(std::strcmp(shown.text, "Balanced 58% (1120x630)") == 0);
     bridge_to(ur::GAME);
-    set_row(rows[1], 0, -1);
-    CHECK(opts.resolution == 3);  // Left from the shown 50% is 67%, not the hidden 58%.
+    set_row(rows[1], 0, 1);
+    CHECK(opts.resolution == 3);  // Right from the shown 50% is 67% on the ascending slider, not the hidden 58%.
     bridge_to(ur::DLSS);
     CHECK(opts.resolution == 3 && active_scale() == 6667);
     // Native changes the mode, not the saved scale: FSR 3.1 100% -> DLSS/FSR 4 92% -> Native -> FSR 3.1 100%.
@@ -325,7 +326,7 @@ int main(int argc, char** argv) {
         bridge_to(engine);
         CHECK(opts.resolution == 1 && active_scale() == 9167);
         CHECK(menu_setting(1, &shown) == 1 && shown.value == 1 && std::strcmp(shown.text, "92% (1760x990)") == 0);
-        set_row(rows[1], 0, -1);
+        set_row(rows[1], 0, 1);
         CHECK(opts.dlss == ur::native_of(engine) && opts.resolution == 1 && active_scale() == 10000);
         CHECK(menu_setting(1, &shown) == 1 && shown.value == 1 &&
               std::strcmp(shown.text, engine == ur::DLSS ? "Native (DLAA, 1920x1080)" : "Native (FSR 4, 1920x1080)") == 0);
@@ -337,15 +338,14 @@ int main(int argc, char** argv) {
         std::printf("NATIVE_ROUNDTRIP engine=%d returned=%d stored=%d\n", engine, active_scale(), opts.resolution);
         // Leaving Native for a numbered stop still deliberately replaces the saved choice.
         bridge_to(engine);
-        set_row(rows[1], 0, -1);
         set_row(rows[1], 0, 1);
+        set_row(rows[1], 0, -1);
         CHECK(opts.dlss == engine && opts.resolution == 9 && active_scale() == 9167);
-        // Entering Native from Auto keeps its sentinel; Left returns to Auto, not a numbered stop.
+        // Auto (Dynamic resolution) is toggled via resolution=0 on the bridge and preserves its sentinel.
         fresh(engine, 0);
-        set_row(rows[1], 0, 1);
-        CHECK(opts.dlss == ur::native_of(engine) && opts.resolution == 0 && active_scale() == 10000);
-        set_row(rows[1], 0, -1);
-        CHECK(opts.dlss == engine && resolution_auto() && resolution_scale() == 0);
+        MkwVkSetting out{};
+        CHECK(menu_setting_set("resolution", 3, &out) == 1 && opts.dlss == engine && opts.resolution == 3);
+        CHECK(menu_setting_set("resolution", 0, &out) == 1 && opts.dlss == engine && resolution_auto() && resolution_scale() == 0);
     }
     // Selecting each named quality through the bridge still reaches its exact slider stop.
     for (int engine : {(int)ur::DLSS, (int)ur::FSR3, (int)ur::FSR4}) {
@@ -445,7 +445,7 @@ def fixture(source):
         "WALK": block(menu, walk_at),
     }
     for marker, name in (("INI_KEY", "const char* ini_key"), ("SAVE", "void save"),
-                         ("STOPS", "bool stops_at_ends"), ("PRESET", "void apply_preset"),
+                         ("STOPS", "bool stops_at_ends"), ("ROW_SYNC", "void row_sync"), ("PRESET", "void apply_preset"),
                          ("APPLY_AUTO", "void apply_auto"), ("AUTO_TUNE", "void menu_auto_tune"),
                          ("SET_ROW", "void set_row"), ("BRIDGE", "int menu_setting_set"),
                          ("RESOLUTION_SCALE", "int resolution_scale"), ("RESOLUTION_AUTO", "bool resolution_auto"),

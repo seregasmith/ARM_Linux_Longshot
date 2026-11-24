@@ -181,7 +181,10 @@ commands:
                 apt-get install -y --no-install-recommends software-properties-common gpg-agent
             }
             toolchain_packages() {
+              # (the PPA from ppa.launchpad.net, as in .forgejo/workflows/build-linux.yml: ppa.launchpadcontent.net
+              # answered 503 for hours on 2026-11-23; apt checks the archive's signature)
               timeout --kill-after=5s 180s add-apt-repository -y --no-update ppa:ubuntu-toolchain-r/test &&
+                sed -i 's|https://ppa\.launchpadcontent\.net/|http://ppa.launchpad.net/|g' /etc/apt/sources.list.d/*.list &&
                 apt-get update &&
                 apt-get install -y --no-install-recommends g++-13 libstdc++-13-dev &&
                 apt-get install -y --no-install-recommends git ca-certificates curl xz-utils zstd file unzip python3 \

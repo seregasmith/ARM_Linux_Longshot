@@ -2,6 +2,7 @@
 // (longshot) When kept programs are loaded, where RX_VK_LOAD does not say: at their create calls (create) or all before the
 // title (start), and the safety net that takes an install back to start. Nothing of Vulkan here: tests/test_load_default.py.
 #pragma once
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -18,13 +19,17 @@ struct Choice {
 /// Windows), the textures' budget at 0 (the commit rule's), and 25-29 GB in play. Create holds 4-5 GB less with the same
 /// fps or better. A fallback GPU where loads at create wait seconds (an RX 580, 16 GB) is what the marker is for. marker: an earlier session of this install met the safety
 /// net below. compressed: the compressed program cache is in use
-inline Choice choose(const char* env, bool native_mesh, bool marker, bool compressed = false) {
+/// prepared: the shader preparation runs (RX_VK_PRECOMPILE). start loads the listed programs inside it, so without it start
+/// loads nothing before the title and every program is read at its first draw: the marker is left aside there
+inline Choice choose(const char* env, bool native_mesh, bool marker, bool compressed = false, bool prepared = true) {
     // (the compressed program cache, RX_VK_PROGRAM_CACHE_ZSTD: a record is only read whole, unpacked. The loads at a create call
     // read records by their parts' places and have not been run on it: start, whatever RX_VK_LOAD says)
     if (compressed) return {false, "the program cache is compressed (RX_VK_PROGRAM_CACHE_ZSTD), whose records are only read whole"};
     if (env && !std::strcmp(env, "create")) return {true, "RX_VK_LOAD=create"};
     if (env && !std::strcmp(env, "start")) return {false, "RX_VK_LOAD=start"};
-    if (marker) return {false, "in an earlier session first uses waited too long for loads (longshot_load_start.txt)"};
+    if (marker && prepared) return {false, "in an earlier session first uses waited too long for loads (longshot_load_start.txt)"};
+    if (marker) return {true, "longshot_load_start.txt is left aside: without the shader preparation (RX_VK_PRECOMPILE=0) start "
+                              "would load nothing before the title"};
     return {true, native_mesh ? "the default where the GPU has mesh shaders"
                               : "the default, on the compute fallback too (RX_VK_LOAD=start: every listed program before the title)"};
 }
@@ -68,6 +73,37 @@ inline bool marker_there(const std::string& path) {
     std::fclose(f);
     return true;
 }
+
+/// Which session left the marker: one whose first uses waited too long for their loads (marker_write), or one whose loads
+/// found over kNotInCacheMost listed pipelines in no cache (marker_write_lacked). Told by the text's first words; a marker of
+/// any other text (written by hand, or by a build before both existed) is taken as the waits', as every marker was before
+enum class Marker { kNone, kWaits, kLacked };
+inline Marker marker_kind(const std::string& path) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return Marker::kNone;
+    char head[32]{};
+    const size_t n = std::fread(head, 1, sizeof head - 1, f);
+    std::fclose(f);
+    static const char lacked[] = "In one session ";   // (marker_write_lacked's first words)
+    return n >= sizeof lacked - 1 && !std::memcmp(head, lacked, sizeof lacked - 1) ? Marker::kLacked : Marker::kWaits;
+}
+
+/// The RAM at or under which the lacked marker is not followed. Start keeps every listed program before the title: 19 GB of
+/// private memory at the title on a 16 GB PC (an RX 6600 on Windows, issues 869 and 933), and 25.8 GB on another (an Arc
+/// A750, 16 GB, Windows: its working set paged out to 3.3 GB, and the window stayed on "Starting the game" for minutes).
+/// What tripped the lacked marker there was a settings change (502 listed pipelines in no cache, and 544 in the session
+/// after it), and compiling those in play is far less than start costs that PC: there it takes the folder from playable to
+/// not, at every start, until the folder is prepared again. The waits' marker is followed on any RAM: it is for a PC
+/// where loads at create wait seconds (an RX 580 with 16 GB), and start is what makes that one playable.
+/// The same 20 GB line as pcache_load.h's kSmallRamMb
+constexpr uint32_t kStartRamMb = 20480;
+/// Whether the marker takes this start to start mode. ram_mb: the PC's RAM (0: not known, and the marker is followed as before)
+inline bool marker_counts(Marker m, uint32_t ram_mb) {
+    if (m == Marker::kNone) return false;
+    if (m == Marker::kLacked && ram_mb && ram_mb <= kStartRamMb) return false;
+    return true;
+}
+
 inline bool marker_write(const std::string& path, double worst_ms, double total_ms) {
     FILE* f = std::fopen(path.c_str(), "wb");
     if (!f) return false;

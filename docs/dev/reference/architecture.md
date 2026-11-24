@@ -76,9 +76,10 @@ at the build, the AppImage's Play), so the shaders are prepared in the store the
 - `gpu/vk` replays it on Vulkan 1.3. Guest pools are imported as host memory and mirrored in VRAM. SM86 programs go
   through Eden's recompiler to SPIR-V, and mesh and task programs use `VK_EXT_mesh_shader` or a compute fallback
   (`RX_VK_MESH_SHADERS`).
-- Its threads: the game's own, one render thread that replays every command buffer, from 6 cores a recorder thread that
-  makes the driver's calls for it and ends and submits each part the render thread hands it, and a presenter thread
-  ([threads.md](threads.md)).
+- Its threads: the game's own, one render thread that replays every command buffer, from 4 cores (where Auto's mode is
+  safe; or alone with serial replay at 6 or more cores when only buffer-pool mirrors are absent on integrated GPUs or
+  `RX_VK_MIRROR=0`) a recorder thread that makes the driver's calls for it and ends and submits each part the replay hands
+  it, and a presenter thread ([threads.md](threads.md)).
 - `gpu/vk` is the only renderer. Without a usable Vulkan nothing is drawn, and the log says "no renderer".
 - The interface between the host and the renderer is `MkwVkHost` / `MkwVkRenderer` in
   [`gpu/vk/vk_api.h`](../../../gpu/vk/vk_api.h). Any change to it bumps `MKWVK_API_VERSION`, and both binaries are rebuilt
@@ -272,7 +273,8 @@ The check has blind spots:
 driver, VRAM, RAM, CPU count and OS. `tests/test_device_policy.py` runs every rule on made-up PCs.
 
 - **`DeviceFacts`** is what `create_device` (`vk_main.cpp`) learns once, before the device is made. Rules ask the
-  facts, never Vulkan.
+  facts (including `arch()` / `arch_name()` from [`gpu/vk/gpu_arch.h`](../../../gpu/vk/gpu_arch.h), plus `rdna1()`..`rdna4()`
+  and `amd_win()`), never Vulkan.
 - **`device_policy(facts)`** gives each rule's default for this PC.
 - **`device_policy_env(policy, facts, get)`** applies the switches and records which fields a switch set. The result is
   `dev.policy`.

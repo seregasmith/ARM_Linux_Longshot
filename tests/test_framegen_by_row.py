@@ -282,7 +282,7 @@ def main():
             if '    {"%s", ' % text not in body:
                 fail("%s: %r is not translated" % (table, text))
 
-    loop = found(r"\n +for \(Row& r : rows\) \{\n +if \(!r\.value \|\| r\.value == &opts\.game_lang \|\| strcmp\(line, "
+    loop = found(r"\n +for \(Row& r : rows\) \{\n +if \(!r\.value \|\| r\.value == &opts\.game_lang \|\| (?:(?:\(r\.setting && r\.setting->unsaved\)) \|\| )?strcmp\(line, "
                  r"ini_key\(r\)\)\) continue;.*?\n +\}\n", menu, "the options file's loading loop over the rows is not where it was")
     parts = {
         "/* OPTIONS */": found(r"struct Options \{.*?\n\};", header, "no struct Options"),

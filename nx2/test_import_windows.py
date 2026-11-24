@@ -39,7 +39,9 @@ def main():
 #include <map>
 #include <mutex>
 #include <vector>
+#include "gpu/vk/import_hold.h"
 #include "gpu/vk/import_reach.h"
+using mkwvk::ImportHolds;   // (pool_lookup's held log names its kGapMs)
 #define CHECK(x) do { if(!(x)){std::fprintf(stderr,"FAIL:%d %s\\n",__LINE__,#x);std::exit(1);} }while(0)
 struct Pool { uint64_t lo=0,hi=0,range_lo=0,range_hi=0,address=0; bool prefetched=false,gpu_only=false,gpu_written=false; uint8_t trims=0; uint64_t trim_epoch=0; };
 struct GuestPool { uint64_t lo,hi; };
@@ -50,6 +52,7 @@ Pool *last_pool=nullptr,*pool_cache[4096]{};
 uint64_t max_import_size=128ull<<20;
 int failures=0,imports=0,retires=0,bg_starts=0;
 int64_t st_bg_waits=0,st_prefetch_used=0,st_prefetch_sent=0,st_prefetch_dropped=0;
+std::atomic<int64_t> st_imports_made{0},st_imports_refused{0},st_imports_held{0}; // (pool_lookup's: made, refused, held)
 struct { bool external_memory_host=true; } dev;
 std::mutex bg_mu;std::condition_variable bg_done_cv,bg_cv;std::map<uint64_t,uint64_t> bg_inflight;
 std::deque<std::pair<uint64_t,uint64_t>> bg_queue;
@@ -89,6 +92,7 @@ int check_prefetch(int mode) {
     CHECK(bg_starts==(mode==1?2:0) && st_prefetch_sent==(mode==1?2:0));
     auto demand=pool_lookup(base+64,64);
     CHECK(demand && !demand->prefetched && imports==1 && st_prefetch_used==1);
+    CHECK(st_imports_made==1 && st_imports_refused==0 && st_imports_held==0);   // (the one import made, counted as made)
     CHECK(bg_queue.size()==(mode==1?3u:0u) && bg_starts==(mode==1?3:0) && st_prefetch_sent==(mode==1?3:0));
     CHECK(bg_inflight.size()==bg_queue.size() && st_prefetch_dropped==0 && st_bg_waits==0);
     for(const auto& [lo, hi] : bg_queue) CHECK(bg_inflight.at(lo)==hi);
