@@ -2,8 +2,8 @@
 
 Compile the menu's actual preset and row handlers with small stand-ins.
 Check that the game FPS cap keeps its saved key when its label changes. Preset
-and frame-generation changes do not reset temporal failures; the three scaling
-rows do, using their real row definitions and scaling helpers. While NVIDIA DLSS
+and frame-generation changes keep temporal failures unless the preset changes the
+upscaler. The three scaling rows reset failures. While NVIDIA DLSS
 FG makes the frames, the Frame generation row's arrows step from the value shown
 and end at its runtime's most + 1 (the real framegen_capped): 6x on an RTX 50's,
 2x on an RTX 40's, round to Off past it as past 8x; a value set as it is (the
@@ -71,7 +71,7 @@ void env_release(const int*) {}   // (the environment's hold on a row: none here
 bool row_fixed(const int*) { return false; }
 namespace ur = mkwvk::upscaler_rows;
 int upscaler() { return opts.dlss; }
-unsigned upscalers_available() { return ur::bit(ur::GAME) | ur::dlss_bits(true); }
+unsigned upscalers_available() { return ur::bit(ur::GAME) | ur::bit(ur::OFF) | ur::dlss_bits(true); }
 namespace mr { constexpr int kMax = 8; }
 /* (the Game language row's hook in set_row: language.txt, not written here) */
 namespace i18n { inline void set_game_language(int) {} }
@@ -164,11 +164,15 @@ int main() {
     CHECK(opts.framegen == 7);
     fg_most = 0;
     CHECK(std::strstr(quality.help, "Frame generation") != nullptr);
-    CHECK(std::strstr(quality.help, "stay yours") != nullptr);
+    CHECK(std::strstr(quality.help, "stays the same") != nullptr);
     CHECK(saves > 0);
     CHECK(temporal_resets == 0);
 
-    // Only the Upscaler, Render resolution and DLSS model rows reset temporal failures.
+    opts.dlss = ur::DLSS;
+    set_row(quality, Options::kHandheldPreset, 1);
+    CHECK(opts.dlss == ur::OFF && opts.framegen == 7 && temporal_resets == 1);
+
+    // The Upscaler, Render resolution and DLSS model rows also reset temporal failures.
     Row temporal_rows[] = {/* UPSCALER_ROW */, /* RESOLUTION_ROW */, /* DLSS_MODEL_ROW */};
     for (Row& r : temporal_rows) {
         opts = Options{};

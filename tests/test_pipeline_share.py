@@ -106,7 +106,7 @@ def game_folder(root, list_bytes=None):
     for name in ("longshot_options.ini", "longshot_log.txt", "longshot_shaders.bin", "longshot_pipelines.bin", "language.txt",
                  "longshot_pipeline_states_shipped.bin", "longshot_pipeline_states_v1.bin"):
         (g / name).write_bytes(b"")
-    (g / "longshot_options.ini").write_text("output_res=2560x1440\ndlss=1\nresolution=3\nframe_generation=2\nhdr=0\nultrawide=0\n"
+    (g / "longshot_options.ini").write_text("handheld_profile=0\noutput_res=2560x1440\ndlss=1\nresolution=3\nframe_generation=2\nhdr=0\nultrawide=0\n"
                                             "options_version=4\n", encoding="utf-8")
     (g / "longshot_log.txt").write_text(
         "[hos host] longshot v2.2.0-rc.1-5-gabcdef1 (source 0123abcd)\n"
@@ -183,9 +183,10 @@ def check_python(tmp):
     assert share.output_text(vals) == "1536x864 (Handheld profile)"
     assert share.upscaler_text(vals) == "NVIDIA DLAA, Native"
     assert share.framegen_hdr_text(vals) == "Off / Native (the game's)"
-    assert share.output_text({}) == "2048x1152 (the game's own)"
+    assert share.output_text({}) == "1536x864 (Handheld profile)"
+    assert share.upscaler_text({}) == "Off (no upscaling), 100% (1536x864)"
     assert share.upscaler_text({"dlss": "0", "resolution": "0"}) == "Game's own, Auto (dynamic)"
-    assert share.upscaler_text({"dlss": "3", "resolution": "4", "output_res": "3840x2160"}) == "AMD FSR 3.1, Performance 50% (1920x1080)"
+    assert share.upscaler_text({"dlss": "3", "resolution": "4", "output_res": "3840x2160", "handheld_profile": "0"}) == "AMD FSR 3.1, Performance 50% (1920x1080)"
 
     # refused: missing, not a list, cut short, empty; no zip each time
     bad = {"missing": None, "not a list": b"PK\x03\x04" + bytes(600), "cut short": v2_list(2)[:-5],
@@ -290,10 +291,11 @@ def check_cxx(cxx, tmp):
     # a list that is not one: no zip
     assert run("zip", t / "list-cut-short", t / "bad.zip").returncode != 0 and not (t / "bad.zip").exists()
     # the Output resolution line combined the same way (the Handheld profile, the game's own size, Ultrawide)
-    for ini in ({"output_res": "2560x1440"}, {"output_res": "2560x1440", "ultrawide": "1"}, {"ultrawide": "1"}, {},
+    for ini in ({"output_res": "2560x1440", "handheld_profile": "0"},
+                {"output_res": "2560x1440", "ultrawide": "1", "handheld_profile": "0"}, {"ultrawide": "1", "handheld_profile": "0"}, {},
                 {"handheld_profile": "1", "ultrawide": "1"}, {"output_res": "3840x2160", "handheld_profile": "1"}):
         w, h, _ = share.output_size(ini)
-        flags = ["1" if share._int(ini, "handheld_profile") else "0", "1" if (w, h) == share.OUTPUTS[0] else "0",
+        flags = ["1" if share._int(ini, "handheld_profile", 1) else "0", "1" if (w, h) == share.OUTPUTS[0] else "0",
                  "1" if share._int(ini, "ultrawide") else "0"]
         got = run("output", w, h, *flags).stdout.strip()
         assert got == share.output_text(ini), "Output resolution for %s: the C++ says %r, the Python %r" % (ini, got, share.output_text(ini))

@@ -30,7 +30,7 @@ struct Options {
     int hdr_tonemap = 0;  // (longshot) the scene's tone mapper with Native HDR: 0 the game's (Vanilla), 1 PsychoV35, as RenoDX's zelda-oot-oz
                           // (ir_opt/scene_tonemap_pass.h; vk_shader.cpp scene_tonemap_for)
     int fps_cap = 0;      // (longshot) Frame rate cap: 0 60 (the console's), 90, 120, 144, 165, 240, 6 Uncapped (host/nn_vi.c: frame_rate_cap= at the start, then HOS_OPT_FPS_CAP in play)
-    int resolution = 0;   // the 3D's (Render resolution): 0 Auto (the game's dynamic resolution), else a share of the output,
+    int resolution = 1;   // the 3D's (Render resolution): 0 Auto (the game's dynamic resolution), else a share of the output,
                           // 1..6 = 100%, 75%, 67%, 50%, 58%, 33% (upscaler_rows.h; nx2/oot_patches.py)
     int output_res = 0;   // the game's whole frame, docked: 0 its 2048x1152, then the sizes the screen offers (vk_menu.cpp outputs,
                           // display_modes.h), then the player's own (custom_output); saved as the size (output_res=3840x2160) and read
@@ -40,9 +40,9 @@ struct Options {
     int crt_lines = 0;    // virtual raster: 0 240, 1 480, 2 720 lines; at most half the destination height, at least one line
     int reflex = 0;       // NVIDIA Reflex: 0 off, 1 on, 2 on + boost (vk_reflex.cpp; NVIDIA GPUs with VK_NV_low_latency2)
     int antilag = 0;      // AMD Anti-Lag 2: 0 off, 1 on (vk_antilag.cpp; AMD GPUs with VK_AMD_anti_lag)
-    int dlss = 0;         // the Upscaler (its name from before FSR: options files and the tests' stand-ins keep it): 0 the game's
+    int dlss = 6;         // the Upscaler (its name from before FSR: options files and the tests' stand-ins keep it): 0 the game's
                           // own network, 1 NVIDIA DLSS, 2 NVIDIA DLAA (a build with NVIDIA's SDK only), 3 AMD FSR 3.1 (vk_fsr3.cpp),
-                          // 4 AMD FSR 4, 5 its native AA (a build with FSR 4 only). upscaler_rows.h; vk_temporal.cpp. Saved as dlss
+                          // 4 AMD FSR 4, 5 its native AA, 6 Off. upscaler_rows.h; vk_temporal.cpp. Saved as dlss
     int dlss_model = 0;   // DLSS's network, by its preset: 0 K (transformer; E, the CNN, under 7 GB of video memory), 1 M, 2 L
                           // (second-generation transformer), 3 NVIDIA's default (upscaler_rows.h model_preset; vk_dlss.cpp).
                           // RX_VK_DLSS_PRESET over it
@@ -58,7 +58,7 @@ struct Options {
                           // menu_shadow_res), 1 the game's (1600), 2 2200, 3 3072 (host/oot_shadow.c: HOS_OPT_SHADOW_RES, 56).
                           // The Quality presets set it back to Auto (apply_preset)
     int realtime = 1;     // game time follows the clock (host/nn_vi.c); 0: per frame (slower frames, slower game)
-    int handheld = 0;     // the game's handheld profile: ~4 fps, softer; read once, at the start (host/nn_applet.c)
+    int handheld = 1;     // The Handheld profile, read once at startup (host/nn_applet.c).
     int ultrawide = 1;    // the Aspect ratio row. Saved as ultrawide=, read once, at the start (host/hos_main.c): 1 the monitor's own
                           // shape (the default), 0 the game's 16:9 (an older file's 0 on a screen narrower than 16:9 moves to 1,
                           // options_version 6: host/hos_wide_size.h hos_aspect_on). In the menu, from menu_init on: a place in
@@ -80,7 +80,7 @@ struct Options {
     int menu_shortcut = 2;   // 0 Insert or F1, 1 F1 only, 2 Insert, F1 or Esc (F1 always opens the menu). 2 by default, as a PC
                              // game's pause menu; an older file's 0, the default it then was, moves to 2 (options_version 5)
     int compact_menu_key = 0; // 0 Right Shift, 1 Right Ctrl (key to switch to or open the compact menu)
-    int menu_theme = 0;   // (longshot) the overlays' look: 0 Modern dark, 1 Classic (the game's tan and gold; gpu/vk/vk_ui.h set_theme)
+    int menu_theme = 1;   // The overlays' theme. 0 Modern dark, 1 Classic (gpu/vk/vk_ui.h set_theme).
     int menu_size = 2;   // (longshot) the overlays' size: 1 Small, 2 Medium, 3 Large (gpu/vk/vk_ui.h unit; an older file's 0 Auto: Medium)
     int fullscreen = 0;   // borderless, at the monitor's size: F11 is the same setting
     int gpu_device = 0;   // graphics card index: 0 Auto, 1..N device 0..N-1 (gpu/vk/vk_main.cpp; RX_VK_DEVICE)
@@ -142,8 +142,8 @@ struct Options {
                               // IntelDriverGate; RX_VK_NO_INTEL_SERIAL over it). Read once, at the start
     int intel_quick = 1;   // (longshot) Intel's one-at-a-time compute builds: a dispatch's pipeline first without the optimizer,
                            // the optimized one bound once made (vk_draw.cpp compute_optimize; RX_VK_COMPUTE_QUICK_FIRST over it)
-    int preset = 0;       // quality preset: 0 Custom, 1 Minimum (4GB), 2 Low (6GB), 3 Balanced (8GB), 4 High (12GB), 5 Ultra (16GB+),
-                          // 6 Auto (this PC), kAutoPreset (its tier: budget)
+    static constexpr int kHandheldPreset = 7;
+    int preset = kHandheldPreset;   // 0 Custom, 1–5 memory tiers, 6 Auto (this PC), 7 Handheld.
     int budget = 0;       // the preset the settings came from, kept when another row turns the preset to Custom: Minimum's (1)
                           // trims the textures' mips on a small card (vk_texture.cpp low_vram_texture_mips). Saved as memory_budget;
                           // 0: none, and Custom goes by Auto (this PC)'s tier (menu_memory_tier). No preset or row sets the

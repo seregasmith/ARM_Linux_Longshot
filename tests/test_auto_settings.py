@@ -1,5 +1,5 @@
 """Compile and run the Quality preset Auto (this PC)'s rules (gpu/vk/auto_settings.h; no game/GPU), and check that the menu and
-the renderer still use them: the preset row reaches Auto, a first start starts on it, and the hardware is read once the window is
+the renderer still use them: the preset row reaches Auto, a first start can select it, and the hardware is read once the window is
 known.
 
 python -I -B tests/test_auto_settings.py [--cxx g++]
@@ -36,8 +36,9 @@ def body(text, marker):
 
 def check_source():
     menu = menu_text(ROOT)   # (vk_menu.cpp and its modules, their rows as table lines, #1633)
-    need("vk_menu.cpp", menu, ['{TAB_GRAPHICS, "Quality preset", &opts.preset, 0, 6, 1, tx_preset,', '"Auto (this PC)"',
+    need("vk_menu.cpp", menu, ['{TAB_GRAPHICS, "Quality preset", &opts.preset, 0, Options::kHandheldPreset, 1, tx_preset,', '"Auto (this PC)"',
                                "if (first) opts.preset = kAutoPreset;",
+                               'if (first && (!env_int("RX_VK_AUTO_PRESET", 0) || env_on("RX_VK_LOW_SPEC"))) return;',
                                "::auto_settings::choose(hw)", "if (fp == auto_for)", 'fprintf(f, "auto_for=%016llx\\n"',
                                # (save() keeps the lines it does not write: each auto_ key must be one it writes, or the old
                                # line, kept after the new one, wins at the next start)

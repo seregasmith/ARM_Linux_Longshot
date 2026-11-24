@@ -123,6 +123,7 @@ const char* upscaler_name(int v) {
     return v >= 0 && v < upscaler_rows::kUpscalers ? t[v] : "other";
 }
 const char* preset_name(int v) {
+    if (v == Options::kHandheldPreset) return "Handheld";
     static const char* const t[] = {"Custom", "Minimum", "Low", "Balanced", "High", "Ultra"};
     return v >= 0 && v < 6 ? t[v] : "Auto";
 }

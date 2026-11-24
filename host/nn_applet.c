@@ -91,8 +91,7 @@ HLE(_ZN2nn2oe18GetDesiredLanguageEv) {
     memcpy(&v, desired_language(), strlen(desired_language()));
     RET(v);
 }
-/* HOS_HANDHELD=1: handheld (the 1080p screen: 1080p output and the game's handheld resolutions) instead of docked
-   (MKW docked composes 3840 x 2160) */
+/* HOS_HANDHELD selects the operation mode for this run. 0 selects Docked. The default profile is Handheld. */
 int hos_ini_option(const char *key, int otherwise);
 #define ini_option hos_ini_option
 /* (longshot) An option's text in longshot_options.ini (the Insert menu's choices, gpu/vk/vk_menu.cpp; where it is:
@@ -121,7 +120,7 @@ static int handheld(void) {
     static int v = -1;
     if (v < 0) {
         const char *e = getenv("HOS_HANDHELD");
-        v = e ? !env_value_off(e) : ini_option("handheld_profile", 0) != 0;
+        v = e ? !env_value_off(e) : ini_option("handheld_profile", 1) != 0;
     }
     return v;
 }

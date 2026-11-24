@@ -55,6 +55,7 @@ FIXTURE = r'''
 #include "menu_restart.h"
 #include "menu/preset.h"
 #include "monitor_choice.h"
+#include "compat/longshot_env.h"
 #ifdef _WIN32   // (save's: the file written beside its target and moved over it)
 #include <windows.h>
 #else

@@ -324,7 +324,8 @@ int main(int argc, char **argv) {
         ("3840 x 2160", 0, None, 0, 2560, 1440, "2048x1152 (reduced)", 512, "2048x1152"),   # (not a size)
         ("abc", 0, None, 0, 2560, 1440, "2048x1152 (reduced)", 512, "2048x1152"),
         ("5120x2880", 1, None, 0, 2560, 1440, "2048x1152 (reduced)", 512, "2048x1152"),
-        (None, 0, None, 2, 2560, 1440, "2560x1440", 512, "2560x1440"),   # (none chosen, a new install: the game's 2560x1440)
+        (None, None, None, 0, 2560, 1440, "2048x1152 (reduced)", 512, "2048x1152"),   # default Handheld profile
+        (None, 0, None, 2, 2560, 1440, "2560x1440", 512, "2560x1440"),   # Docked with no output setting
         (None, 1, None, 0, 2560, 1440, "2048x1152 (reduced)", 512, "2048x1152"),   # (handheld: its own, as before)
         (None, 0, "2048x1152", 0, 2560, 1440, "2048x1152 (reduced)", 512, "2048x1152"),   # (the reduced size, asked for)
     )
@@ -372,7 +373,8 @@ int main() {
         subprocess.run([args.cxx, "-std=c++17", "-include", ENV_ON_H, "-I", str(ROOT), str(source), "-o", str(exe)], check=True)
         for saved, handheld, override, mode, w, h, label, pool, writes in cases:
             (work / "longshot_options.ini").write_text(   # (saved None: no output_res= line, a new install)
-                ("" if saved is None else f"output_res={saved}\n") + f"handheld_profile={handheld}\n", encoding="ascii")
+                ("" if saved is None else f"output_res={saved}\n") + ("" if handheld is None else f"handheld_profile={handheld}\n"),
+                encoding="ascii")
             env = os.environ.copy()
             for key in ("HOS_OUTPUT_RES", "HOS_HANDHELD", "HOS_RT_POOL_MB"):
                 env.pop(key, None)

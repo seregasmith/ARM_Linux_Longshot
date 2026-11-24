@@ -121,7 +121,11 @@ const char* tx_dlss_model(int) { return ""; }
 const char* hn_dlss_model(int, int) { return ""; }
 const char* tx_preset(int) { return ""; }
 const char* hn_preset(int, int) { return ""; }
-Row rows[] = {/* UPSCALER_ROW */, /* RESOLUTION_ROW */, /* MODEL_ROW */, /* PRESET_ROW */};
+const char* tx_fixture(int) { return ""; }
+const menu::Setting theme_setting{.key = "menu_theme", .value = &opts.menu_theme};
+Row rows[] = {/* UPSCALER_ROW */, /* RESOLUTION_ROW */, /* MODEL_ROW */, /* PRESET_ROW */,
+              {TAB_GRAPHICS, "Profile", &opts.handheld, 0, 1, 1, tx_fixture, ""},
+              {TAB_GAMEPLAY, "Menu theme", &opts.menu_theme, 0, 1, 1, tx_fixture, "", nullptr, true, false, -1, false, &theme_setting}};
 [[maybe_unused]] constexpr int kRows = sizeof rows / sizeof rows[0];   // (#1633: the cut functions take std::size(rows))
 /* OVERRIDES */
 int monitor_pick;
@@ -232,6 +236,20 @@ int main(int argc, char** argv) {
     if (argc != 2) return 2;
     ini_file = argv[1];
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+    CHECK(opts.preset == Options::kHandheldPreset && opts.handheld == 1 && opts.menu_theme == 1);
+    CHECK(upscaler() == ur::OFF && !resolution_auto() && active_scale() == 10000);
+    fresh(ur::DLSS, 5);
+    opts.preset = 0, opts.handheld = 0, opts.menu_theme = 0, opts.framegen = 2, opts.budget = 3;
+    MkwVkSetting preset{};
+    CHECK(menu_setting_set("quality_preset", Options::kHandheldPreset, &preset) == 1);
+    CHECK(opts.preset == Options::kHandheldPreset && opts.handheld == 1 && opts.menu_theme == 1);
+    CHECK(upscaler() == ur::OFF && active_scale() == 10000 && opts.framegen == 2 && opts.budget == 3);
+    restart();
+    CHECK(opts.preset == Options::kHandheldPreset && opts.handheld == 1 && opts.menu_theme == 1);
+    CHECK(upscaler() == ur::OFF && active_scale() == 10000);
+    set_row(rows[5], 0, -1);
+    restart();
+    CHECK(opts.menu_theme == 0 && opts.preset == 0);
     const int engines[] = {ur::GAME, ur::DLSS, ur::FSR3, ur::FSR4, ur::OFF};
     // Every saved value, including all named qualities and hand-chosen slider stops.
     for (int engine : engines) for (int value = 0; value < ur::kValues; ++value) {

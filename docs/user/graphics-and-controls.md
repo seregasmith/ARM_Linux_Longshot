@@ -34,11 +34,10 @@ them, the DLSS rows where DLSS doesn't run, the HDR rows while HDR is off.
 
 ## Good starting points
 
-A first start uses the **Auto (this PC)** quality preset. It picks settings from your graphics card and its video memory,
-then adjusts the render resolution during the first minute of play. If you change nothing, that is what you get. The
-Output resolution starts at the game's own 2560x1440, or at your screen's size where that is smaller (a Steam Deck's
-1280x800, a 1080p monitor), in your screen's shape: a 2560x1080 ultrawide starts at 2560x1080 and a 2256x1504 laptop at
-2256x1504, pixel for pixel. 2048x1152, marked "(reduced)", is the game's own smaller picture, lighter on the GPU.
+On a first start, the **Handheld** quality preset selects the **Handheld** profile, **100%** render resolution, **Upscaler Off**,
+and the **Classic** menu theme. The Handheld profile uses a 1536x864 frame.
+Select **Auto (this PC)** to let the game choose a preset for your graphics card and adjust the render resolution during play.
+If you select **Docked**, the default output is 2560x1440 or the screen's size if smaller.
 
 On supported Windows Vulkan setups, switching from 1280x720 to 1024x576 at 16:9 can preview the new Output resolution
 in play. Set **V-Sync** to **On**, enable **Threaded rendering** (its change takes effect at the next launch), and set
@@ -72,16 +71,16 @@ after a restart, only on some GPUs or builds, only while HDR is on, or set for y
 
 | Tab | Option | Choices | Default |
 |---|---|---|---|
-| Graphics | Quality preset | Custom, Minimum (4GB), Low (6GB), Balanced (8GB), High (12GB), Ultra (16GB+), Auto (this PC) | Auto (this PC) on a first start; Custom in an options file from before it |
+| Graphics | Quality preset | Custom, Minimum (4GB), Low (6GB), Balanced (8GB), High (12GB), Ultra (16GB+), Auto (this PC), Handheld | Handheld |
 | | Aspect ratio | The shapes your screen's resolutions have, narrowest first (5:4, 4:3, 16:10, 16:9, 21:9, 32:9, ...), your monitor's own marked "(monitor's)" (after a restart) | Your monitor's |
-| | Output resolution | The Aspect ratio's sizes: your screen's resolutions and the common ones (1440p, 4K, 5K at 16:9; 1920x1200, 2560x1600 at 16:10; 3440x1440 at 21:9; ...), and 2048x1152 (the game's own reduced size, 80% of its 2560x1440, marked "(reduced)") at 16:9; your screen's own size is marked "(native)" (most changes apply after a restart) | 2560x1440, the game's own picture, or your screen's size where it is smaller (a Steam Deck's 1280x800, a 1080p monitor), at its own shape (a 2560x1080 ultrawide starts at 2560x1080, a 2256x1504 laptop at 2256x1504); Auto (this PC) leaves it as it is |
+| | Output resolution | The Aspect ratio's sizes: your screen's resolutions and the common ones (1440p, 4K, 5K at 16:9; 1920x1200, 2560x1600 at 16:10; 3440x1440 at 21:9; ...), and 2048x1152 (the game's own reduced size, 80% of its 2560x1440, marked "(reduced)") at 16:9; your screen's own size is marked "(native)" (most changes apply after a restart) | 1536x864 in Handheld. In Docked, 2560x1440 or your screen's size if smaller. |
 | | Custom output size | A size of your own, typed as `<width>x<height>` (most changes apply after a restart) | None |
-| | Profile | Docked, Handheld (after a restart) | Docked; a quality preset sets it |
-| | Upscaler | Game's own, NVIDIA DLSS (only in builds with NVIDIA's DLSS SDK, on NVIDIA RTX GPUs), AMD FSR 3.1 (every build, on GPUs it runs on), AMD FSR 4 (only in builds with FSR 4, on GPUs AMD's files cover), Off (no upscaling), Intel XeSS (Windows, with Intel's `libxess.dll` beside the game). NVIDIA DLAA, AMD FSR 4 Native AA and Intel XeSS Native AA are DLSS's, FSR 4's and XeSS's Native, chosen on the Render resolution row | Game's own; Auto (this PC) chooses DLSS or FSR 4 where they run, never XeSS |
+| | Profile | Docked, Handheld (after a restart) | Handheld |
+| | Upscaler | Game's own, NVIDIA DLSS (only in builds with NVIDIA's DLSS SDK, on NVIDIA RTX GPUs), AMD FSR 3.1 (every build, on GPUs it runs on), AMD FSR 4 (only in builds with FSR 4, on GPUs AMD's files cover), Off (no upscaling), Intel XeSS (Windows, with Intel's `libxess.dll` beside the game). NVIDIA DLAA, AMD FSR 4 Native AA and Intel XeSS Native AA are DLSS's, FSR 4's and XeSS's Native, chosen on the Render resolution row | Off |
 | | DLSS model | Transformer (K) (CNN (E) in its place on cards with less than 7 GB of video memory), Transformer 2 (M), Transformer 2 (L), NVIDIA default, CNN (E), CNN (F) (shown where DLSS runs, with DLSS or DLAA chosen as the Upscaler) | Transformer (K); CNN (E) under 7 GB |
 | | FSR 4 model | Auto (AMD's), Lite (INT8) (shown where FSR 4 runs, only in builds with FSR 4's Lite provider). Forcing Lite requires a supported Windows runtime with a verified provider; currently forcing is disabled. Linux retains a saved Lite value but uses Auto. | Auto (AMD's) |
 | | DLAA before the bloom | Off, On: where NVIDIA DLAA smooths the picture, after the game's bloom and tone map or before them (shown with NVIDIA DLSS; changeable with Render resolution Native (DLAA) only; changes at once; `RX_VK_DLSS_PRE_BLOOM` over it for one run) | Off |
-| | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS or FSR 4: Auto, Native (DLAA or FSR 4 Native AA: the 3D at full size), 92%, 83%, 75%, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With Intel XeSS the same stops, named by the XeSS mode each runs under: Native (XeSS Native AA), Ultra Quality Plus (92%, 83%), 75%, Ultra Quality (67%), Balanced (58%, 50%), Ultra Performance (33%). With FSR 3.1: Auto, 100% (its native AA), then the same as DLSS from 92%. With Off: Auto, 100%, 75%, 67%, 50%, 33% | Auto; a quality preset sets it |
+| | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS or FSR 4: Auto, Native (DLAA or FSR 4 Native AA: the 3D at full size), 92%, 83%, 75%, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With Intel XeSS the same stops, named by the XeSS mode each runs under: Native (XeSS Native AA), Ultra Quality Plus (92%, 83%), 75%, Ultra Quality (67%), Balanced (58%, 50%), Ultra Performance (33%). With FSR 3.1: Auto, 100% (its native AA), then the same as DLSS from 92%. With Off: Auto, 100%, 75%, 67%, 50%, 33% | 100% |
 | | Sharpness | 0 to 100%, in steps of 10 | 0%; a quality preset sets it |
 | | Frame generation | Off, Auto (it shows who makes its frames: FSR 3.1 FG or Built-in FG), 2x to 8x; with DLSS FG up to what NVIDIA's runtime makes on the GPU (6x on an RTX 50, 2x on an RTX 40) | Off |
 | | Frame generation by | Shown while Frame generation is on. DLSS FG (NVIDIA DLSS Frame Generation: RTX 40 and newer, with a temporal Upscaler), FSR 3.1 FG (AMD FSR 3.1's frame interpolation, from the scene's depth and motion: any GPU), Built-in FG. DLSS FG is offered only where it runs; elsewhere the row has FSR 3.1 FG and Built-in FG, and its line at FSR 3.1 FG says why not DLSS FG (the log has NVIDIA's answer). At DLSS FG, FSR 3.1 makes the frames DLSS FG does not (Frame generation's Auto). At DLSS FG, the game's own menus, movies and loading screens show only the game's own frames (they have no Upscaler picture to make frames from): the row's line and the FPS counter say DLSS FG paused. With an Upscaler that is not temporal, the built-in one makes the frames and the line says why. `RX_VK_DLSS_FG=1` fixes the row at DLSS FG for a run. Changes at once | DLSS FG where it runs, else FSR 3.1 FG (an options file's Auto from before is this default) |
@@ -134,7 +133,7 @@ after a restart, only on some GPUs or builds, only while HDR is on, or set for y
 | | FPS counter size | Auto, Small, Medium, Large | Auto |
 | | FPS counter details | Opens the FPS counter details page: Version and hardware at every level (Off, On; Off), then a line each of the Dev level (VRAM, Textures, Draws, Dispatches, Render passes, Draws skipped, Texture uploads, Pipelines built, GPU slot waits, Queue submits, Write-backs) and the footer's CPU and GPU lines and its render lines: the resolution the 3D is drawn at and what upscales it (Off, On; On each) | Version and hardware off, every line on |
 | | Menu size | Small, Medium, Large | Medium |
-| | Menu theme | Modern dark, Classic (the game's own tan and gold); the menu, the FPS counter and the start-up screen | Modern dark |
+| | Menu theme | Modern dark, Classic (the game's own tan and gold); the menu, the FPS counter and the start-up screen | Classic |
 | | Game speed | Per frame, Real time | Real time |
 | | Field of view | 50% to 150%, in steps of 5; applies immediately during gameplay | 100% (original) |
 | | Text speed | Normal, 2x, 4x, Instant | Normal |
@@ -204,10 +203,11 @@ helper asks you to.
   It shifts colour differences while preserving brightness. The three modes are fixed presets and their
   usefulness varies by player and scene.
 
-- **Quality preset** sets Render resolution, Window scaling filter, Sharpness, Frame pacing, Game speed, Profile and
-  Shadow resolution for a card with that much memory. It leaves the Upscaler and Frame generation as you chose them:
-  with DLSS, FSR 3.1 or FSR 4, the preset's resolution becomes their nearest mode. Changing most other rows yourself
-  sets it to Custom.
+- The **Minimum** through **Ultra** quality presets set Render resolution, Window scaling filter, Sharpness, Frame pacing,
+  Game speed, Profile, and Shadow resolution. They keep your Upscaler and Frame generation settings. The render resolution
+  uses the nearest scale that the selected Upscaler supports. If you edit a setting from the preset, the menu shows **Custom**.
+- **Handheld** sets four options. It selects the Handheld profile, sets Render resolution to 100%, turns off the Upscaler,
+  and selects the Classic theme. If the game is in Docked mode, restart it to apply the profile.
 - **Simulated turf** controls the large-scale, flowing turf made by an area's fluid/turf simulation and keeps
   a separate profile for each visited area. Leave **Use global multipliers** off to edit that area's Fade start, Turf
   density, Minimum blades and Far power directly; turn it on to scale every area's installed values instead. **Reset

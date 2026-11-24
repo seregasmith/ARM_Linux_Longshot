@@ -46,7 +46,10 @@ def fixture(source):
     # chooses for: at its default, a report lists it nowhere)
     sets = {}
     for member, value in re.findall(r"opts\.(\w+)\s*=\s*([^;,=][^;,]*)", controls):
-        sets.setdefault(member, set()).add(value.strip())
+        value = value.strip()
+        if value == f"defaults.{member}" and member in defaults:
+            value = str(defaults[member])
+        sets.setdefault(member, set()).add(value)
     text_functions = {
         "ultrawide": "tx_ultrawide", "output_res": "tx_output_res", "resolution": "tx_resolution",
         "dlss": "tx_upscaler", "dlss_model": "tx_dlss_model", "preset": "tx_preset", "gpu_device": "tx_gpu", "mic": "tx_mic",
@@ -163,6 +166,7 @@ int main(int argc, char** argv) {
         known = {"Aspect ratio: " + now + " (default: " + monitors + ")"};
     } else if (which == "custom-never-auto" || which == "custom-after-auto") {
         // Custom, the rows a preset sets moved: their built-in defaults hold until Auto (this PC) has chosen for the file
+        opts.preset = 0;
         ''' + custom_set + r'''
         if (which == "custom-after-auto") auto_for = 1;
         if (which == "custom-never-auto") known = {''' + custom_lines + r'''};

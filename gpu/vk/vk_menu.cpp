@@ -1257,6 +1257,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     // (#1633) a module's row: stepped by its own step_fn
     // (an arrow's step alone, the value one step from the row's: a value set as it is, or a jump, is kept as asked)
     if (r.setting && r.setting->step_fn && dir && v == *r.value + dir * r.step) v = r.setting->step_fn(*r.value, dir);
+    const int old_upscaler = opts.dlss;
     // (the scaling rows: only what can run here; the Render resolution row through the Upscaler's own steps)
     // (the Upscaler by engine; the Render resolution's Native is the engine's full-size form: upscaler_rows.h)
     if (r.value == &opts.dlss) v = ur::step_engine(upscaler(), dir, upscalers_available());
@@ -1283,7 +1284,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
             const int out = output_for_aspect(*r.value);
             if (out != opts.output_res) opts.output_res = out, env_release(&opts.output_res);
         }
-        if (!r.preset_exempt) {   // (rows no preset sets: the controls, the window, the counter...)
+        if (!r.preset_exempt || (opts.preset == Options::kHandheldPreset && r.value == &opts.menu_theme)) {
             // (Custom, still the preset it came from in opts.budget: Minimum's mip trimming on a small card stays with it)
             opts.preset = 0; // Custom
         }
@@ -1294,7 +1295,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     // (longshot: the samplers made again, at once: their anisotropy, and the upscalers' LOD bias, vk_draw.cpp upscale_lod_bias)
     if (r.value == &opts.anisotropy || r.value == &opts.dlss || r.value == &opts.resolution || r.value == &opts.preset)
         samplers_changed();
-    if (r.value == &opts.dlss || r.value == &opts.resolution || r.value == &opts.dlss_model)
+    if (opts.dlss != old_upscaler || r.value == &opts.dlss || r.value == &opts.resolution || r.value == &opts.dlss_model)
         temporal_reset_failure();
     prompts_at_once(r);   // (longshot)
     {   // (a row that takes a restart, or a preset that sets one: asked again at the next close)
@@ -2306,9 +2307,8 @@ void draw_debug_rows(ui::Ctx& c, float cx0, float cx1, float top, float bottom, 
 
 // A report cannot format Options{} as a live list index, or format a hypothetical
 // default through a callback that reads the current engine/display (the Output
-// resolution, Upscaler, Render resolution, Window scaling filter). The Quality
-// preset's is Auto (this PC) at a first start. The other rows a preset sets have
-// the built-in defaults only for a Custom player Auto never chose for (auto_for 0);
+// resolution, Upscaler, Render resolution, Window scaling filter). The rows a
+// hardware preset sets have built-in defaults until Auto chooses for this PC;
 // else Auto's for this PC, which only apply_auto knows, and running it here would
 // change the live options the renderer reads. Keep their current values, but do
 // not call them changes or invent a default. GPU 0 and microphone 1 stay stable;
@@ -4201,8 +4201,7 @@ void menu_init() {
             char* eq = strchr(line, '=');
             if (!eq) continue;
             *eq = 0;
-            // (a file with only the builders' Compile shaders in it, compile_shaders=, which make_game.py writes into a new
-            // folder before the game ever started: still a first start, so Auto (this PC) chooses as it would with no file)
+            // A file with only the Builder's Compile shaders setting still counts as a first start.
             has_options |= strcmp(line, "compile_shaders") != 0;
             for (Row& r : rows) {
                 if (!r.value || r.value == &opts.game_lang || strcmp(line, ini_key(r))) continue;
@@ -4285,6 +4284,12 @@ void menu_init() {
     }
     toggle_set(HOS_KEY_SPRINT, opts.sprint_toggle != 0);   // (the host's as loaded: the default with no line)
     first_start = !has_options;
+    if (opts.preset == Options::kHandheldPreset) {
+        constexpr Options defaults{};
+        if (opts.resolution != defaults.resolution || opts.handheld != defaults.handheld ||
+            opts.dlss != defaults.dlss || opts.menu_theme != defaults.menu_theme)
+            opts.preset = 0;
+    }
     sim_turf_settings_init();
     menu_colour_vision_changed(opts.colour_vision);
     menu_sync_hud_placement();
@@ -4308,8 +4313,7 @@ void menu_init() {
         opts.upscale = 0;
         opts.sharpness = 0;
     }
-    if (opts.preset > 0 && !has_memory_budget) opts.budget = opts.preset;   // (a file from before memory_budget: its preset's)
-    if (opts.preset == kAutoPreset && !has_memory_budget) opts.budget = 0;   // (Auto: its tier's, menu_auto_for_gpu)
+    if (opts.preset > 0 && opts.preset < kAutoPreset && !has_memory_budget) opts.budget = opts.preset;
     menu_debug_rows(opts.descriptor_reuse, opts.sampler_cache);   // (the Debug rows that apply in play: what was loaded)
     fps_level_now.store(fps_stats::level_of(opts.show_fps), std::memory_order_relaxed);
     output_field_show();   // (longshot: Custom output size, the size of the player's own, as the file has it)
@@ -4322,6 +4326,7 @@ void menu_init() {
             if (r.value == &opts.upscale) env_override(r.value, std::min(std::max(atoi(e), r.lo), r.hi));
     if (const char* e = getenv("HOS_REALTIME_STEP")) env_override(&opts.realtime, !env_value_off(e));
     if (const char* e = getenv("HOS_DYNRES")) env_override(&opts.resolution, env_value_off(e) ? 1 : 0);
+    if (const char* e = getenv("HOS_HANDHELD")) env_override(&opts.handheld, !env_value_off(e));
     if (const char* e = getenv("HOS_SKIP_OPENING")) env_override(&opts.skip_opening, !env_value_off(e));
     // (vk_texture.cpp reads RX_VK_ASTC_RGBA8 over the row: the row shows it, fixed (row_fixed), and the ini keeps the player's)
     if (const char* e = getenv("RX_VK_ASTC_RGBA8")) env_override(&opts.astc_rgba8, !env_value_off(e));
@@ -4342,13 +4347,13 @@ void menu_init() {
 }
 
 /// (longshot) The Quality preset "Auto (this PC)", once the card is chosen (vk_main.cpp pick_device): the profile auto_settings.h
-/// picks from the hardware. A first start (no options file yet) starts on it. With Auto on, the profile is applied when the
+/// picks from the hardware. With Auto on, the profile is applied when the
 /// hardware it was chosen for changes (another card, its memory, the screen's size, a build with or without DLSS or FSR 4):
 /// the fingerprint is kept in the options file (auto_for=). Changing a row yourself comes back to Custom, and then nothing here
 /// touches the settings; the rows no preset sets (the Output resolution) leave it on Auto, and Auto never sets the Output
 /// resolution. The VRAM budgets are no preset's: one rule by the card (texture_budget.h, mirror_budget.h). An older or
 /// smaller card does not start with the full-size budget, which can lose the device at the first scene.
-/// RX_VK_AUTO_PRESET=0: a first start keeps the defaults.
+/// RX_VK_AUTO_PRESET=1 selects Auto on the first start.
 /// RX_VK_AUTO_PRESET_VRAM_MB=<n>: the card's memory taken as n MB, to try the choice for a smaller or larger card
 void menu_auto_for_gpu(const VkPhysicalDeviceProperties& props, ::auto_settings::Hardware hw) {
     const bool first = first_start;
@@ -4356,7 +4361,7 @@ void menu_auto_for_gpu(const VkPhysicalDeviceProperties& props, ::auto_settings:
     if (const char* e = getenv("RX_VK_AUTO_PRESET_VRAM_MB")) hw.vram_mb = (uint32_t)atoll(e);
     auto_choice = ::auto_settings::choose(hw);
     const uint64_t fp = auto_fp = ::auto_settings::fingerprint(hw, props.vendorID, props.deviceID);
-    if (first && (!env_int("RX_VK_AUTO_PRESET", 1) || env_on("RX_VK_LOW_SPEC"))) return;   // (off, or chosen already: menu_init)
+    if (first && (!env_int("RX_VK_AUTO_PRESET", 0) || env_on("RX_VK_LOW_SPEC"))) return;
     char hw_line[200];
     snprintf(hw_line, sizeof hw_line, "%s, %u MB of video memory, %s, screen %dx%d at %d Hz, %u MB of RAM, %d threads",
              props.deviceName, (unsigned)hw.vram_mb, hw.integrated ? "integrated" : "dedicated", hw.screen_w, hw.screen_h,

@@ -99,6 +99,7 @@ Row rows[] = {
     {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx, ""},
     {TAB_GRAPHICS, "Frame pacing", &opts.pace, 0, 1, 1, tx, ""},
     {TAB_GRAPHICS, "Output resolution", &opts.output_res, 0, 0, 1, tx, ""},   // (its end: the sizes offered, unused here)
+    {TAB_GRAPHICS, "Profile", &opts.handheld, 0, 1, 1, tx, ""},
     {TAB_GRAPHICS, "Render resolution", &opts.resolution, 0, 6, 1, tx, ""},
     {TAB_GRAPHICS, "Window scaling filter", &opts.upscale, 0, 2, 1, tx, ""},
     {TAB_GRAPHICS, "Sharpness", &opts.sharpness, 0, 100, 10, tx, ""},
@@ -160,12 +161,14 @@ int main(int argc, char** argv) {
     setenv("RX_VK_UPSCALE", "2", 1);
     setenv("RX_VK_FRAMEGEN_MULT", "4", 1);
     setenv("HOS_OUTPUT_RES", "2400x1350", 1);
+    setenv("HOS_HANDHELD", "0", 1);
     setenv("RX_VK_ASTC_RGBA8", "1", 1);
     opts.fsr4_model = 0;
     setenv("RX_VK_FSR4_MODEL", "lite", 1);
     env_part();
     CHECK(live_model == FSR4_MODEL_LITE);
     CHECK(opts.astc_rgba8 == 1);
+    CHECK(opts.handheld == 0);
     // This run follows the environment
     CHECK(opts.pace == 1 && opts.realtime == 1 && opts.resolution == 0 && opts.upscale == 2 && opts.framegen == 4);
     CHECK(output_at(opts.output_res).w == 2400 && output_at(opts.output_res).h == 1344);
@@ -178,6 +181,7 @@ int main(int argc, char** argv) {
     CHECK(has("frame_pacing=0\n"));
     CHECK(has("game_speed=0\n"));
     CHECK(has("resolution=2\n"));
+    CHECK(has("handheld_profile=1\n"));
     CHECK(has("upscaling=0\n"));
     CHECK(has("frame_generation=3\n"));
     CHECK(has("output_res=3000x1688\n"));

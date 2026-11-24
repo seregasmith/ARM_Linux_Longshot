@@ -33,6 +33,15 @@ void apply_preset(int p) {
         apply_auto();   // (chosen on the row: all of its rows, as any preset)
         return;
     }
+    if (p == Options::kHandheldPreset) {
+        constexpr Options defaults{};
+        for (const int* v : {&opts.resolution, &opts.handheld, &opts.dlss, &opts.menu_theme}) env_release(v);
+        opts.resolution = defaults.resolution;
+        opts.handheld = defaults.handheld;
+        opts.dlss = defaults.dlss;
+        opts.menu_theme = defaults.menu_theme;
+        return;
+    }
     // (the rows it sets are the preset's from now on, even at the value the environment forced: save writes them)
     if (p > 0)
         for (const int* v : {&opts.resolution, &opts.upscale, &opts.sharpness, &opts.pace, &opts.realtime, &opts.handheld})
@@ -62,8 +71,7 @@ void apply_preset(int p) {
     default:
         break;
     }
-    // (the Upscaler and Frame generation are the player's: a preset never turns DLSS or made frames on or off. With DLSS
-    // its resolution is DLSS's nearest mode)
+    // Memory-tier presets keep the chosen upscaler and frame generation. Snap their render scale to the active engine.
     if (p > 0) opts.resolution = ur::snap_render(upscaler(), opts.resolution);   // (a slider stop kept)
     opts.budget = p;   // (Custom chosen on this row: none, as before)
 }
@@ -88,8 +96,8 @@ void apply_auto() {
 namespace {
 const char* tx_preset(int v) {
     static const char* t[] = {"Custom", "Minimum (4GB)", "Low (6GB)", "Balanced (8GB)", "High (12GB)", "Ultra (16GB+)",
-                              "Auto (this PC)"};
-    return t[std::min(std::max(v, 0), 6)];
+                              "Auto (this PC)", "Handheld"};
+    return t[std::clamp(v, 0, Options::kHandheldPreset)];
 }
 MODULE_HINTS(hn_preset, 0, "Each row as you set it. Changing most rows yourself comes back to Custom.",
              "Resolution 50% (with DLSS its nearest mode), Lanczos, Sharpness 30%, the Handheld Profile.",
@@ -98,17 +106,18 @@ MODULE_HINTS(hn_preset, 0, "Each row as you set it. Changing most rows yourself 
              "Resolution 100% (with DLSS its nearest mode), Lanczos, Sharpness 40%.",
              "Resolution 100% (with DLSS its nearest mode), Lanczos, Sharpness 50%.",
              "Chosen for this PC from its graphics card, video memory and screen, and chosen again when they change. The log's "
-             "\"Auto (this PC)\" line says why.")
+             "\"Auto (this PC)\" line says why.",
+             "Handheld profile, 100% render resolution, Upscaler Off, and the Classic theme. The profile applies after a restart.")
 } // namespace
 
 MENU_MODULE(preset) {
     menu::tab("graphics")
         .row({.key = "quality_preset",
               .label = "Quality preset",
-              .help = "Sets the scaling rows and Shadow resolution for a GPU with that much memory. The Upscaler and Frame "
-                      "generation stay yours.",
+              .help = "Sets the scaling rows and Shadow resolution for a GPU with that much memory. Your Frame generation "
+                      "setting stays the same.",
               .value = &opts.preset,
-              .lo = 0, .hi = 6,
+              .lo = 0, .hi = Options::kHandheldPreset,
               .text = [](int v) { return std::string(tx_preset(v)); },
               .hint = hn_preset});
 }

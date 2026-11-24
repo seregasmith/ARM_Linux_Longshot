@@ -121,7 +121,7 @@ def _int(values, key, default=0):
 
 def output_size(values):
     """(width, height, words): the game's output as longshot_options.ini sets it (vk_menu.cpp parse_output, shown_output)"""
-    if _int(values, "handheld_profile"):
+    if _int(values, "handheld_profile", 1):
         return HANDHELD[0], HANDHELD[1], "Handheld profile"
     text = values.get("output_res", "")
     m = re.match(r"^\s*(\d+)\s*[xX]\s*(\d+)", text)
@@ -144,12 +144,12 @@ def output_text(values):
 
 
 def upscaler_text(values):
-    up = _int(values, "dlss")
+    up = _int(values, "dlss", 6)
     up = up if 0 <= up < len(UPSCALERS) else 0
     name = UPSCALERS[up]
     if up in (2, 5):   # (DLAA, FSR 4's native AA: the 3D at full size)
         return "%s, Native" % name
-    v = _int(values, "resolution")
+    v = _int(values, "resolution", 1)
     p = PERCENT[v] if 0 < v < len(PERCENT) else 0
     if not p:
         return "%s, Auto (dynamic)" % name
