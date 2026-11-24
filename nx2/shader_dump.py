@@ -25,6 +25,7 @@ SOURCE = "longshot_shader_dump_source.json"
 ACTIVE = "shader-dump.active"
 RUNTIME = "shader-dump.runtime"
 RUNTIME_MAGIC = "longshot-shader-dump-v1"
+TRANSLATOR_MARKER = re.compile(rb"longshot-shader-translator=([0-9a-f]{16})\x00")
 PREPARED = "@@shader_dump "
 LAYOUT = "mesa_shader_cache_sf"
 CHUNK = 1 << 20
@@ -194,6 +195,12 @@ def record_preparation(game, report, version):
     if sep and robust in ("0", "1"):
         shader_settings["robust_buffers"] = robust == "1"
         info = driver_info
+    translator = None
+    if info.startswith("translator="):
+        field, sep, info = info.partition("\t")
+        translator = field.removeprefix("translator=")
+        if not sep or not re.fullmatch(r"[0-9a-f]{16}", translator):
+            raise DumpError("Shader preparation reported an invalid shader translator stamp.")
     mesa = re.match(rf"Mesa ({MESA_VERSION})(?=\s|$)", info)
     if not mesa or not re.fullmatch(r"[0-9a-f]{32}", uuid) or not re.fullmatch(r"[0-9a-f]{16}", stamp):
         raise DumpError("Shader preparation did not report a valid Turnip driver identity.")
@@ -208,6 +215,8 @@ def record_preparation(game, report, version):
         "program_cache_format": program_format,
         "spirv_store_path": store,
     }
+    if translator is not None:
+        record["shader_translator"] = translator
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=cache, prefix=".shader-source-", delete=False) as f:
         temp = Path(f.name)
         try:
@@ -489,6 +498,10 @@ def read_dump(archive):
     settings = manifest["shader_settings"]
     if not isinstance(settings, dict) or ("robust_buffers" in settings and type(settings["robust_buffers"]) is not bool):
         raise DumpError("The shader dump has invalid Robust buffers metadata.")
+    if "shader_translator" in manifest:
+        translator = manifest["shader_translator"]
+        if not isinstance(translator, str) or not re.fullmatch(r"[0-9a-f]{16}", translator):
+            raise DumpError("The shader dump has an invalid shader translator stamp.")
     driver, gpu, program = (manifest[key] for key in ("driver", "gpu", "program_cache"))
     if (driver["id"] != 18 or driver["cache_layout"] != LAYOUT
             or not re.fullmatch(r"[0-9a-f]{32}", driver["pipeline_cache_uuid"])
@@ -531,15 +544,20 @@ def inspect_dump(dump):
         return manifest
 
 
-def supports_restore(executable):
+def shader_restore_support(executable, check_translator):
     magic = RUNTIME_MAGIC.encode("ascii")
+    supported, translator = False, None
     tail = b""
     with executable.open("rb") as source:
         for chunk in iter(lambda: source.read(CHUNK), b""):
-            if magic in tail + chunk:
-                return True
-            tail = chunk[-len(magic):]
-    return False
+            data = tail + chunk
+            supported |= magic in data
+            if check_translator and translator is None and (match := TRANSLATOR_MARKER.search(data)):
+                translator = match[1].decode("ascii")
+            if supported and (not check_translator or translator is not None):
+                break
+            tail = data[-64:]
+    return supported, translator
 
 
 def restore(game, dump, *, on_progress=None, already_locked=False, built_by_setup=False):
@@ -551,11 +569,16 @@ def restore(game, dump, *, on_progress=None, already_locked=False, built_by_setu
             stack.enter_context(cache_lock(cache / ".shader-dump.lock", exclusive=True))
         archive = stack.enter_context(zipfile.ZipFile(dump))
         manifest, inventory = read_dump(archive)
-        # The Builder knows the newly installed Linux runtime was built with this restore protocol.
-        # Only restore-only mode has to inspect a previously installed executable.
-        if not built_by_setup and not supports_restore(game / "bin/longshot"):
-            raise DumpError("The Longshot executable in the selected game folder cannot load a restored shader cache. "
-                            "Keep this ZIP selected and build the game with a Setup that supports restore.")
+        expected_translator = manifest.get("shader_translator")
+        # The Builder already knows the new runtime supports restore. Check the translator if the ZIP records it.
+        if not built_by_setup or expected_translator is not None:
+            supported, translator = shader_restore_support(game / "bin/longshot", expected_translator is not None)
+            if not built_by_setup and not supported:
+                raise DumpError("The Longshot executable in the selected game folder cannot load a restored shader cache. "
+                                "Keep this ZIP selected and build the game with a Setup that supports restore.")
+            if translator is not None and translator != expected_translator:
+                raise DumpError("This shader dump was made with a different Longshot shader translator. "
+                                "Use a dump from a compatible build, or clear the ZIP selection to prepare shaders for this build.")
         if shader_seed_hash(game) != manifest["shader_seed_sha256"]:
             raise DumpError("This shader dump was made from a different game shader seed.")
         total = sum(item["size"] for item in inventory.values())
@@ -585,6 +608,8 @@ def restore(game, dump, *, on_progress=None, already_locked=False, built_by_setu
                     raise DumpError(f"The shader dump entry failed validation: {name}.")
             record = {key: manifest[key] for key in ("longshot_version", "shader_seed_sha256", "renderer_shader_cache_stamp",
                                                       "gpu", "driver", "shader_settings")}
+            if expected_translator is not None:
+                record["shader_translator"] = expected_translator
             program = manifest["program_cache"]
             record.update(program_cache_format=program["format"],
                           spirv_store_path=str(generation / "spirv") if program["store_id"] else "")

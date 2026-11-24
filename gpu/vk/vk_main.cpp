@@ -1719,7 +1719,7 @@ bool started_up() {
         const uint64_t stamp = program_cache_stamp();
         if (stamp != std::strtoull(dump.stamp, nullptr, 16)) {
             logf("vk: restored shader dump stamp %s differs from this run's %016llx (Robust buffers %s). "
-                 "Match the original shader settings or choose a compatible dump in Setup.", dump.stamp,
+                 "The Vulkan driver matches. Use a dump made with a compatible Longshot shader translator and shader settings.", dump.stamp,
                  (unsigned long long)stamp, dev.features.robustBufferAccess ? "on" : "off");
             return false;
         }

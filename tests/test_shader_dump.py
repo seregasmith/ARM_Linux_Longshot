@@ -216,6 +216,32 @@ class ShaderDumpTest(unittest.TestCase):
         restored = shader_dump.active_cache(target / "cache")
         self.assertEqual(len((restored / shader_dump.RUNTIME).read_text().splitlines()), 3)
 
+    def test_restore_checks_shader_translator_independent_of_setup_version(self):
+        translator = "1234567890abcdef"
+        dump = self.export()
+        self.rewrite_dump(dump, lambda manifest, _: manifest.update(shader_translator=translator))
+        target = self.restore_target()
+        executable = target / "bin/longshot"
+        capability = executable.read_bytes()
+        executable.write_bytes(capability + b"\0longshot-shader-translator=abcdef1234567890\0")
+        for built_by_setup in (False, True):
+            with self.subTest(built_by_setup=built_by_setup):
+                with self.assertRaisesRegex(shader_dump.DumpError, "different Longshot shader translator"):
+                    shader_dump.restore(target, dump, built_by_setup=built_by_setup)
+                self.assertEqual(shader_dump.active_cache(target / "cache"), target / "cache")
+                self.assertFalse(list((target / "cache").glob("shader-dump-*")))
+
+        executable.write_bytes(capability + f"\0longshot-shader-translator={translator}\0".encode("ascii"))
+        self.assertEqual(shader_dump.restore(target, dump), "27.0.0-devel")
+        copy = shader_dump.export(target, self.root, self.now)
+        self.assertEqual(shader_dump.inspect_dump(copy)["shader_translator"], translator)
+
+    def test_preparation_records_shader_translator(self):
+        translator = "1234567890abcdef"
+        report = self.report.replace("\tMesa ", f"\t0\ttranslator={translator}\tMesa ")
+        shader_dump.record_preparation(self.game, report, "earlier-setup")
+        self.assertEqual(shader_dump.inspect_dump(self.export())["shader_translator"], translator)
+
     def test_restore_retains_robust_buffers_on_and_rejects_invalid_metadata(self):
         dump = self.export()
         self.rewrite_dump(dump, lambda manifest, _: manifest["shader_settings"].update(robust_buffers=True))

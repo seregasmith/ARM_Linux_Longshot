@@ -16,11 +16,13 @@ that supports restore. A ZIP can come from a different Setup AppImage. The produ
 manifest is informational. The destination game needs restore support and a compatible shader seed,
 renderer stamp, GPU, and driver. The CLI equivalents are `Longshot.AppImage --cli --shader-dump <dump.zip>`
 with the usual build arguments, and `Longshot.AppImage --restore-shaders <game folder> <dump.zip>`.
-Restore verifies the archive and shader seed, then activates a separate cache under the game folder.
-It preserves the original cache and any previously restored cache. On launch, Longshot checks the
-GPU, exact driver and cache UUID, and the active shader translator stamp. It skips the bulk startup
-preparation. Compilation on a missing shader or pipeline during play is still possible. Strict
-cache-only launch remains a separate step.
+Restore verifies the archive and shader seed. When the ZIP and the game executable both contain a
+shader translator stamp, Setup checks that they match before it activates the cache. It preserves
+the original cache and any previously restored cache. At launch, Longshot checks the GPU, exact
+driver, cache UUID, and the full shader cache stamp. If the renderer changed after you made the ZIP,
+use a ZIP from a compatible build or prepare shaders once for the new build and make a new ZIP.
+Longshot skips bulk startup preparation with a compatible restore. Compilation on a missing shader
+or pipeline during play is still possible. Strict cache-only launch remains a separate step.
 
 The updated game executable reads **Robust buffers** from dumps that carry it and applies it at
 launch while the restored cache is active. Longshot leaves the saved player setting in place.

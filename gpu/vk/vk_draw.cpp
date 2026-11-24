@@ -11678,7 +11678,13 @@ std::vector<NoteRef> start_note_refs(bool take) {
     return std::move(k.refs);
 }
 
-/// Give the Builder the identity of the Vulkan device that prepared the install-local Mesa cache.
+#ifndef _WIN32
+// Setup reads this from the executable before it activates a restored shader dump.
+[[gnu::used, gnu::retain]] static const char shader_dump_translator[] =
+    "longshot-shader-translator=" LONGSHOT_SHADER_TRANSLATOR;
+#endif
+
+/// Give the Builder the identities of the shader translator and Vulkan device that prepared the cache.
 static void shader_dump_prepared() {
 #ifndef _WIN32
     if (!env_on("LONGSHOT_PREPARE_ONLY") || dev.driver_id != VK_DRIVER_ID_MESA_TURNIP || driver_faults() ||
@@ -11693,10 +11699,10 @@ static void shader_dump_prepared() {
     if (!store.empty() && (store.front() != '/' || store.find_first_of("\r\n\t") != std::string::npos)) return;
     char uuid[2 * VK_UUID_SIZE + 1]{};
     for (size_t i = 0; i < VK_UUID_SIZE; i++) snprintf(uuid + 2 * i, 3, "%02x", (unsigned)dev.props.pipelineCacheUUID[i]);
-    printf("@@shader_dump %u\t%u\t%u\t%u\t%s\t%016llx\t%s\t%s\t%s\t%u\t%s\n", dev.props.vendorID, dev.props.deviceID,
+    printf("@@shader_dump %u\t%u\t%u\t%u\t%s\t%016llx\t%s\t%s\t%s\t%u\ttranslator=%s\t%s\n", dev.props.vendorID, dev.props.deviceID,
            (unsigned)dev.driver_id, dev.props.driverVersion, uuid, (unsigned long long)program_cache_stamp(),
            compile_all() ? "all" : "most", env_on("RX_VK_PROGRAM_CACHE_ZSTD") ? "HSP2" : "HSP1", store.c_str(),
-           (unsigned)(dev.features.robustBufferAccess != VK_FALSE), dev.driver.driverInfo);
+           (unsigned)(dev.features.robustBufferAccess != VK_FALSE), LONGSHOT_SHADER_TRANSLATOR, dev.driver.driverInfo);
     fflush(stdout);
 #endif
 }

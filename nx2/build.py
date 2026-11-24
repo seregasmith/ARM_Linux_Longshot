@@ -2042,7 +2042,7 @@ def main():
         ui_fonts.write(fonts_cpp)
         # (what the shader caches are good for: what translates shaders, not the whole DLL, so a build that changes something else
         # keeps them: nx2/translator_files.py names it, for `scripts/dev.py packs` too)
-        shader_stamp = "-DLONGSHOT_SHADER_STAMP=0x%sull" % translator_files.stamp(vk)
+        shader_stamp = translator_files.stamp(vk)
         vflags = target() + CPU + (["-fPIC", "-I" + POSIX, "-D_GNU_SOURCE"] if LINUX else []) + [   # (longshot: the replay is the frame's limit now)
             # (what the code takes for granted, which newer C++ libraries bring in by themselves and older ones do not: issue 48)
             "-include", "algorithm", "-include", "cstdio", "-include", "cstdlib", "-include", "cstring", "-include", "functional",
@@ -2145,7 +2145,8 @@ def main():
                 DEPFILE_JOBS[obj] = (vdeps, vdeps_roots, extras)
             vk_jobs.append((cxx, src, obj,
                             (tp_vflags if lib else vflags + vk_pgo_flags) + ([] if lib else ["-MD"]) +
-                            ([shader_stamp] if os.path.basename(src) == "vk_shader.cpp" else []) +
+                            ([f"-DLONGSHOT_SHADER_STAMP=0x{shader_stamp}ull"] if os.path.basename(src) == "vk_shader.cpp" else []) +
+                            ([f'-DLONGSHOT_SHADER_TRANSLATOR="{shader_stamp}"'] if LINUX and os.path.basename(src) == "vk_draw.cpp" else []) +
                             ([stamp_def] if os.path.basename(src) == "vk_version.cpp" else []) +
                             (ngx_flags if os.path.basename(src) == "vk_dlss.cpp" else []) +
                             (imgui_flags if os.path.basename(src) in imgui_users else []) +
