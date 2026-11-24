@@ -1,6 +1,6 @@
 # Shader cache dump and restore
 
-## Export support
+## Export and restore support
 
 The first implementation exports from a completed Turnip preparation that records compatibility
 metadata and uses the install-local Mesa single-file cache (`MESA_DISK_CACHE_SINGLE_FILE=1`). Open Setup
@@ -9,8 +9,18 @@ with the game closed and choose **Dump Shaders**. The CLI equivalent is
 at preparation time. For older installs, Setup can recover the driver identity from a completed game
 log when the driver, Mesa cache UUID, and shader seed match the existing preparation stamp. Export
 does this offline, without building or compiling shaders. Setup logs export diagnostics in
-`Longshot-logs/setup-window.log` next to the AppImage by default. Restore and cache-only launch are
-planned separately.
+`Longshot-logs/setup-window.log` next to the AppImage by default.
+
+Select the ZIP in Setup before building, or choose **Restore shader dump** for a game executable
+that supports restore. A ZIP can come from a different Setup AppImage. The producer version in the
+manifest is informational. The destination game needs restore support and a compatible shader seed,
+renderer stamp, GPU, and driver. The CLI equivalents are `Longshot.AppImage --cli --shader-dump <dump.zip>`
+with the usual build arguments, and `Longshot.AppImage --restore-shaders <game folder> <dump.zip>`.
+Restore verifies the archive and shader seed, then activates a separate cache under the game folder.
+It preserves the original cache and any previously restored cache. On launch, Longshot checks the
+GPU, exact driver and cache UUID, and the active shader translator stamp. It skips the bulk startup
+preparation. Compilation on a missing shader or pipeline during play is still possible. Strict
+cache-only launch remains a separate step.
 
 ## Setup workflow
 
@@ -87,8 +97,8 @@ rules](../CONTRIBUTING.md#the-rule-with-no-exceptions)
    file inventory early, then check the target's shader seed and renderer stamp before activation.
    Accept only declared shader cache files and stream them into a new directory under the game's
    `cache/`. Reject duplicate or unsafe paths, links, corrupt data, and sizes that exceed the inventory
-   or available space. Atomically update one install-local record that selects the restored cache and
-   enables cache-only launch. Keep the previous cache usable until that record is committed. On failure
+   or available space. Atomically update one install-local record that selects the restored cache.
+   Keep the previous cache usable until that record is committed. On failure
    or cancellation, report the issue and leave the previous selection usable. Report **Shader dump
    restored** in place of the preparation step only after the restore succeeds. A failed restore never
    falls back to compilation without the user explicitly choosing a normal build.

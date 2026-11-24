@@ -40,6 +40,7 @@
 #include "vk_gpu_clock.h"
 #include "vk_progress.h"
 #include "vk_programs.h"
+#include "vk_shader.h"
 #include "mesh_mode.h"
 #include "crash_markers.h"   // (mkwvk_close_asked: a close is not a crash)
 #include "vk_fps.h"
@@ -1669,6 +1670,16 @@ bool started_up() {
     if (const char* e = getenv("RX_VK_START_DELAY")) Sleep((DWORD)atoi(e) * 1000);   // (diagnosis: a long start, as the first one is)
     if (!replay_start()) return false;
     driver_cache_log("at the start");
+#ifndef _WIN32
+    if (const auto& dump = restored_shader_dump(); dump.dir[0]) {
+        if (program_cache_stamp() != std::strtoull(dump.stamp, nullptr, 16)) {
+            logf("vk: restored shader dump does not match this shader translator or its settings. Choose a compatible dump in Setup.");
+            return false;
+        }
+        logf("vk: using restored Mesa %s shader cache; skipping startup shader preparation", dump.mesa);
+        return true;
+    }
+#endif
     if (prepare_only()) {
         // (three parts: the programs, the pipelines the notes predict, then those they name, on one bar whose total has all three
         // from the start: PrepareBar. The fixed shares it had (70%, 20%, 10%) kept the predicted pipelines' minutes in a fifth)
@@ -2124,6 +2135,23 @@ static const MkwVkRenderer* init_body(const MkwVkHost* h) {
         logf("vk: pick_device failed");
         return nullptr;
     }
+#ifndef _WIN32
+    if (const auto& dump = restored_shader_dump(); dump.dir[0]) {
+        VkPhysicalDeviceDriverProperties driver{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+        VkPhysicalDeviceProperties2 props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+        props.pNext = &driver;
+        vkGetPhysicalDeviceProperties2(dev.physical, &props);
+        char uuid[2 * VK_UUID_SIZE + 1]{};
+        for (size_t i = 0; i < VK_UUID_SIZE; i++) snprintf(uuid + 2 * i, 3, "%02x", (unsigned)dev.props.pipelineCacheUUID[i]);
+        if (dump.vendor != dev.props.vendorID || dump.device != dev.props.deviceID || dump.driver != (unsigned)driver.driverID ||
+            dump.version != dev.props.driverVersion || std::strcmp(dump.uuid, uuid)) {
+            logf("vk: restored shader dump needs Turnip Mesa %s (%04x:%04x, cache %s). Detected %s (%04x:%04x, cache %s). "
+                 "Select the matching driver and relaunch.", dump.mesa, dump.vendor, dump.device, dump.uuid, driver_text().c_str(),
+                 dev.props.vendorID, dev.props.deviceID, uuid);
+            return nullptr;
+        }
+    }
+#endif
     if (!create_device()) {
         logf("vk: create_device failed");
         return nullptr;

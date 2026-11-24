@@ -321,7 +321,7 @@ struct Entry {
     uint64_t size = 0;
 };
 
-std::vector<Entry> list_dir(const std::string& path, bool files, std::string& err) {
+std::vector<Entry> list_dir(const std::string& path, bool files, std::string& err, bool zip = false) {
     std::vector<Entry> out;
     err.clear();
     DIR* d = opendir(path.c_str());
@@ -336,7 +336,8 @@ std::vector<Entry> list_dir(const std::string& path, bool files, std::string& er
         if (stat(setup::join(path, name).c_str(), &st) != 0) continue;
         if (S_ISDIR(st.st_mode)) {
             out.push_back({name, true, 0});
-        } else if (files && S_ISREG(st.st_mode) && setup::is_game_file(name)) {
+        } else if (files && S_ISREG(st.st_mode) && (zip ? name.size() >= 4 && !strcasecmp(name.c_str() + name.size() - 4, ".zip")
+                                                      : setup::is_game_file(name))) {
             out.push_back({name, false, (uint64_t)st.st_size});
         }
     }
@@ -379,6 +380,7 @@ std::vector<Place> places() {
 // ---- the window's state
 
 enum class Screen { Home, Browse, Build };
+enum class ShaderTask { Export, Inspect, Restore };
 
 struct App {
     SDL_Window* window = nullptr;
@@ -402,6 +404,7 @@ struct App {
     // the browser
     bool browse_files = true;     // (the .nup; else the game folder)
     bool browse_dump_destination = false;
+    bool browse_dump_zip = false;
     std::string browse_dir, browse_err;
     std::vector<Entry> entries;
     std::vector<Place> place_list;
@@ -415,8 +418,10 @@ struct App {
     bool follow = true;           // (the log keeps its last line in view until scrolled up)
     bool builder_ended = false;   // (the build's process ended and its lines were read)
     Build dump;
+    ShaderTask dump_task = ShaderTask::Export;
     double dump_progress = 0;
     std::string dump_result, dump_error;
+    std::string shader_zip, shader_driver;
 
     // ---- settings
     void load_settings() {
@@ -445,12 +450,14 @@ struct App {
     }
 
     // ---- the browser
-    void open_browser(bool files, bool dump_destination = false) {
+    void open_browser(bool files, bool dump_destination = false, bool zip = false) {
         browse_files = files;
         browse_dump_destination = dump_destination;
+        browse_dump_zip = zip;
         place_list = places();
         std::string start = files ? (nup.empty() ? "" : setup::parent(nup)) : (out.empty() ? "" : setup::parent(out));
         if (dump_destination) start = setup::parent(env("LONGSHOT_BUILDER_EXE"));
+        if (zip) start = setup::parent(shader_zip.empty() ? env("LONGSHOT_BUILDER_EXE") : shader_zip);
         if (start.empty() || !is_dir(start)) {
             const std::string dl = setup::join(home_dir(), "Downloads");
             start = files && is_dir(dl) ? dl : home_dir();
@@ -460,7 +467,7 @@ struct App {
     }
     void enter(const std::string& dir) {
         std::string err;
-        auto list = list_dir(dir, browse_files, err);
+        auto list = list_dir(dir, browse_files, err, browse_dump_zip);
         if (!err.empty() && !browse_dir.empty() && screen == Screen::Browse) {
             browse_err = "Can't open " + dir + ": " + err;
             return;
@@ -486,12 +493,28 @@ struct App {
         std::string err;
         std::vector<std::string> argv{apprun, "--dump-shaders", out};
         if (!destination.empty()) argv.push_back(destination);
+        start_shader_task(ShaderTask::Export, argv);
+    }
+
+    void choose_shader_zip(const std::string& path) {
+        shader_zip = path;
+        shader_driver.clear();
+        start_shader_task(ShaderTask::Inspect, {apprun, "--inspect-shader-dump", path});
+    }
+
+    void restore_shader_zip() {
+        start_shader_task(ShaderTask::Restore, {apprun, "--restore-shaders", out, shader_zip});
+    }
+
+    void start_shader_task(ShaderTask task, const std::vector<std::string>& argv) {
+        dump_task = task;
+        std::string err;
         dump_progress = 0;
         dump_result.clear();
         dump_error.clear();
         if (apprun.empty() || !dump.start(argv, err)) {
-            const std::string failure = apprun.empty() ? "Open the Setup AppImage to dump shaders."
-                                                       : "Could not start the shader dump: " + err;
+            const std::string failure = apprun.empty() ? "Open the Setup AppImage to manage shader dumps."
+                                                       : "Could not start the shader dump operation: " + err;
             note("shader dump: %s", failure.c_str());
             say(failure, true);
             return;
@@ -515,10 +538,12 @@ struct App {
         if (!finished) return;
         dump.join();
         note("shader dump: ended (status %d%s)", dump.status, dump.stopped ? ", cancelled" : "");
-        if (WIFEXITED(dump.status) && WEXITSTATUS(dump.status) == 0 && !dump_result.empty())
-            say("Shader dump saved to " + dump_result);
-        else if (dump.stopped) say("Shader dump cancelled.");
-        else say(dump_error.empty() ? "Could not save a shader dump." : dump_error, true);
+        if (WIFEXITED(dump.status) && WEXITSTATUS(dump.status) == 0 && !dump_result.empty()) {
+            if (dump_task == ShaderTask::Inspect) shader_driver = dump_result;
+            else if (dump_task == ShaderTask::Restore) say("Shader dump restored. Start the game with Turnip Mesa " + dump_result + ".");
+            else say("Shader dump saved to " + dump_result);
+        } else if (dump.stopped) say("Shader dump operation cancelled.");
+        else say(dump_error.empty() ? "The shader dump operation failed." : dump_error, true);
     }
 
     // ---- the build
@@ -553,6 +578,7 @@ struct App {
             return;
         }
         argv.insert(argv.end(), {"--nup", nup, "--out", out, "--log", log_file});
+        if (!shader_zip.empty()) argv.insert(argv.end(), {"--shader-dump", shader_zip});
         progress = setup::Progress();
         log = setup::Lines();
         build_error.clear();
@@ -871,9 +897,19 @@ void draw_home(App& app) {
     const uint64_t free_b = free_space(app.out);
     if (free_b) out_note += "  " + setup::size_text(free_b) + " free.";
     if (field(app, "out", "The game folder", app.out, "Not chosen yet", out_note, false, false)) app.open_browser(false);
+    ImGui::Dummy(ImVec2(0, em(app, 0.2f)));
+    const bool valid_dump = !app.shader_driver.empty() && is_file(app.shader_zip);
+    const std::string shader_note = valid_dump ? "Turnip Mesa " + app.shader_driver : "";
+    if (field(app, "shader-zip", "Shader dump (.zip, optional)", app.shader_zip, "Choose ZIP", shader_note,
+              !app.shader_zip.empty() && !valid_dump && !dumping, false)) app.open_browser(true, false, true);
+    if (!app.shader_zip.empty() && big_button(app, "Clear ZIP", false, em(app, 6))) {
+        app.shader_zip.clear();
+        app.shader_driver.clear();
+        app.say("");
+    }
     ImGui::Dummy(ImVec2(0, em(app, 0.6f)));
 
-    const bool can_build = nup_ok && !app.out.empty();
+    const bool can_build = nup_ok && !app.out.empty() && (app.shader_zip.empty() || valid_dump);
     ImGui::BeginDisabled(!can_build);
     if (can_build) focus_here(app);
     if (big_button(app, built ? "Build again" : "Build the game", true, em(app, 9))) app.start_build();
@@ -889,7 +925,9 @@ void draw_home(App& app) {
     ImGui::EndDisabled();
 
     if (dumping) {
-        ImGui::ProgressBar((float)std::clamp(app.dump_progress, 0.0, 1.0), ImVec2(-1, 0), "Dumping shaders");
+        const char* action = app.dump_task == ShaderTask::Inspect ? "Checking ZIP" :
+                             app.dump_task == ShaderTask::Restore ? "Restoring shader dump" : "Dumping shaders";
+        ImGui::ProgressBar((float)std::clamp(app.dump_progress, 0.0, 1.0), ImVec2(-1, 0), action);
         ImGui::BeginDisabled(app.dump.stopped);
         if (big_button(app, "Cancel dump", false, em(app, 8))) app.dump.stop();
         ImGui::EndDisabled();
@@ -897,6 +935,10 @@ void draw_home(App& app) {
         if (big_button(app, "Dump Shaders", false, em(app, 9))) app.start_dump();
         ImGui::SameLine();
         if (big_button(app, "Choose dump folder", false, em(app, 11))) app.open_browser(false, true);
+        if (valid_dump) {
+            ImGui::SameLine();
+            if (big_button(app, "Restore shader dump", false, em(app, 11))) app.restore_shader_zip();
+        }
     }
 
     if (!app.message.empty()) {
@@ -960,9 +1002,10 @@ void drag_scroll() {
 bool was_drag() { return ImGui::GetIO().MouseDragMaxDistanceSqr[0] > 12.0f * 12.0f; }
 
 void draw_browse(App& app) {
-    heading(app, app.browse_files ? "Choose your game file" : "Choose the game folder");
+    heading(app, app.browse_dump_zip ? "Choose a shader dump ZIP" : app.browse_files ? "Choose your game file" : "Choose the game folder");
     ImGui::PushFont(nullptr, em(app, 0.9f));
-    dim_text(app.browse_files ? "The .nup file of your copy of Ocarina of Time. Only .nup files and folders are shown."
+    dim_text(app.browse_dump_zip ? "Select a ZIP created with Dump Shaders."
+             : app.browse_files ? "The .nup file of your copy of Ocarina of Time. Only .nup files and folders are shown."
                               : "The built game goes here: the program, the game's data and its saves.");
     ImGui::PopFont();
     ImGui::PushFont(app.bold, em(app, 1.0f));
@@ -1019,7 +1062,8 @@ void draw_browse(App& app) {
         }
         if (app.entries.empty()) {
             ImGui::PushStyleColor(ImGuiCol_Text, DIM);
-            ImGui::TextWrapped(app.browse_files ? "No .nup files or folders here." : "No folders here.");
+            ImGui::TextWrapped(app.browse_dump_zip ? "No ZIP files or folders here." :
+                               app.browse_files ? "No .nup files or folders here." : "No folders here.");
             ImGui::PopStyleColor();
         }
     }
@@ -1038,9 +1082,13 @@ void draw_browse(App& app) {
     hints(app, "A  open / choose      B  back      D-pad  move");
 
     if (!picked.empty()) {
-        app.nup = picked;
-        app.save_settings();
-        app.say("");
+        if (app.browse_dump_zip) {
+            app.choose_shader_zip(picked);
+        } else {
+            app.nup = picked;
+            app.save_settings();
+            app.say("");
+        }
         app.go(Screen::Home);
     } else if (!go_to.empty()) {
         app.enter(go_to);

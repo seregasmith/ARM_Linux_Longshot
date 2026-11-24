@@ -14,6 +14,7 @@
 #   Longshot.AppImage                  a message: get the Longshot Launcher
 #   Longshot.AppImage [--setup]        (ARM64 setup AppImage) the setup window, builder/linux/setup_ui
 #   Longshot.AppImage --dump-shaders <folder> [destination]   export an installed shader cache
+#   Longshot.AppImage --restore-shaders <folder> <dump.zip>   restore into an existing install
 HERE="$(dirname "$(readlink -f "$0")")"
 # (arm64 port) Steam's overlay libraries, those for this CPU only (as builder/linux/longshot-launch for the game): Steam
 # preloads its x86 ones too, and the loader says "ERROR: ld.so: ... cannot be preloaded" for each in every program it starts
@@ -77,6 +78,13 @@ if [ "${1:-}" = "--dump-shaders" ]; then
         exit 2
     fi
     exec "$PY" -I "$LONGSHOT_TOOLS/nx2/shader_dump.py" "$1" "${2:-$(dirname "$LONGSHOT_BUILDER_EXE")}"
+fi
+if [ "${1:-}" = "--inspect-shader-dump" ] || [ "${1:-}" = "--restore-shaders" ]; then
+    unset LD_PRELOAD
+    mode=--restore
+    [ "$1" != "--inspect-shader-dump" ] || mode=--inspect
+    shift
+    exec "$PY" -I "$LONGSHOT_TOOLS/nx2/shader_dump.py" "$mode" "$@"
 fi
 if [ "${1:-}" = "--cli" ]; then
     shift

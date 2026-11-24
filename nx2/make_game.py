@@ -2799,6 +2799,7 @@ def parse_args():
                         "(the game folder's modcache/mods_json.txt), else mods.json in the game folder")
     p.add_argument("--no-prepare-shaders", action="store_true",
                    help="leave the shaders' preparation to the game's first start (the builder's \"Prepare shaders now\" unticked)")
+    p.add_argument("--shader-dump", type=Path, help="restore a shader dump ZIP in place of shader preparation (Linux)")
     p.add_argument("--compile-shaders", choices=tuple(COMPILE_LEVELS),
                    help="what the shaders' preparation builds: most (the default) every shader and the pipelines the lists name; "
                         "all the predicted pipelines too (about 40%% longer). Kept in the folder's longshot_options.ini "
@@ -3056,6 +3057,14 @@ def main(a=None):
         check_romfs_folder(a.romfs)
     out = os.path.abspath(a.out)
     work = os.path.abspath(a.work)
+    dump = getattr(a, "shader_dump", None)
+    if dump:
+        if sys.platform != "linux" or not LINUX:
+            fail("Shader dump restore is supported for Linux game builds.")
+        try:
+            shader_dump.inspect_dump(dump)
+        except (OSError, ValueError, KeyError, TypeError, shader_dump.zipfile.BadZipFile) as e:
+            fail("Cannot read the shader dump: %s" % e)
     lock_work(work)   # (before anything is read or cleared in it: stop_stray_compilers, drop_stale_objects, the lift)
     a.language = build_language(a, out)   # (now: the folder's own language.txt is still the one the player left)
     warn_slow_disk(out, work)   # (a warning, not a stop: a hard drive still builds, only much slower)
@@ -3601,10 +3610,20 @@ def main(a=None):
         write_compile_level(out, a.compile_shaders)
     level = compile_level(a, out)
     skipped = prepare_skipped(a)
-    if skipped:
+    if dump:
+        say("stage", "finish", "Restoring shader dump")
+        try:
+            shader_dump.restore(Path(out), dump, already_locked=True, built_by_setup=True,
+                                on_progress=lambda n: say("progress", n / 100))
+        except (OSError, ValueError, KeyError, TypeError, shader_dump.zipfile.BadZipFile) as e:
+            fail("Cannot restore the shader dump: %s" % e)
+        print("Shader dump restored", flush=True)
+    elif skipped:
         not_prepared(skipped)
     else:
         prepare_shaders([os.path.join(game_dir, BESIDE[0]), "--prepare-shaders", "--compile-shaders", level], out)
+    if not dump and LINUX:
+        (Path(out) / "cache" / shader_dump.ACTIVE).unlink(missing_ok=True)
     say("done", out)
 
 
@@ -3624,7 +3643,7 @@ def cli():
                 try:
                     cache = Path(a.update or a.out) / "cache"
                     cache.mkdir(parents=True, exist_ok=True)
-                    stack.enter_context(shader_dump.cache_lock(cache / ".shader-dump.lock", exclusive=False))
+                    stack.enter_context(shader_dump.cache_lock(cache / ".shader-dump.lock", exclusive=bool(a.shader_dump)))
                 except shader_dump.DumpError as e:
                     fail(str(e))
             main(a)

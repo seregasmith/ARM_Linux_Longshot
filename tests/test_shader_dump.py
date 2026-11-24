@@ -28,7 +28,7 @@ class ShaderDumpTest(unittest.TestCase):
         self.cache = self.game / "cache"
         self.store = self.root / "store"
         self.store.mkdir()
-        mesa = self.cache / "driver" / shader_dump.LAYOUT / "0123" / "Adreno (TM) 830"
+        mesa = self.cache / "driver" / shader_dump.LAYOUT / ("01" * 16) / "Adreno (TM) 830"
         mesa.mkdir(parents=True)
         for name in ("foz_cache.foz", "foz_cache_idx.foz", "index"):
             (mesa / name).write_bytes(name.encode())
@@ -61,7 +61,7 @@ class ShaderDumpTest(unittest.TestCase):
             self.assertNotIn("spirv_store_path", manifest)
             entries = {item["path"]: item for item in manifest["files"]}
             self.assertIn("spirv/spirv.pack", entries)
-            self.assertIn("driver/mesa_shader_cache_sf/0123/Adreno (TM) 830/foz_cache.foz", entries)
+            self.assertIn(f"driver/mesa_shader_cache_sf/{'01' * 16}/Adreno (TM) 830/foz_cache.foz", entries)
             self.assertEqual(set(archive.namelist()), set(entries) | {"manifest.json"})
             for name, item in entries.items():
                 data = archive.read(name)
@@ -104,7 +104,7 @@ class ShaderDumpTest(unittest.TestCase):
         (self.cache / "longshot_prepared.bin").write_bytes(
             struct.pack("<6Q", 23, 14930608981950081792, 97, 0, 0, 0x2fa4022748909335))
         layout = self.cache / "driver" / shader_dump.LAYOUT
-        (layout / "0123").rename(layout / ("09" * 16))
+        (layout / ("01" * 16)).rename(layout / ("09" * 16))
         shutil.copytree(layout / ("09" * 16), layout / ("11" * 16))
         logs = self.game / "logs"
         logs.mkdir()
@@ -138,7 +138,7 @@ class ShaderDumpTest(unittest.TestCase):
         with self.assertRaisesRegex(shader_dump.DumpError, "could not match"):
             self.export()
 
-    def test_apprun_exports_beside_image_without_build_tools(self):
+    def run_apprun(self, *args):
         source = Path(__file__).resolve().parents[1]
         appdir = self.root / "unpacked"
         tools = appdir / "usr/share/longshot/nx2"
@@ -149,11 +149,113 @@ class ShaderDumpTest(unittest.TestCase):
         python.symlink_to(sys.executable)
         apprun = appdir / "AppRun"
         shutil.copyfile(source / "builder/linux/AppRun", apprun)
-        result = subprocess.run(["sh", str(apprun), "--dump-shaders", str(self.game)], capture_output=True, text=True,
+        result = subprocess.run(["sh", str(apprun), *(str(arg) for arg in args)], capture_output=True, text=True,
                                 env=dict(os.environ, APPIMAGE=str(self.root / "Setup.AppImage")))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result.stdout
+
+    def test_apprun_exports_beside_image_without_build_tools(self):
+        output = self.run_apprun("--dump-shaders", self.game)
         self.assertEqual([p.parent for p in self.root.glob("mesa-27.0.0-devel-*.zip")], [self.root])
-        self.assertIn("@@done", result.stdout)
+        self.assertIn("@@done", output)
+
+    def restore_target(self):
+        target = self.root / "restore-target"
+        (target / "bin").mkdir(parents=True)
+        (target / "bin/longshot").write_bytes(shader_dump.RUNTIME_MAGIC.encode("ascii"))
+        (target / "longshot_shaders.bin").write_bytes(b"seed")
+        (target / "longshot_options.ini").write_bytes(b"player settings")
+        (target / "cache").mkdir()
+        (target / "cache/longshot_pipelines.bin").write_bytes(b"previous cache")
+        return target
+
+    def rewrite_dump(self, dump, edit):
+        with zipfile.ZipFile(dump) as original:
+            entries = {name: original.read(name) for name in original.namelist()}
+        manifest = json.loads(entries.pop("manifest.json"))
+        edit(manifest, entries)
+        with zipfile.ZipFile(dump, "w") as archive:
+            archive.writestr("manifest.json", json.dumps(manifest))
+            for name, data in entries.items():
+                archive.writestr(name, data)
+
+    def test_restore_round_trip_preserves_settings_and_previous_cache(self):
+        dump = self.export()
+        target = self.restore_target()
+        (target / "longshot_version.txt").write_text("version=different-setup-build\n", encoding="utf-8")
+        manifest = shader_dump.inspect_dump(dump)
+        self.assertEqual(manifest["driver"]["mesa_version"], "27.0.0-devel")
+        self.assertEqual(manifest["longshot_version"], "fixture")
+        self.assertEqual(shader_dump.restore(target, dump), "27.0.0-devel")
+        restored = shader_dump.active_cache(target / "cache")
+        self.assertEqual((target / "longshot_options.ini").read_bytes(), b"player settings")
+        self.assertEqual((target / "cache/longshot_pipelines.bin").read_bytes(), b"previous cache")
+        with zipfile.ZipFile(dump) as archive:
+            for name in archive.namelist():
+                if name != "manifest.json":
+                    self.assertEqual((restored / shader_dump.member_target(name)).read_bytes(), archive.read(name))
+        output = shader_dump.export(target, self.root, self.now)
+        with zipfile.ZipFile(output) as archive:
+            self.assertEqual(archive.read("longshot/longshot_pipelines.bin"), b"fixture")
+
+    def test_apprun_restores_without_build_tools(self):
+        dump = self.export()
+        target = self.restore_target()
+        output = self.run_apprun("--restore-shaders", target, dump)
+        self.assertIn("@@done 27.0.0-devel", output)
+        self.assertTrue((target / "cache" / shader_dump.ACTIVE).is_file())
+
+    def test_bad_payload_and_cancellation_preserve_active_cache(self):
+        dump = self.export()
+        target = self.restore_target()
+        shader_dump.restore(target, dump)
+        previous = shader_dump.active_cache(target / "cache")
+
+        def cancel(_):
+            raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            shader_dump.restore(target, dump, on_progress=cancel)
+        with self.assertRaisesRegex(shader_dump.DumpError, "in use"):
+            with shader_dump.cache_lock(target / "cache/.shader-dump.lock", exclusive=False):
+                shader_dump.restore(target, dump)
+        self.rewrite_dump(dump, lambda manifest, entries: entries.update({"longshot/longshot_pipelines.bin": b"damaged"}))
+        with self.assertRaisesRegex(shader_dump.DumpError, "failed validation"):
+            shader_dump.restore(target, dump)
+        self.assertEqual(shader_dump.active_cache(target / "cache"), previous)
+        self.assertEqual(list((target / "cache").glob("shader-dump-*")), [previous])
+
+    def test_refuses_path_traversal_in_inventory(self):
+        dump = self.export()
+        target = self.restore_target()
+
+        def add_escape(manifest, entries):
+            path = "longshot/../longshot_options.ini"
+            entries[path] = b"bad"
+            manifest["files"].append({"path": path, "size": 3, "sha256": hashlib.sha256(b"bad").hexdigest()})
+
+        self.rewrite_dump(dump, add_escape)
+        with self.assertRaisesRegex(shader_dump.DumpError, "Unexpected file"):
+            shader_dump.restore(target, dump)
+        self.assertEqual((target / "longshot_options.ini").read_bytes(), b"player settings")
+
+    def test_refuses_incompatible_seed_or_executable(self):
+        dump = self.export()
+        target = self.restore_target()
+        (target / "longshot_shaders.bin").write_bytes(b"other seed")
+        with self.assertRaisesRegex(shader_dump.DumpError, "different game shader seed"):
+            shader_dump.restore(target, dump)
+        (target / "bin/longshot").write_bytes(b"old executable")
+        with self.assertRaisesRegex(shader_dump.DumpError, "executable in the selected game folder"):
+            shader_dump.restore(target, dump)
+        self.assertFalse((target / "cache" / shader_dump.ACTIVE).exists())
+
+    def test_builder_restore_does_not_scan_the_executable_it_just_built(self):
+        dump = self.export()
+        target = self.restore_target()
+        (target / "bin/longshot").write_bytes(b"freshly built executable without incidental parser strings")
+        self.assertEqual(shader_dump.restore(target, dump, built_by_setup=True), "27.0.0-devel")
+        self.assertTrue((target / "cache" / shader_dump.ACTIVE).is_file())
 
 
 if __name__ == "__main__":

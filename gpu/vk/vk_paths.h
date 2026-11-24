@@ -15,8 +15,12 @@
 #undef min
 #undef max
 #include <cstring>
+#include <cstdlib>
 #include <filesystem>
 #include <string>
+#ifndef _WIN32
+#include "shader_dump_restore.h"
+#endif
 
 namespace mkwvk {
 inline DWORD game_module_path(char* buf, DWORD size) {
@@ -52,7 +56,24 @@ inline std::string game_sub_path(const char* sub, const char* name) {
     return dir + "/" + name;
 }
 /// <game folder>/cache/<name>: the shader and pipeline caches ("" for the folder itself, with its separator)
-inline std::string cache_path(const char* name) { return game_sub_path("cache", name); }
+#ifndef _WIN32
+inline const LongshotShaderDump& restored_shader_dump() {
+    static const LongshotShaderDump selected = [] {
+        LongshotShaderDump dump{};
+        const char* preparing = std::getenv("LONGSHOT_PREPARE_ONLY");
+        if ((preparing && !std::strcmp(preparing, "1")) || longshot_shader_dump_read(game_folder_path().c_str(), &dump) != 1)
+            dump.dir[0] = '\0';
+        return dump;
+    }();
+    return selected;
+}
+#endif
+inline std::string cache_path(const char* name) {
+#ifndef _WIN32
+    if (const char* dir = restored_shader_dump().dir; *dir) return std::string(dir) + "/" + name;
+#endif
+    return game_sub_path("cache", name);
+}
 /// <game folder>/logs/<name>: the logs and traces a run writes
 inline std::string log_path(const char* name) { return game_sub_path("logs", name); }
 /// The player's settings, longshot_options.ini: the host's (MkwVkHost.options_path, host/options_path.c: in the user folder

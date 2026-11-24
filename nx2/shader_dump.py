@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import signal
 import stat
@@ -20,6 +21,9 @@ import zipfile
 
 
 SOURCE = "longshot_shader_dump_source.json"
+ACTIVE = "shader-dump.active"
+RUNTIME = "shader-dump.runtime"
+RUNTIME_MAGIC = "longshot-shader-dump-v1"
 PREPARED = "@@shader_dump "
 LAYOUT = "mesa_shader_cache_sf"
 CHUNK = 1 << 20
@@ -233,8 +237,7 @@ def mesa_files(root):
     return files
 
 
-def sources(game, record, stack, *, seed_checked=False):
-    cache = game / "cache"
+def sources(game, cache, record, stack, *, seed_checked=False):
     if not seed_checked and shader_seed_hash(game) != record["shader_seed_sha256"]:
         raise DumpError("The game shader seed changed since preparation.")
     renderer_stamp = int(record["renderer_shader_cache_stamp"], 16)
@@ -291,6 +294,9 @@ def export(game, destination, now=None, on_progress=None, on_log=None):
     now = now or datetime.now().astimezone()
     with ExitStack() as stack:
         stack.enter_context(cache_lock(cache / ".shader-dump.lock", exclusive=True))
+        selected = active_cache(cache)
+        restored = selected != cache
+        cache = selected
         legacy = not (cache / SOURCE).is_file()
         if legacy:
             if on_log:
@@ -300,10 +306,12 @@ def export(game, destination, now=None, on_progress=None, on_log=None):
                 on_log(f"Matched the existing cache to {record['driver']['info']} ({record['driver']['pipeline_cache_uuid']}).")
         else:
             record = json.loads((cache / SOURCE).read_text(encoding="utf-8"))
+            if restored and record["spirv_store_path"]:
+                record["spirv_store_path"] = str(cache / "spirv")
         version = record["driver"]["mesa_version"]
         if not re.fullmatch(MESA_VERSION, version):
             raise DumpError("Shader preparation recorded an invalid Mesa version.")
-        payload = sources(game, record, stack, seed_checked=legacy)
+        payload = sources(game, cache, record, stack, seed_checked=legacy)
         before = {path: file_identity(path) for path, _ in payload}
         total = sum(identity[2] for identity in before.values())
         if shutil.disk_usage(destination).free < total:
@@ -350,22 +358,201 @@ def file_identity(path):
     return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 
 
+def active_cache(cache):
+    try:
+        name = (cache / ACTIVE).read_text(encoding="ascii").strip()
+    except FileNotFoundError:
+        return cache
+    if not re.fullmatch(r"shader-dump-[0-9a-f]{32}", name) or not (cache / name / RUNTIME).is_file():
+        raise DumpError("The active shader dump selection is invalid.")
+    return cache / name
+
+
+def member_target(name):
+    parts = name.split("/")
+    if len(parts) == 2 and parts[0] == "longshot":
+        leaf = parts[1]
+        if leaf in (*OPTIONAL, "longshot_prepared.bin", "longshot_pipelines.bin",
+                    *(file for files in PROGRAMS.values() for file in files)) or re.fullmatch(
+                        r"longshot_vk_pipelines_play_[0-9]+\.bin", leaf):
+            return leaf
+    if parts in (["spirv", "spirv.pack"], ["spirv", "spirv.idx"]):
+        return name
+    if (len(parts) == 5 and parts[:2] == ["driver", LAYOUT] and re.fullmatch(r"[0-9a-f]{32}(?:[0-9a-f]{32})?", parts[2])
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._()+-]{0,127}", parts[3])
+            and parts[4] in {"foz_cache.foz", "foz_cache_idx.foz", "index"}):
+        return name
+    raise DumpError(f"Unexpected file in shader dump: {name}.")
+
+
+def read_dump(archive):
+    entries = archive.infolist()
+    files = {entry.filename: entry for entry in entries}
+    if len(files) != len(entries) or "manifest.json" not in files or len(files) > 4096:
+        raise DumpError("The shader dump has duplicate entries, too many entries, or no manifest.")
+    for entry in entries:
+        if (entry.orig_filename != entry.filename or entry.flag_bits & 1 or entry.compress_type != zipfile.ZIP_STORED or entry.is_dir()
+                or stat.S_IFMT(entry.external_attr >> 16) not in (0, stat.S_IFREG)):
+            raise DumpError(f"Unsupported archive entry: {entry.filename}.")
+    if files.pop("manifest.json").file_size > 1 << 20:
+        raise DumpError("The shader dump manifest is too large.")
+    manifest = json.loads(archive.read("manifest.json"))
+    if manifest["format"] != "longshot-shader-dump" or manifest["schema_version"] != 1:
+        raise DumpError("Unsupported shader dump format.")
+    driver, gpu, program = (manifest[key] for key in ("driver", "gpu", "program_cache"))
+    if (driver["id"] != 18 or driver["cache_layout"] != LAYOUT
+            or not re.fullmatch(r"[0-9a-f]{32}", driver["pipeline_cache_uuid"])
+            or not re.fullmatch(MESA_VERSION, driver["mesa_version"])
+            or not re.fullmatch(r"[0-9a-f]{16}", manifest["renderer_shader_cache_stamp"])
+            or not re.fullmatch(r"[0-9a-f]{64}", manifest["shader_seed_sha256"])):
+        raise DumpError("The shader dump has invalid Turnip compatibility data.")
+    for value in (driver["version_id"], gpu["vendor_id"], gpu["device_id"], program["store_id"]):
+        if type(value) is not int or not 0 <= value <= 0xffffffff:
+            raise DumpError("The shader dump has invalid numeric compatibility data.")
+    cache_format = program["format"].encode("ascii")
+    if cache_format not in PROGRAMS:
+        raise DumpError("The shader dump uses an unsupported program cache format.")
+    inventory = {}
+    for item in manifest["files"]:
+        name = item["path"]
+        member_target(name)
+        if (name in inventory or name not in files or type(item["size"]) is not int
+                or item["size"] != files[name].file_size or not re.fullmatch(r"[0-9a-f]{64}", item["sha256"])):
+            raise DumpError(f"Invalid inventory entry: {name}.")
+        inventory[name] = item
+    required = {f"longshot/{name}" for name in (*PROGRAMS[cache_format], "longshot_prepared.bin", "longshot_pipelines.bin")}
+    if program["store_id"]:
+        if cache_format != b"HSP1":
+            raise DumpError("This program cache format cannot use an external SPIR-V store.")
+        required.update(("spirv/spirv.pack", "spirv/spirv.idx"))
+    elif any(name.startswith("spirv/") for name in inventory):
+        raise DumpError("The shader dump contains an unused SPIR-V store.")
+    databases = [name.rsplit("/", 1)[0] for name in files if name.endswith("/foz_cache.foz")]
+    for folder in databases:
+        required.update(f"{folder}/{name}" for name in ("foz_cache.foz", "foz_cache_idx.foz", "index"))
+    if inventory.keys() != files.keys() or not databases or not required <= files.keys():
+        raise DumpError("The shader dump is missing required cache files or contains unlisted entries.")
+    return manifest, inventory
+
+
+def inspect_dump(dump):
+    with zipfile.ZipFile(dump) as archive:
+        manifest, _ = read_dump(archive)
+        return manifest
+
+
+def supports_restore(executable):
+    magic = RUNTIME_MAGIC.encode("ascii")
+    tail = b""
+    with executable.open("rb") as source:
+        for chunk in iter(lambda: source.read(CHUNK), b""):
+            if magic in tail + chunk:
+                return True
+            tail = chunk[-len(magic):]
+    return False
+
+
+def restore(game, dump, *, on_progress=None, already_locked=False, built_by_setup=False):
+    game = game.resolve(strict=True)
+    cache = game / "cache"
+    cache.mkdir(exist_ok=True)
+    with ExitStack() as stack:
+        if not already_locked:
+            stack.enter_context(cache_lock(cache / ".shader-dump.lock", exclusive=True))
+        archive = stack.enter_context(zipfile.ZipFile(dump))
+        manifest, inventory = read_dump(archive)
+        # The Builder knows the newly installed Linux runtime was built with this restore protocol.
+        # Only restore-only mode has to inspect a previously installed executable.
+        if not built_by_setup and not supports_restore(game / "bin/longshot"):
+            raise DumpError("The Longshot executable in the selected game folder cannot load a restored shader cache. "
+                            "Keep this ZIP selected and build the game with a Setup that supports restore.")
+        if shader_seed_hash(game) != manifest["shader_seed_sha256"]:
+            raise DumpError("This shader dump was made from a different game shader seed.")
+        total = sum(item["size"] for item in inventory.values())
+        if shutil.disk_usage(cache).free < total:
+            raise DumpError("Not enough free space to restore the shader dump.")
+        generation = cache / ("shader-dump-" + secrets.token_hex(16))
+        generation.mkdir(mode=0o700)
+        try:
+            done, last_pct = 0, -1
+            for name, item in inventory.items():
+                target = generation / member_target(name)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                digest, size = hashlib.sha256(), 0
+                with archive.open(name) as source, target.open("xb") as output:
+                    for chunk in iter(lambda: source.read(CHUNK), b""):
+                        size += len(chunk)
+                        if size > item["size"]:
+                            raise DumpError(f"The shader dump entry exceeds its declared size: {name}.")
+                        output.write(chunk)
+                        digest.update(chunk)
+                        done += len(chunk)
+                        pct = done * 100 // total
+                        if on_progress and pct != last_pct:
+                            on_progress(pct)
+                            last_pct = pct
+                if size != item["size"] or digest.hexdigest() != item["sha256"]:
+                    raise DumpError(f"The shader dump entry failed validation: {name}.")
+            record = {key: manifest[key] for key in ("longshot_version", "shader_seed_sha256", "renderer_shader_cache_stamp",
+                                                      "gpu", "driver", "shader_settings")}
+            program = manifest["program_cache"]
+            record.update(program_cache_format=program["format"],
+                          spirv_store_path=str(generation / "spirv") if program["store_id"] else "")
+            # Reuse export's binary header checks before admitting a generation into use.
+            with ExitStack() as checks:
+                sources(game, generation, record.copy(), checks, seed_checked=True)
+            program_file, _ = PROGRAMS[program["format"].encode("ascii")]
+            if read_header(generation / program_file, "<4sIQ")[1] != program["store_id"]:
+                raise DumpError("The shader dump manifest names a different SPIR-V store.")
+            (generation / SOURCE).write_text(json.dumps(record), encoding="utf-8")
+            driver, gpu = manifest["driver"], manifest["gpu"]
+            (generation / RUNTIME).write_text(
+                f"{RUNTIME_MAGIC}\n{gpu['vendor_id']:08x} {gpu['device_id']:08x} {driver['id']:08x} {driver['version_id']:08x}\n"
+                f"{driver['pipeline_cache_uuid']} {manifest['renderer_shader_cache_stamp']} {program['format']} "
+                f"{program['store_id']:08x} {driver['mesa_version']}\n", encoding="ascii")
+            with tempfile.NamedTemporaryFile(mode="w", encoding="ascii", dir=cache, prefix=".shader-active-", delete=False) as f:
+                pointer = Path(f.name)
+                try:
+                    f.write(generation.name + "\n")
+                    f.close()
+                    os.replace(pointer, cache / ACTIVE)
+                finally:
+                    pointer.unlink(missing_ok=True)
+        finally:
+            # An interrupt immediately after activation must not remove the selected generation.
+            if not (cache / ACTIVE).is_file() or (cache / ACTIVE).read_bytes() != (generation.name + "\n").encode("ascii"):
+                shutil.rmtree(generation)
+        return manifest["driver"]["mesa_version"]
+
+
 def cli():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("game", type=Path)
-    parser.add_argument("destination", type=Path)
+    parser.add_argument("destination", type=Path, nargs="?")
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--restore", action="store_true")
+    action.add_argument("--inspect", action="store_true")
     args = parser.parse_args()
 
     def interrupted(*_):
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, interrupted)
+    def progress(n):
+        print(f"@@progress {n / 100}", flush=True)
+
     try:
-        target = export(args.game, args.destination, on_progress=lambda n: print(f"@@progress {n / 100}", flush=True),
-                        on_log=lambda line: print(line, flush=True))
+        if args.inspect:
+            target = inspect_dump(args.game)["driver"]["mesa_version"]
+        elif args.destination is None:
+            parser.error("a destination or shader dump ZIP is required")
+        elif args.restore:
+            target = restore(args.game, args.destination, on_progress=progress)
+        else:
+            target = export(args.game, args.destination, on_progress=progress, on_log=lambda line: print(line, flush=True))
     except KeyboardInterrupt:
         return 130
-    except (OSError, ValueError, KeyError, TypeError) as error:
+    except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as error:
         print(f"@@error {error}", flush=True)
         return 1
     print(f"@@done {target}", flush=True)

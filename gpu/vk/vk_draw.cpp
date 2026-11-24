@@ -13316,6 +13316,10 @@ int64_t draw_slotgen_saves() {   // (Descriptor reuse: of those, what the global
 }
 
 void pipeline_cache_play() {
+#ifndef _WIN32
+    // The restore path skips bulk precompile and still opens the restored Vulkan cache before play.
+    if (restored_shader_dump().dir[0]) pcache_init();
+#endif
     play_cache_begin();
     programs_play_begin();   // (the census: what is made from here on is made in play)
 #ifdef __linux__

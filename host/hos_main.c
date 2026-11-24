@@ -2514,6 +2514,7 @@ static void driver_cache_room(void) {
 #include <errno.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include "../gpu/vk/shader_dump_restore.h"
 /* (longshot, linux) NVIDIA's driver keeps no shader cache at all when __GL_SHADER_DISK_CACHE_PATH names a folder that does not exist:
    it neither creates it nor falls back to ~/.cache/nvidia, and every start compiles every pipeline again (a test of 300 pipelines:
    7.9 ms each at the first start and at the second, against 0.06 ms from the cache; driver 620.70). The folder a player or a
@@ -2589,8 +2590,33 @@ static int shader_dump_launch_allowed(void) {
     if (flock(fd, LOCK_SH | LOCK_NB) == 0) return 1;   /* Keep the descriptor open for this process. */
     const int busy = errno == EWOULDBLOCK || errno == EAGAIN;
     close(fd);
-    if (busy) fprintf(stderr, "A shader dump is in progress. Launch Longshot after it finishes.\n");
+    if (busy) fprintf(stderr, "A shader dump is being exported or restored. Launch Longshot after it finishes.\n");
     return !busy;
+}
+
+/* Setup checks existing executables for this capability. Keep it through optimization and --gc-sections. */
+__attribute__((used, retain)) static const char shader_dump_restore_capability[] = "longshot-shader-dump-v1";
+
+static int shader_dump_configure(void) {
+    char game[4096], path[4120];
+    const DWORD size = hos_game_path_a(game, sizeof game);
+    if (!size || size >= sizeof game) return 1;
+    char *slash = strrchr(game, '/');
+    if (!slash) return 1;
+    *slash = 0;
+    LongshotShaderDump dump = {0};
+    const int result = longshot_shader_dump_read(game, &dump);
+    if (result < 0) {
+        fprintf(stderr, "The restored shader cache selection is invalid. Restore the shader dump again in Setup.\n");
+        return 0;
+    }
+    if (!result) return 1;
+    snprintf(path, sizeof path, "%s/driver", dump.dir);
+    if (setenv("MESA_SHADER_CACHE_DIR", path, 1) || setenv("MESA_DISK_CACHE_SINGLE_FILE", "1", 1) ||
+        setenv("MESA_SHADER_CACHE_DISABLE", "false", 1) || setenv("RX_VK_NO_PROGRAM_CACHE", "0", 1) ||
+        setenv("RX_VK_PROGRAM_CACHE_ZSTD", !strcmp(dump.format, "HSP2") ? "1" : "0", 1)) return 0;
+    snprintf(path, sizeof path, "%s/spirv", dump.dir);
+    return setenv("LONGSHOT_SHADER_STORE", dump.store ? path : "0", 1) == 0;
 }
 /* (longshot, linux) The variables a Vulkan driver, its loader and the layers read, as this process has them once the
    functions above are done, said in the game's log by driver_env_log. Two Steam entries of one game can start it with other
@@ -2672,13 +2698,14 @@ int main(int argc, char **argv) {
     driver_cache_folder();
     driver_cache_shared();
     driver_env_choose();
-    driver_env_note();
     game_argc = argc, game_argv = argv;
     int prepare_shaders = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--prepare-shaders")) prepare_shaders = 1;
         else if (!strcmp(argv[i], "--romfs") || !strcmp(argv[i], "--user") || !strcmp(argv[i], "--compile-shaders")) i++;
     }
+    if (!prepare_shaders && !shader_dump_configure()) return 1;
+    driver_env_note();
     /* The builder's preparation worker needs Vulkan, but no SDL display. */
     const int window = prepare_shaders ? 0 : hos_display_init();
     if (window < 0) {
