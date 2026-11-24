@@ -70,22 +70,6 @@ if [ -n "${APPIMAGE:-}" ] && [ -z "${LONGSHOT_LOG_DIR:-}" ]; then
     LONGSHOT_LOG_DIR=$(log_dir) || LONGSHOT_LOG_DIR=
     export LONGSHOT_LOG_DIR
 fi
-if [ "${1:-}" = "--dump-shaders" ]; then
-    unset LD_PRELOAD
-    shift
-    if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
-        echo "Usage: Longshot.AppImage --dump-shaders <game folder> [destination]" >&2
-        exit 2
-    fi
-    exec "$PY" -I "$LONGSHOT_TOOLS/nx2/shader_dump.py" "$1" "${2:-$(dirname "$LONGSHOT_BUILDER_EXE")}"
-fi
-if [ "${1:-}" = "--inspect-shader-dump" ] || [ "${1:-}" = "--restore-shaders" ]; then
-    unset LD_PRELOAD
-    mode=--restore
-    [ "$1" != "--inspect-shader-dump" ] || mode=--inspect
-    shift
-    exec "$PY" -I "$LONGSHOT_TOOLS/nx2/shader_dump.py" "$mode" "$@"
-fi
 if [ "${1:-}" = "--cli" ]; then
     shift
     # (arm64 port) Not Steam's overlay, which Steam preloads into what it starts (the setup window, and the build it runs):
@@ -102,6 +86,26 @@ if [ "${1:-}" = "--cli" ]; then
         set -- "$@" --log "$log"
     fi
     exec "$PY" -I "$LONGSHOT_TOOLS/nx2/make_game.py" "$@"
+fi
+if [ "${1:-}" = "--dump-shaders" ]; then
+    unset LD_PRELOAD
+    shift
+    if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+        echo "Usage: Longshot.AppImage --dump-shaders <game folder> [destination]" >&2
+        exit 2
+    fi
+    exec "$PY" -I "$LONGSHOT_TOOLS/nx2/shader_dump.py" "$1" "${2:-$(dirname "$LONGSHOT_BUILDER_EXE")}"
+fi
+if [ "${1:-}" = "--inspect-shader-dump" ] || [ "${1:-}" = "--restore-shaders" ]; then
+    unset LD_PRELOAD
+    mode=--restore
+    [ "$1" != "--inspect-shader-dump" ] || mode=--inspect
+    shift
+    exec "$PY" -I "$LONGSHOT_TOOLS/nx2/shader_dump.py" "$mode" "$@"
+fi
+if [ "${1:-}" = "--steam-driver" ] && [ "$#" -eq 2 ]; then
+    unset LD_PRELOAD LD_LIBRARY_PATH
+    exec "$PY" -I "$LONGSHOT_TOOLS/nx2/shader_dump.py" --steam-driver "$2" "$HERE/usr/bin/longshot-vulkan-driver"
 fi
 # Play is the same AppImage: the start script drops this image's libraries, then runs the built game. It needs no build tool.
 if [ "${1:-}" = "--play" ]; then

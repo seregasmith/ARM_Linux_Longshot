@@ -41,9 +41,12 @@ shader stamp check fails after restoring an older ZIP.
 4. To reinstall, open Setup and select both the `.nup` and the file under **Shader dump (.zip, optional)**.
    Setup builds the game, installs the cache, and skips shader preparation. For an existing compatible
    installation, choose **Restore shader dump** to restore without building.
-5. Launch normally. Longshot uses the restored cache. If the selected driver differs from the dump's
-   driver, Longshot shows both drivers and exits before compilation. Switch drivers in the OS or Steam
-   and relaunch.
+5. Select **Add to Steam** to make a shortcut. Setup checks the installed Turnip drivers for a match
+   with the restored cache or the last completed shader preparation. If it finds a match, it sets the
+   driver for this shortcut. If Setup finds no match, select the correct driver in Armada Control.
+6. Start Longshot. With a restored cache, Longshot checks the driver before it prepares shaders. If the
+   driver differs, Longshot shows both drivers and exits. After you restore a cache for a different
+   driver, select **Add to Steam** again to update the shortcut.
 
 ## File format
 

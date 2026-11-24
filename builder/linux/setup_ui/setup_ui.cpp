@@ -380,7 +380,7 @@ std::vector<Place> places() {
 // ---- the window's state
 
 enum class Screen { Home, Browse, Build };
-enum class ShaderTask { Export, Inspect, Restore };
+enum class ShaderTask { Export, Inspect, Restore, SteamDriver };
 
 struct App {
     SDL_Window* window = nullptr;
@@ -538,7 +538,12 @@ struct App {
         if (!finished) return;
         dump.join();
         note("shader dump: ended (status %d%s)", dump.status, dump.stopped ? ", cancelled" : "");
-        if (WIFEXITED(dump.status) && WEXITSTATUS(dump.status) == 0 && !dump_result.empty()) {
+        const bool ok = WIFEXITED(dump.status) && WEXITSTATUS(dump.status) == 0 && !dump_result.empty();
+        if (dump_task == ShaderTask::SteamDriver) {
+            if (dump.stopped) say("Add to Steam was cancelled.");
+            else if (ok) write_steam_entry(dump_result == "-" ? "" : dump_result);
+            else write_steam_entry({}, dump_error.empty() ? "Setup could not check installed Vulkan drivers." : dump_error);
+        } else if (ok) {
             if (dump_task == ShaderTask::Inspect) shader_driver = dump_result;
             else if (dump_task == ShaderTask::Restore) say("Shader dump restored. Start the game with Turnip Mesa " + dump_result + ".");
             else say("Shader dump saved to " + dump_result);
@@ -649,9 +654,20 @@ struct App {
 
     // ---- Steam and play
     void add_to_steam() {
+        if (dump.pid > 0) return;
+        if (apprun.empty()) {
+            write_steam_entry();
+            return;
+        }
+        start_shader_task(ShaderTask::SteamDriver, {apprun, "--steam-driver", out});
+        if (dump.pid > 0) say("Checking installed Vulkan drivers for the shader cache.");
+    }
+
+    void write_steam_entry(const std::string& driver = {}, const std::string& driver_notice = {}) {
         const std::string script = setup::join(out, setup::STEAM_NAME);
-        if (read_text(script) != setup::steam_script()) {
-            if (!write_text(script, setup::steam_script())) {
+        const std::string contents = setup::steam_script(driver);
+        if (read_text(script) != contents) {
+            if (!write_text(script, contents)) {
                 say("The Steam entry's script could not be written in " + out + ": " + std::strerror(errno), true);
                 return;
             }
@@ -679,11 +695,15 @@ struct App {
             return;
         }
         note("steam: %s %s", tool.c_str(), setup::steam_url(script).c_str());
+        if (!driver.empty()) note("steam: using the shader cache's Vulkan driver %s", driver.c_str());
         if (!spawn_detached({tool, setup::steam_url(script)})) {
             say("Steam could not be asked: " + std::string(std::strerror(errno)), true);
             return;
         }
-        say("Steam was asked to add \"" + std::string(setup::STEAM_NAME) + "\" to its library; it appears there within a few seconds.");
+        std::string status = "Steam was asked to add \"" + std::string(setup::STEAM_NAME) + "\" to its library.";
+        if (!driver.empty()) status += " The shortcut uses the Vulkan driver for the shader cache.";
+        if (!driver_notice.empty()) status += " " + driver_notice;
+        say(status, !driver_notice.empty());
     }
 
     void play() {
@@ -926,10 +946,11 @@ void draw_home(App& app) {
 
     if (dumping) {
         const char* action = app.dump_task == ShaderTask::Inspect ? "Checking ZIP" :
-                             app.dump_task == ShaderTask::Restore ? "Restoring shader dump" : "Dumping shaders";
+                             app.dump_task == ShaderTask::Restore ? "Restoring shader dump" :
+                             app.dump_task == ShaderTask::SteamDriver ? "Checking Vulkan drivers" : "Dumping shaders";
         ImGui::ProgressBar((float)std::clamp(app.dump_progress, 0.0, 1.0), ImVec2(-1, 0), action);
         ImGui::BeginDisabled(app.dump.stopped);
-        if (big_button(app, "Cancel dump", false, em(app, 8))) app.dump.stop();
+        if (big_button(app, app.dump_task == ShaderTask::SteamDriver ? "Cancel" : "Cancel dump", false, em(app, 8))) app.dump.stop();
         ImGui::EndDisabled();
     } else if (built) {
         if (big_button(app, "Dump Shaders", false, em(app, 9))) app.start_dump();
@@ -1225,6 +1246,13 @@ void draw_build(App& app) {
         hints(app, "A  choose      D-pad  move");
     } else if (!p.failed) {
         focus_here(app);
+        if (app.dump.pid > 0) {
+            ImGui::BeginDisabled(app.dump.stopped);
+            if (big_button(app, "Cancel", false, em(app, 8))) app.dump.stop();
+            ImGui::EndDisabled();
+            hints(app, "A  choose");
+            return;
+        }
         if (big_button(app, "Play", true, em(app, 6))) app.play();
         ImGui::SameLine();
         if (big_button(app, "Add to Steam", false, em(app, 8))) app.add_to_steam();

@@ -261,12 +261,19 @@ inline std::string format_settings(const std::vector<std::pair<std::string, std:
 
 inline constexpr const char* STEAM_NAME = "Longshot - Ocarina of Time";
 
-inline std::string steam_script() {
-    return "#!/bin/sh\n"
-           "# Starts the game in this folder; Steam names its library entry after this file (the setup window's Add to Steam,\n"
-           "# builder/linux/setup_ui).\n"
-           "here=$(dirname \"$(readlink -f \"$0\")\")\n"
-           "exec \"$here/longshot\" \"$@\"\n";
+inline std::string steam_script(const std::string& driver = {}) {
+    std::string script = "#!/bin/sh\n"
+                         "# Starts the game in this folder; Steam names the shortcut after this file.\n"
+                         "here=$(dirname \"$(readlink -f \"$0\")\")\n";
+    if (!driver.empty()) {
+        script += "export VK_DRIVER_FILES='";
+        for (char ch : driver) {
+            if (ch == '\'') script += "'\\''";
+            else script += ch;
+        }
+        script += "'\nexport VK_ICD_FILENAMES=\"$VK_DRIVER_FILES\"\nunset VK_LOADER_DRIVERS_SELECT VK_LOADER_DRIVERS_DISABLE\n";
+    }
+    return script + "exec \"$here/longshot\" \"$@\"\n";
 }
 
 // urllib.parse.quote(s, safe=''): every byte but letters, digits and _.-~ as %XX

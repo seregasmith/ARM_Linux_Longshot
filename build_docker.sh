@@ -448,9 +448,9 @@ if [ "$mode" = setup ]; then
     # (the setup window, builder/linux/setup_ui: SDL2 and Dear ImGui, against the sysroot, in the AppImage's usr/bin. Its
     # self-test draws every screen offscreen and runs a stand-in build through the window to its end, with the target's loader)
     in_shell "the setup window (builder/linux/setup_ui: usr/bin/longshot-setup) and its self-test" \
-        "CXX=$toolchain/bin/clang++ CXXFLAGS='--target=$triple --sysroot=$sysroot -fuse-ld=lld' \
+        "CC=$toolchain/bin/clang CXX=$toolchain/bin/clang++ CXXFLAGS='--target=$triple --sysroot=$sysroot -fuse-ld=lld' \
              sh builder/linux/setup_ui/build.sh $s/tools/usr/bin/longshot-setup $sdl2/include/SDL2 \
-                 $s/tools/usr/lib/longshot/sdl2/libSDL2-2.0.so.0 &&
+                 $s/tools/usr/lib/longshot/sdl2/libSDL2-2.0.so.0 $headers/vulkanheaders/include &&
          rm -rf $s/ui-selftest && mkdir -p $s/ui-selftest && printf x > $s/ui-selftest/game.nup &&
          LONGSHOT_TOOLS=/work/src SDL_VIDEODRIVER=offscreen HOME=$s/ui-selftest/home \
              LONGSHOT_SETUP_BUILD=/work/src/builder/linux/setup_ui/stand_in_build.sh \

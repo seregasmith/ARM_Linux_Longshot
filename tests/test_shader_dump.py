@@ -139,7 +139,7 @@ class ShaderDumpTest(unittest.TestCase):
         with self.assertRaisesRegex(shader_dump.DumpError, "could not match"):
             self.export()
 
-    def run_apprun(self, *args):
+    def run_apprun(self, *args, driver=None, probe=None):
         source = Path(__file__).resolve().parents[1]
         appdir = self.root / "unpacked"
         tools = appdir / "usr/share/longshot/nx2"
@@ -150,8 +150,15 @@ class ShaderDumpTest(unittest.TestCase):
         python.symlink_to(sys.executable)
         apprun = appdir / "AppRun"
         shutil.copyfile(source / "builder/linux/AppRun", apprun)
+        env = dict(os.environ, APPIMAGE=str(self.root / "Setup.AppImage"))
+        if probe is not None:
+            bin_dir = appdir / "usr/bin"
+            bin_dir.mkdir()
+            shutil.copyfile(probe, bin_dir / "longshot-vulkan-driver")
+            (bin_dir / "longshot-vulkan-driver").chmod(0o755)
+            env["VK_DRIVER_FILES"] = str(driver)
         result = subprocess.run(["sh", str(apprun), *(str(arg) for arg in args)], capture_output=True, text=True,
-                                env=dict(os.environ, APPIMAGE=str(self.root / "Setup.AppImage")))
+                                env=env)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result.stdout
 
@@ -227,6 +234,35 @@ class ShaderDumpTest(unittest.TestCase):
         output = self.run_apprun("--restore-shaders", target, dump)
         self.assertIn("@@done 27.0.0-devel", output)
         self.assertTrue((target / "cache" / shader_dump.ACTIVE).is_file())
+
+    def driver_fixture(self, name, identification):
+        manifest = self.root / name
+        manifest.write_text(identification + "\n", encoding="ascii")
+        probe = self.root / "probe"
+        probe.write_text('#!/bin/sh\n[ "$VK_DRIVER_FILES" = "$VK_ICD_FILENAMES" ] && cat "$VK_DRIVER_FILES"\n')
+        probe.chmod(0o755)
+        return manifest, probe
+
+    def test_steam_driver_uses_the_restored_cache_and_exact_device_identity(self):
+        target = self.restore_target()
+        shader_dump.restore(target, self.export())
+        wanted, probe = self.driver_fixture("devel driver.json", "1 2 18 3 " + "a" * 32)
+        wrong_uuid, _ = self.driver_fixture("updated devel.json", "1 2 18 3 " + "b" * 32)
+        wrong_device, _ = self.driver_fixture("other device.json", "1 3 18 3 " + "a" * 32)
+        wrong_version, _ = self.driver_fixture("other version.json", "1 2 18 4 " + "a" * 32)
+        wrong = (wrong_uuid, wrong_device, wrong_version)
+        self.assertEqual(shader_dump.steam_driver(target, probe, manifests=(*wrong, wanted)), wanted)
+        with self.assertRaisesRegex(shader_dump.DumpError, "No installed driver matches.*Turnip Mesa 27.0.0-devel"):
+            shader_dump.steam_driver(target, probe, manifests=wrong)
+        self.assertIn(f"@@done {wanted}\n", self.run_apprun("--steam-driver", target, driver=wanted, probe=probe))
+
+    def test_steam_driver_uses_the_latest_prepared_cache(self):
+        self.legacy_install()
+        matching, probe = self.driver_fixture("prepared.json", "1 2 18 3 " + "09" * 16)
+        other, _ = self.driver_fixture("also cached.json", "1 2 18 3 " + "11" * 16)
+        self.assertEqual(shader_dump.steam_driver(self.game, probe, manifests=(other, matching)), matching)
+        (self.cache / "longshot_prepared.bin").unlink()
+        self.assertIsNone(shader_dump.steam_driver(self.game, probe, manifests=(other, matching)))
 
     def test_bad_payload_and_cancellation_preserve_active_cache(self):
         dump = self.export()

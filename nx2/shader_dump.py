@@ -15,6 +15,7 @@ import shutil
 import signal
 import stat
 import struct
+import subprocess
 import sys
 import tempfile
 import zipfile
@@ -131,6 +132,16 @@ def warm_stamp(stamp, uuid, vendor, device, version, libraries):
     return stamp
 
 
+def mesa_cache_uuids(layout):
+    if not layout.is_dir():
+        return set()
+    return {
+        p.name for p in layout.iterdir()
+        if p.is_dir() and not p.is_symlink() and re.fullmatch(r"[0-9a-f]{32}", p.name)
+        and any(db.is_file() for db in p.glob("*/foz_cache.foz"))
+    }
+
+
 def recover_preparation(game, stack):
     """Recover older installs' export metadata from the preparation stamp and a completed launch."""
     cache = game / "cache"
@@ -141,11 +152,7 @@ def recover_preparation(game, stack):
     layout = cache / "driver" / LAYOUT
     if not layout.is_dir():
         raise DumpError("This install has no Mesa single-file shader cache to export.")
-    uuids = {
-        p.name for p in layout.iterdir()
-        if p.is_dir() and not p.is_symlink() and re.fullmatch(r"[0-9a-f]{32}", p.name)
-        and any(db.is_file() for db in p.glob("*/foz_cache.foz"))
-    }
+    uuids = mesa_cache_uuids(layout)
     for name in ("longshot_log.txt", *(f"longshot_log.{i}.txt" for i in range(1, 5))):
         for folder in (game / "logs", game):
             run = turnip_log(folder / name)
@@ -377,6 +384,77 @@ def active_cache(cache):
     return cache / name
 
 
+def installed_turnip_manifests():
+    """Check the current driver, Armada's packaged and user drivers, and the system Turnip ICD."""
+    current = os.environ.get("VK_DRIVER_FILES") or os.environ.get("VK_ICD_FILENAMES", "")
+    for item in filter(None, current.split(":")):
+        path = Path(item)
+        if path.is_absolute() and path.suffix == ".json" and path.is_file():
+            yield path
+    for root in (Path("/usr/share/armada/turnip"), Path.home() / ".local/share/armada/turnip"):
+        yield from sorted(root.glob("*/icd.aarch64.json"))
+        yield from sorted(root.glob("*/freedreno_icd*.json"))
+    yield from sorted(Path("/usr/share/vulkan/icd.d").glob("freedreno_icd*.json"))
+
+
+def probe_turnip(probe, manifest):
+    env = os.environ.copy()
+    for name in ("VK_INSTANCE_LAYERS", "VK_LOADER_LAYERS_ENABLE", "VK_LOADER_DRIVERS_SELECT", "VK_LOADER_DRIVERS_DISABLE"):
+        env.pop(name, None)
+    env.update(VK_DRIVER_FILES=str(manifest), VK_ICD_FILENAMES=str(manifest), VK_LOADER_LAYERS_DISABLE="~implicit~")
+    try:
+        result = subprocess.run([probe], env=env, capture_output=True, text=True, errors="replace", timeout=5)
+    except subprocess.TimeoutExpired:
+        return
+    if result.returncode:
+        return
+    for line in result.stdout.splitlines():
+        if match := re.fullmatch(r"(\d+) (\d+) (18) (\d+) ([0-9a-f]{32})", line):
+            *ids, uuid = match.groups()
+            yield (*map(int, ids), uuid)
+
+
+def steam_driver(game, probe, *, manifests=None, on_progress=None):
+    """Find a local driver for the installed cache. None means there is no completed Turnip cache."""
+    cache = game.resolve(strict=True) / "cache"
+    if not cache.is_dir():
+        return None
+    with cache_lock(cache / ".shader-dump.lock", exclusive=False):
+        selected = active_cache(cache)
+        if selected != cache:
+            record = json.loads((selected / SOURCE).read_text(encoding="utf-8"))
+            gpu, driver = record["gpu"], record["driver"]
+            expected = (gpu["vendor_id"], gpu["device_id"], driver["id"], driver["version_id"], driver["pipeline_cache_uuid"])
+            needed = f"Turnip Mesa {driver['mesa_version']}"
+        else:
+            uuids = mesa_cache_uuids(cache / "driver" / LAYOUT)
+            try:
+                stamp, _, _, _, _, warmed = read_header(cache / "longshot_prepared.bin", "<6Q")
+            except (FileNotFoundError, DumpError):
+                return None
+            if not uuids or not warmed:
+                return None
+            expected = None
+            needed = "the Turnip driver that prepared the shader cache"
+
+        if not probe.is_file():
+            raise DumpError(f"Setup could not check installed drivers. Select {needed} in Armada Control.")
+        paths = list(dict.fromkeys(installed_turnip_manifests() if manifests is None else manifests))
+        for i, path in enumerate(paths):
+            if on_progress:
+                on_progress(i * 100 // len(paths))
+            if not path.is_file() or any(c in str(path) for c in ":\r\n"):
+                continue
+            for vendor, device, driver_id, version, uuid in probe_turnip(probe, path):
+                if expected is not None:
+                    if (vendor, device, driver_id, version, uuid) == expected:
+                        return path
+                elif uuid in uuids and any(warm_stamp(stamp, uuid, vendor, device, version, libraries) == warmed
+                                          for libraries in (0, 1, 3)):
+                    return path
+        raise DumpError(f"No installed driver matches the shader cache. Select {needed} in Armada Control.")
+
+
 def member_target(name):
     parts = name.split("/")
     if len(parts) == 2 and parts[0] == "longshot":
@@ -546,6 +624,7 @@ def cli():
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--restore", action="store_true")
     action.add_argument("--inspect", action="store_true")
+    action.add_argument("--steam-driver", action="store_true")
     args = parser.parse_args()
 
     def interrupted(*_):
@@ -559,7 +638,9 @@ def cli():
         if args.inspect:
             target = inspect_dump(args.game)["driver"]["mesa_version"]
         elif args.destination is None:
-            parser.error("a destination or shader dump ZIP is required")
+            parser.error("a destination, shader dump ZIP, or Vulkan probe is required")
+        elif args.steam_driver:
+            target = steam_driver(args.game, args.destination, on_progress=progress) or "-"
         elif args.restore:
             target = restore(args.game, args.destination, on_progress=progress)
         else:

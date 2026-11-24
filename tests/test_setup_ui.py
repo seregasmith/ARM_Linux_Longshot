@@ -20,6 +20,7 @@ import ast
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -33,6 +34,7 @@ HEADER = ROOT / "builder" / "linux" / "setup_ui" / "setup_logic.h"
 
 PATHS = ["/home/deck/Games/Longshot/Longshot - Ocarina of Time", "/run/media/deck/SD card/Игры/Longshot/x",
          "/a&b=c?d#e%f+g~h_i.j-k"]
+DRIVER = "/usr/share/armada/turnip/owner's build $(exit 9)/icd.aarch64.json"
 
 FIXTURE = r'''
 #include "setup_logic.h"
@@ -154,6 +156,7 @@ int main() {
     // ---- for the script's half: the URLs, and the Steam script's text
     for (const char* path : {@PATHS@}) std::printf("URL %s\n", steam_url(path).c_str());
     std::printf("SCRIPT_BEGIN\n%sSCRIPT_END\n", steam_script().c_str());
+    std::printf("PINNED_BEGIN\n%sPINNED_END\n", steam_script("@DRIVER@").c_str());
     std::printf("NAME %s\n", STEAM_NAME);
     if (fails) return 1;
     std::puts("PASS: setup_logic.h");
@@ -180,6 +183,7 @@ def main():
     p.add_argument("--cxx", default=os.environ.get("CXX", "clang++"))
     a = p.parse_args()
     fixture = FIXTURE.replace("@PATHS@", ", ".join('"%s"' % x.replace("\\", "\\\\").replace('"', '\\"') for x in PATHS))
+    fixture = fixture.replace("@DRIVER@", DRIVER)
     with tempfile.TemporaryDirectory(prefix="setup-ui-") as tmp:
         tmp = Path(tmp)
         src, exe = tmp / "fixture.cpp", tmp / ("fixture.exe" if os.name == "nt" else "fixture")
@@ -215,18 +219,30 @@ def main():
         # (the Steam entry's script: from a game folder, through a link as Steam may keep it, it runs the folder's longshot
         # with the arguments)
         script = out.split("SCRIPT_BEGIN\n")[1].split("SCRIPT_END")[0]
+        pinned = out.split("PINNED_BEGIN\n")[1].split("PINNED_END")[0]
         name = re.search(r"^NAME (.*)$", out, re.M).group(1)
-        if sys.platform.startswith("linux"):
+        readlink = shutil.which("readlink")
+        if readlink and subprocess.run([readlink, "-f", str(tmp)], capture_output=True).returncode == 0:
             game = tmp / "Games" / "Longshot"
             game.mkdir(parents=True)
             (game / name).write_text(script, encoding="utf-8")
             (game / name).chmod(0o755)
-            (game / "longshot").write_text('#!/bin/sh\necho "started in $(pwd) with: $*"\necho "$0"\n', encoding="utf-8")
+            (game / "longshot").write_text('#!/bin/sh\necho "started in $(pwd) with: $*"\necho "$0"\n'
+                                           'printf "%s\\n" "$VK_DRIVER_FILES" "$VK_ICD_FILENAMES" "${VK_LOADER_DRIVERS_SELECT:-}"\n',
+                                           encoding="utf-8")
             (game / "longshot").chmod(0o755)
             os.symlink(game / name, tmp / "link")
-            r = subprocess.run([str(tmp / "link"), "--a", "b c"], capture_output=True, text=True, cwd=str(tmp))
+            env = dict(os.environ, VK_DRIVER_FILES="current", VK_ICD_FILENAMES="current", VK_LOADER_DRIVERS_SELECT="current")
+            args = [str(tmp / "link"), "--a", "b c"]
+            r = subprocess.run(args, capture_output=True, text=True, cwd=tmp, env=env)
             if r.returncode or "with: --a b c" not in r.stdout or str(game / "longshot") not in r.stdout:
                 fail("the Steam entry's script did not start the folder's longshot: %r %r" % (r.stdout, r.stderr))
+            if r.stdout.splitlines()[-3:] != ["current"] * 3:
+                fail("the Steam entry without a driver match must keep Steam's driver environment")
+            (game / name).write_text(pinned, encoding="utf-8")
+            r = subprocess.run(args, capture_output=True, text=True, cwd=tmp, env=env)
+            if r.returncode or r.stdout.splitlines()[-3:] != [DRIVER, DRIVER, ""] or "with: --a b c" not in r.stdout:
+                fail("the Steam entry did not pass the selected driver to Longshot: %r %r" % (r.stdout, r.stderr))
     print("PASS: the setup window's logic")
 
 
